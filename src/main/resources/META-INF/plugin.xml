@@ -1,0 +1,43 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>GenerateTestCases</id>
+
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
+    <name>GenerateTestCases</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor email="123@yourcompany.com" url="http://www.yourcompany.cn">nonono</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
+    <description>1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+    </description>
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <!-- Extension points defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+
+    </extensions>
+    <actions>
+        <!-- Add your actions here -->
+        <action class="Action.ExtractLiteralCallerMethodAction" id="$ExtractLiteralCallerMethod" text="Extract Literal CallerMethod" />
+        <action class="Action.enumExtractionAction" id="$enumExtraction" text="Enum Extraction" />
+        <action class="Action.SelectTestMethodAction" id="$SelectTestMethod" text="Generate Data" />
+        <group id="DataGeneratorGroup" text="EditorPopupMenu">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <reference ref="$ExtractLiteralCallerMethod" />
+            <reference ref="$enumExtraction" />
+            <reference ref="$SelectTestMethod" />
+        </group>
+    </actions>
+
+</idea-plugin>
