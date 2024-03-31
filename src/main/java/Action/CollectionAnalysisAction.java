@@ -16,6 +16,19 @@ public class CollectionAnalysisAction extends AnAction {
 
     private static final Logger LOG = Logger.getInstance(CollectionAnalysisAction.class);
 
+    // 内部类用于记录集合状态
+    static class CollectionState {
+        String variableName;
+        int size;
+        int position;
+
+        public CollectionState(String variableName, int size, int position) {
+            this.variableName = variableName;
+            this.size = size;
+            this.position = position;
+        }
+    }
+
     @Override
     public void actionPerformed(AnActionEvent e) {
         final Editor editor = e.getRequiredData(CommonDataKeys.EDITOR);
@@ -29,13 +42,14 @@ public class CollectionAnalysisAction extends AnAction {
         PsiMethod method = PsiTreeUtil.getParentOfType(elementAt, PsiMethod.class, false);
 
         if (method != null) {
-            Map<String, Integer> collectionCounts = new HashMap<>();
+            final Map<String, CollectionState> collectionStates = new HashMap<>();
             method.accept(new JavaRecursiveElementVisitor() {
                 @Override
                 public void visitLocalVariable(PsiLocalVariable variable) {
                     super.visitLocalVariable(variable);
-                    // 初始化所有局部变量的计数为0，真实集合类型将在后续逻辑中更新
-                    collectionCounts.putIfAbsent(variable.getName(), 0);
+                    // Assume every local variable could be a collection with initial size 0
+                    int position = variable.getTextRange().getStartOffset();
+                    collectionStates.putIfAbsent(variable.getName(), new CollectionState(variable.getName(), 0, position));
                 }
 
                 @Override
@@ -48,25 +62,19 @@ public class CollectionAnalysisAction extends AnAction {
                     PsiExpression qualifierExpression = methodExpression.getQualifierExpression();
                     if (qualifierExpression != null) {
                         String sourceVariableName = qualifierExpression.getText();
-                        PsiType type = null;
+                        int position = expression.getTextRange().getStartOffset();
 
-                        if (qualifierExpression instanceof PsiReferenceExpression) {
-                            PsiElement resolved = ((PsiReferenceExpression) qualifierExpression).resolve();
-                            if (resolved instanceof PsiVariable) {
-                                type = ((PsiVariable) resolved).getType();
-                            }
-                        }
-
+                        // 针对“copy”或“Copy”方法的特殊处理
                         if (methodName != null && (methodName.contains("copy") || methodName.contains("Copy"))) {
                             PsiElement parent = expression.getParent();
 
                             while (!(parent instanceof PsiDeclarationStatement) && parent != null) {
                                 parent = parent.getParent();
-
                             }
                             if (parent != null) {
                                 for (PsiElement element : ((PsiDeclarationStatement) parent).getDeclaredElements()) {
-                                    if (element instanceof PsiLocalVariable localVariable) {
+                                    if (element instanceof PsiLocalVariable) {
+                                        PsiLocalVariable localVariable = (PsiLocalVariable) element;
                                         String newVariableName = localVariable.getName(); // 新集合的变量名
                                         PsiExpression[] arguments = expression.getArgumentList().getExpressions();
                                         if (arguments.length >= 2) {
@@ -74,7 +82,7 @@ public class CollectionAnalysisAction extends AnAction {
                                                 int start = Integer.parseInt(arguments[0].getText());
                                                 int end = Integer.parseInt(arguments[1].getText());
                                                 int count = Math.abs(end - start) + 1;
-                                                collectionCounts.put(newVariableName, count);
+                                                collectionStates.put(newVariableName, new CollectionState(newVariableName, count, position));
                                             } catch (NumberFormatException ex) {
                                                 LOG.warn("Failed to parse 'copy' method arguments for collection size adjustment.");
                                             }
@@ -82,35 +90,27 @@ public class CollectionAnalysisAction extends AnAction {
                                     }
                                 }
                             }
-                        } else if (type == null || isCollectionType(type) || collectionCounts.containsKey(sourceVariableName)) {
-                            // 增加元素的情况
-                            if (methodName != null && (methodName.contains("add") || methodName.contains("push"))) {
-                                collectionCounts.merge(sourceVariableName, 1, Integer::sum);
-                            }
-                            // 减少元素的情况
-                            else if (methodName != null && (methodName.contains("remove") || methodName.contains("pop") || methodName.contains("poll"))) {
-                                collectionCounts.merge(sourceVariableName, -1, Integer::sum);
-                            }
-                            // 清空集合的情况
-                            else if ("clear".equals(methodName)) {
-                                collectionCounts.put(sourceVariableName, 0);
+                        } else {
+                            // 处理其他集合操作，如“add”、“remove”等，并在每次操作时输出
+                            if (collectionStates.containsKey(sourceVariableName)) {
+                                CollectionState state = collectionStates.get(sourceVariableName);
+                                if (methodName != null && (methodName.contains("add") || methodName.contains("push"))) {
+                                    state.size++;
+                                } else if (methodName != null && (methodName.contains("remove") || methodName.contains("pop") || methodName.contains("poll"))) {
+                                    state.size = Math.max(0, state.size - 1);
+                                } else if ("clear".equals(methodName)) {
+                                    state.size = 0;
+                                }
+                                // 更新集合状态
+                                collectionStates.put(sourceVariableName, new CollectionState(sourceVariableName, state.size, position));
+                                System.out.println("Variable '" + sourceVariableName + "' has " + state.size + " elements at position " + position);
                             }
                         }
                     }
                 }
 
-                private boolean isCollectionType(PsiType type) {
-                    String typeText = type.getCanonicalText();
-                    return typeText.contains("List") ||
-                            typeText.contains("Set") ||
-                            typeText.contains("Map") ||
-                            typeText.contains("Collection");
-                }
             });
 
-            collectionCounts.forEach((name, count) -> {
-                System.out.println("Variable '" + name + "' treated as a collection has " + count + " elements.");
-            });
         }
     }
 }
