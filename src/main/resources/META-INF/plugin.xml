@@ -30,12 +30,14 @@
     <actions>
         <!-- Add your actions here -->
         <action class="Action.ExtractLiteralCallerMethodAction" id="$ExtractLiteralCallerMethod" text="Extract Literal CallerMethod" />
-        <action class="Action.enumExtractionAction" id="$enumExtraction" text="Enum Extraction" />
+        <action class="Action.enumExtractionAction" id="$EnumExtraction" text="Enum Extraction" />
+        <action class="Action.CollectionAnalysisAction" id="$CollectionAnalysis" text="Collection Analysis" />
         <action class="Action.SelectTestMethodAction" id="$SelectTestMethod" text="Generate Data" />
         <group id="DataGeneratorGroup" text="EditorPopupMenu">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <reference ref="$ExtractLiteralCallerMethod" />
-            <reference ref="$enumExtraction" />
+            <reference ref="$EnumExtraction" />
+            <reference ref="$CollectionAnalysis" />
             <reference ref="$SelectTestMethod" />
         </group>
     </actions>
