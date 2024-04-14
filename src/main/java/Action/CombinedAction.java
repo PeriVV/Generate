@@ -5,16 +5,12 @@ import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.psi.*;
 import com.intellij.psi.util.PsiTreeUtil;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
-public class CollectionAnalysisAction extends AnAction {
-
-    private static final Logger LOG = Logger.getInstance(CollectionAnalysisAction.class);
+public class CombinedAction extends AnAction {
 
     // 内部类用于记录集合状态
     static class CollectionState {
@@ -25,6 +21,18 @@ public class CollectionAnalysisAction extends AnAction {
         public CollectionState(String variableName, int size, int position) {
             this.variableName = variableName;
             this.size = size;
+            this.position = position;
+        }
+    }
+
+    static class MethodCallDetail {
+        String methodName;
+        Set<String> arguments; // 使用 Set 而不是 List
+        int position;
+
+        public MethodCallDetail(String methodName, Set<String> arguments, int position) {
+            this.methodName = methodName;
+            this.arguments = arguments;
             this.position = position;
         }
     }
@@ -42,6 +50,11 @@ public class CollectionAnalysisAction extends AnAction {
         PsiMethod method = PsiTreeUtil.getParentOfType(elementAt, PsiMethod.class, false);
 
         if (method != null) {
+            System.out.println("Analyzing method: " + method.getName());
+            HashSet<PsiElement> visited = new HashSet<>();
+            exploreElement(method, visited); // Explore the method for enums
+
+            // 解析集合大小
             final Map<String, CollectionState> collectionStates = new HashMap<>();
             method.accept(new JavaRecursiveElementVisitor() {
                 @Override
@@ -84,7 +97,7 @@ public class CollectionAnalysisAction extends AnAction {
                                                 int count = Math.abs(end - start) + 1;
                                                 collectionStates.put(newVariableName, new CollectionState(newVariableName, count, position));
                                             } catch (NumberFormatException ex) {
-                                                LOG.warn("Failed to parse 'copy' method arguments for collection size adjustment.");
+                                                ex.printStackTrace();
                                             }
                                         }
                                     }
@@ -111,6 +124,72 @@ public class CollectionAnalysisAction extends AnAction {
 
             });
 
+            Map<String, Set<String>> argumentValuesByType = new HashMap<>();
+            List<MethodCallDetail> methodCalls = new ArrayList<>();
+
+            method.accept(new JavaRecursiveElementVisitor() {
+                @Override
+                public void visitMethodCallExpression(PsiMethodCallExpression expression) {
+                    super.visitMethodCallExpression(expression);
+                    PsiReferenceExpression methodExpression = expression.getMethodExpression();
+                    String methodName = methodExpression.getReferenceName();
+                    PsiExpression[] args = expression.getArgumentList().getExpressions();
+
+                    if (methodName != null && methodName.startsWith("add")) {
+                        for (PsiExpression arg : args) {
+                            argumentValuesByType.computeIfAbsent(arg.getType().getPresentableText(), k -> new HashSet<>()).add(arg.getText());
+                        }
+                    }
+
+                    if (methodName != null && methodName.startsWith("remove")) {
+                        Set<String> relevantArguments = new HashSet<>(); // 使用 Set 而不是 List
+                        for (PsiExpression arg : args) {
+                            Set<String> possibleValues = argumentValuesByType.get(arg.getType().getPresentableText());
+                            if (possibleValues != null) {
+                                relevantArguments.addAll(possibleValues);
+                            }
+                        }
+                        int position = expression.getTextRange().getStartOffset();
+                        methodCalls.add(new MethodCallDetail(methodName, relevantArguments, position));
+                    }
+                }
+            });
+
+            // 输出remove方法调用的详细信息
+            methodCalls.forEach(call ->
+                    System.out.println("Method Call: " + call.methodName + ", Arguments: " + String.join(", ", call.arguments) + ", Position: " + call.position));
+
+        }
+    }
+
+    private void exploreElement(PsiElement element, Set<PsiElement> visited) {
+        if (element == null || visited.contains(element)) {
+            return;
+        }
+        visited.add(element);
+
+        if (element instanceof PsiReferenceExpression) {
+            PsiElement resolvedElement = ((PsiReferenceExpression) element).resolve();
+            if (resolvedElement instanceof PsiEnumConstant) {
+                reportEnumUsage((PsiEnumConstant) resolvedElement);
+            }
+        }
+
+        for (PsiElement child : element.getChildren()) {
+            exploreElement(child, visited);
+        }
+    }
+
+    private void reportEnumUsage(PsiEnumConstant enumConstant) {
+        PsiClass enumClass = enumConstant.getContainingClass();
+        if (enumClass != null) {
+            System.out.println("Enum value used: " + enumClass.getName() + "." + enumConstant.getName());
+            System.out.println("All enum values in " + enumClass.getName() + ":");
+            for (PsiField field : enumClass.getFields()) {
+                if (field instanceof PsiEnumConstant) {
+                    System.out.println(" - " + field.getName());
+                }
+            }
         }
     }
 }

@@ -39,8 +39,7 @@ public class ExtractLiteralCallerMethodAction extends AnAction {
         visited.add(element);
 
         // 特别处理方法调用表达式
-        if (element instanceof PsiMethodCallExpression) {
-            PsiMethodCallExpression methodCall = (PsiMethodCallExpression) element;
+        if (element instanceof PsiMethodCallExpression methodCall) {
             PsiExpression[] args = methodCall.getArgumentList().getExpressions();
             for (PsiExpression arg : args) {
                 if (arg instanceof PsiLiteralExpression) {
@@ -52,9 +51,8 @@ public class ExtractLiteralCallerMethodAction extends AnAction {
                     }
                 }
             }
-        } else if (element instanceof PsiNewExpression) {
+        } else if (element instanceof PsiNewExpression newExpression) {
             // 特别处理构造函数调用
-            PsiNewExpression newExpression = (PsiNewExpression) element;
             PsiMethod constructor = newExpression.resolveConstructor();
             if (constructor != null) {
                 System.out.println("Constructor signature and body at depth " + currentDepth + ": ");
