@@ -130,30 +130,17 @@ public class AutoGenerationAction extends AnAction {
                 case "boolean":
                     replaceValue = "DataGenerator.generateBoolean()";
                     break;
-                case "int[]":
-                    replaceValue = "DataGenerator.generateIntArray(1, 10, " + Integer.MIN_VALUE + ", " + Integer.MAX_VALUE + ")";
-                    break;
-                case "double[]":
-                    replaceValue = "DataGenerator.generateDoubleArray(1, 10, " + Double.MIN_VALUE + ", " + Double.MAX_VALUE + ")";
-                    break;
-                case "String[]":
-                    replaceValue = "DataGenerator.generateStringArray(1, 10, 5, 10)";
-                    break;
-                case "boolean[]":
-                    replaceValue = "DataGenerator.generateBooleanArray(1, 10)";
-                    break;
-                case "char[]":
-                    replaceValue = "DataGenerator.generateBooleanArray(1, 10)";
-                    break;
                 default:
                     break;
             }
             if (!replaceValue.isEmpty()) {
-                System.out.println("Replacing " + variableName + " with: " + replaceValue);
-                String regex = "\\b" + variableName + "\\b";  // 确保只匹配完整的变量名
+                System.out.println(variableName);
+                // 使用更严格的正则表达式来精确匹配变量名
+                String regex = "\\b" + variableName + "\\b";
                 newMethodCode = newMethodCode.replaceAll(regex, replaceValue);
-                System.out.println("Updated method code:\n" + newMethodCode);
+                System.out.println(newMethodCode);
             }
+
         }
         for (VariableInfo variable : outputVariables) {
             String variableName = variable.getName();

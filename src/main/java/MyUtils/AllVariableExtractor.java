@@ -33,78 +33,51 @@ public class AllVariableExtractor {
         List<VariableInfo> variableInfoList = new ArrayList<>();
         MethodDeclaration methodDeclaration = StaticJavaParser.parseMethodDeclaration(method);
 
-        // Extract boolean variables and literals
+        // Extract boolean variables and literal constants
         List<Expression> expressions = methodDeclaration.findAll(Expression.class);
         for (Expression e : expressions) {
+//            System.out.println(e.toString());
+            String name = e.toString();
             if (!isArgumentOfAssertionMethod(e)) {
-                String name = e.toString();
-                String type = determineType(e); // 处理类型识别的逻辑分离到单独方法
-
-                StringBuilder callContext = new StringBuilder(); // 使用StringBuilder收集调用上下文信息
-
-                Node currentNode = e;
-                while (currentNode != null) {
-                    if (currentNode instanceof MethodCallExpr) {
-                        MethodCallExpr methodCall = (MethodCallExpr) currentNode;
-                        callContext.append("Method call: ").append(methodCall.getNameAsString());
-                        break; // Found the closest method call context
-                    } else if (currentNode instanceof ObjectCreationExpr) {
-                        ObjectCreationExpr constructorCall = (ObjectCreationExpr) currentNode;
-                        callContext.append("Constructor call: ").append(constructorCall.getTypeAsString());
-                        break; // Found the closest constructor call context
+                if (e.isBooleanLiteralExpr() || e.isLiteralExpr()) {
+                    String type;
+                    if (e.isBooleanLiteralExpr()) {
+                        type = "boolean";
+                    } else if (e.isIntegerLiteralExpr()) {
+                        type = "int";
+                    } else if (e.isDoubleLiteralExpr()) {
+                        type = "double";
+                    } else if (e.isCharLiteralExpr()) {
+                        type = "char";
+                    } else {
+                        type = "String";
                     }
-                    currentNode = currentNode.getParentNode().orElse(null);
-                }
 
-                VariableInfo variableInfo = new VariableInfo(name, type);
-                variableInfo.setStartPosition(e.getBegin().get().line);
-                variableInfo.setEndPosition(e.getEnd().get().line);
-                variableInfoList.add(variableInfo);
+                    StringBuilder callContext = new StringBuilder(); // 使用StringBuilder收集调用上下文信息
+
+                    Node currentNode = e;
+                    while (currentNode != null) {
+                        if (currentNode instanceof MethodCallExpr) {
+                            MethodCallExpr methodCall = (MethodCallExpr) currentNode;
+                            callContext.append("Method call: ").append(methodCall.getNameAsString());
+                            break; // Found the closest method call context
+                        } else if (currentNode instanceof ObjectCreationExpr) {
+                            ObjectCreationExpr constructorCall = (ObjectCreationExpr) currentNode;
+                            callContext.append("Constructor call: ").append(constructorCall.getTypeAsString());
+                            break; // Found the closest constructor call context
+                        }
+                        currentNode = currentNode.getParentNode().orElse(null);
+                    }
+
+                    VariableInfo variableInfo = new VariableInfo(name, type);
+                    variableInfo.setStartPosition(e.getBegin().get().line);
+                    variableInfo.setEndPosition(e.getEnd().get().line);
+                    variableInfoList.add(variableInfo);
+                }
             }
         }
         return variableInfoList;
     }
-
-    private static String determineType(Expression e) {
-        if (e instanceof ArrayInitializerExpr) {
-            ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
-            NodeList<Expression> values = arrayInitializer.getValues();
-            if (!values.isEmpty()) {
-                return determineArrayType(values);
-            }
-            return "Object[]"; // 默认空数组类型
-        } else if (e.isBooleanLiteralExpr()) {
-            return "boolean";
-        } else if (e.isIntegerLiteralExpr()) {
-            return "int";
-        } else if (e.isDoubleLiteralExpr()) {
-            return "double";
-        } else if (e.isCharLiteralExpr()) {
-            return "char";
-        } else if (e.isLongLiteralExpr()) {
-            return "long";
-        } else if (e.isStringLiteralExpr()) {
-            return "String";
-        }
-        return "Object"; // 默认类型
-    }
-
-    private static String determineArrayType(NodeList<Expression> values) {
-        Expression firstElement = values.get(0);
-        if (firstElement.isIntegerLiteralExpr()) {
-            return "int[]";
-        } else if (firstElement.isDoubleLiteralExpr()) {
-            return "double[]";
-        } else if (firstElement.isBooleanLiteralExpr()) {
-            return "boolean[]";
-        } else if (firstElement.isCharLiteralExpr()) {
-            return "char[]";
-        } else if (firstElement.isStringLiteralExpr()) {
-            return "String[]";
-        }
-        return "Object[]";
-    }
-
 
     /**
      * Checks if the given expression is an argument of an assertion method.
