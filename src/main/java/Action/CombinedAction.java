@@ -158,7 +158,6 @@ public class CombinedAction extends AnAction {
             // 输出remove方法调用的详细信息
             methodCalls.forEach(call ->
                     System.out.println("Method Call: " + call.methodName + ", Arguments: " + String.join(", ", call.arguments) + ", Position: " + call.position));
-
         }
     }
 

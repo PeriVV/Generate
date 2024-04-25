@@ -11,6 +11,7 @@ import java.util.*;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Utility class to extract input and output variables from Java methods.
@@ -36,11 +37,10 @@ public class AllVariableExtractor {
         // Extract boolean variables and literal constants
         List<Expression> expressions = methodDeclaration.findAll(Expression.class);
         for (Expression e : expressions) {
-//            System.out.println(e.toString());
+            String type;
             String name = e.toString();
             if (!isArgumentOfAssertionMethod(e)) {
                 if (e.isBooleanLiteralExpr() || e.isLiteralExpr()) {
-                    String type;
                     if (e.isBooleanLiteralExpr()) {
                         type = "boolean";
                     } else if (e.isIntegerLiteralExpr()) {
@@ -49,8 +49,12 @@ public class AllVariableExtractor {
                         type = "double";
                     } else if (e.isCharLiteralExpr()) {
                         type = "char";
-                    } else {
+                    } else if (e.isLongLiteralExpr()) {
+                        type = "long";
+                    } else if (e.isStringLiteralExpr()) {
                         type = "String";
+                    } else {
+                        type = "Object";
                     }
 
                     StringBuilder callContext = new StringBuilder(); // 使用StringBuilder收集调用上下文信息
@@ -73,10 +77,43 @@ public class AllVariableExtractor {
                     variableInfo.setStartPosition(e.getBegin().get().line);
                     variableInfo.setEndPosition(e.getEnd().get().line);
                     variableInfoList.add(variableInfo);
+                } else if (e instanceof ArrayInitializerExpr) {
+                    ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
+                    type = determineArrayType(arrayInitializer.getValues());
+                    name = arrayToString(arrayInitializer.getValues());  // 用修改后的名字包括数组内容
+                    VariableInfo variableInfo = new VariableInfo(name, type);
+                    variableInfo.setStartPosition(e.getBegin().get().line);
+                    variableInfo.setEndPosition(e.getEnd().get().line);
+                    variableInfoList.add(variableInfo);
                 }
             }
         }
         return variableInfoList;
+    }
+
+    private static String arrayToString(NodeList<Expression> values) {
+        return values.stream()
+                .map(Expression::toString)
+                .collect(Collectors.joining(", ", "\\{", "\\}"));
+    }
+
+    private static String determineArrayType(NodeList<Expression> values) {
+        if (values.isEmpty()) {
+            return "Object[]";
+        }
+        Expression firstElement = values.get(0);
+        if (firstElement.isIntegerLiteralExpr()) {
+            return "int[]";
+        } else if (firstElement.isDoubleLiteralExpr()) {
+            return "double[]";
+        } else if (firstElement.isBooleanLiteralExpr()) {
+            return "boolean[]";
+        } else if (firstElement.isCharLiteralExpr()) {
+            return "char[]";
+        } else if (firstElement.isStringLiteralExpr()) {
+            return "String[]";
+        }
+        return "Object[]";
     }
 
     /**
