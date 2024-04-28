@@ -1,5 +1,10 @@
 package Action;
 
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.BinaryExpr;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.stmt.IfStmt;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
@@ -57,7 +62,8 @@ public class SafeConditionAction extends AnAction {
                         if (arg instanceof PsiLiteralExpression && i < parameters.length) {
                             String paramName = parameters[i].getName();
                             String literalValue = paramName + ": " + arg.getText();
-                            extractConditions(calledMethod, literalValue, conditionsMap, constants);
+                            List<String> conditions = extractConditions(calledMethod, literalValue, conditionsMap, constants);
+                            parseConditions(conditions);
                         }
                     }
                 }
@@ -78,14 +84,28 @@ public class SafeConditionAction extends AnAction {
         for (PsiField field : psiClass.getAllFields()) {
             if (field.hasModifierProperty(PsiModifier.STATIC) && field.hasModifierProperty(PsiModifier.FINAL)) {
                 PsiExpression initializer = field.getInitializer();
-                if (initializer instanceof PsiLiteralExpression) {
+                String valueText = extractValue(initializer);
+                if (valueText != null) {
                     String name = className + "." + field.getName();
-                    String text = ((PsiLiteralExpression) initializer).getText();
-                    constantValues.put(name, text);
+                    constantValues.put(name, valueText);
                 }
             }
         }
     }
+
+    private String extractValue(PsiExpression expression) {
+        if (expression instanceof PsiLiteralExpression) {
+            return expression.getText();
+        } else if (expression instanceof PsiPrefixExpression) {
+            PsiPrefixExpression prefixExpr = (PsiPrefixExpression) expression;
+            PsiExpression operand = prefixExpr.getOperand();
+            if (operand instanceof PsiLiteralExpression && prefixExpr.getOperationSign().getText().equals("-")) {
+                return "-" + operand.getText();  // Handle negative literals
+            }
+        }
+        return null;
+    }
+
 
     private Map<String, String> extractConstants(PsiClass psiClass) {
         Map<String, String> constantValues = new HashMap<>();
@@ -109,54 +129,59 @@ public class SafeConditionAction extends AnAction {
         return constantValues;
     }
 
-    private void extractConditions(PsiMethod method, String literalValue, Map<String, HashSet<String>> conditionsMap, Map<String, String> constants) {
-        if (method.getBody() == null) return;
-        PsiClass methodClass = method.getContainingClass();
-        String methodClassName = methodClass != null ? methodClass.getName() : "";
+    private boolean containsThrowStatement(PsiIfStatement ifStmt) {
+        PsiStatement[] thenStatements = null;
+        if (ifStmt.getThenBranch() instanceof PsiBlockStatement) {
+            thenStatements = ((PsiBlockStatement) ifStmt.getThenBranch()).getCodeBlock().getStatements();
+        } else if (ifStmt.getThenBranch() != null) {
+            thenStatements = new PsiStatement[]{ifStmt.getThenBranch()};
+        }
 
-        for (PsiStatement statement : method.getBody().getStatements()) {
-            if (statement instanceof PsiIfStatement) {
-                PsiIfStatement ifStmt = (PsiIfStatement) statement;
-                PsiExpression condition = ifStmt.getCondition();
-                String conditionText = condition.getText();
-
-                // 替换常量
-                for (Map.Entry<String, String> entry : constants.entrySet()) {
-                    String fullFieldName = entry.getKey();
-                    String fieldValue = entry.getValue();
-                    String[] parts = fullFieldName.split("\\.");
-                    String className = parts.length > 1 ? parts[0] : "";
-                    String fieldName = parts[parts.length - 1];
-
-                    if (className.equals(methodClassName)) {
-                        conditionText = conditionText.replaceAll("\\b" + Pattern.quote(fieldName) + "\\b", fieldValue);
-                    } else {
-                        conditionText = conditionText.replaceAll("\\b" + Pattern.quote(fullFieldName) + "\\b", fieldValue);
-                    }
+        if (thenStatements != null) {
+            for (PsiStatement stmt : thenStatements) {
+                if (stmt instanceof PsiThrowStatement) {
+                    return true;
                 }
+            }
+        }
+        return false;
+    }
 
-                conditionText = negateCondition(conditionText);
-                conditionsMap.computeIfAbsent(literalValue, k -> new HashSet<>()).add(conditionText);
+    private String replaceConstantsInCondition(String conditionText, Map<String, String> constants) {
+        for (Map.Entry<String, String> entry : constants.entrySet()) {
+            String fullFieldName = entry.getKey();
+            String fieldValue = entry.getValue();
+            // 处理全限定名的匹配，确保前后可以是空格、操作符或表达式的起始/结束
+            String regex = "(?<=\\s|\\W|^)" + Pattern.quote(fullFieldName) + "(?=\\s|\\W|$)";
+            conditionText = conditionText.replaceAll(regex, fieldValue);
+        }
+        return conditionText;
+    }
 
-                // 检查 `then` 分支是否包含 `throw`
-                PsiStatement[] thenStatements = null;
-                if (ifStmt.getThenBranch() instanceof PsiBlockStatement) {
-                    thenStatements = ((PsiBlockStatement) ifStmt.getThenBranch()).getCodeBlock().getStatements();
-                } else if (ifStmt.getThenBranch() != null) {
-                    thenStatements = new PsiStatement[]{ifStmt.getThenBranch()};
-                }
 
-                if (thenStatements != null) {
-                    boolean hasThrow = Arrays.stream(thenStatements)
-                            .anyMatch(s -> s instanceof PsiThrowStatement);
-                    if (hasThrow) {
-                        // 添加到条件映射中
-                        String throwCondition = "Throw condition: " + ifStmt.getCondition().getText();
-                        conditionsMap.computeIfAbsent(literalValue, k -> new HashSet<>()).add(throwCondition);
+    private List<String> extractConditions(PsiMethod method, String literalValue, Map<String, HashSet<String>> conditionsMap, Map<String, String> constants) {
+        List<String> conditions = new ArrayList<>();
+        if (method.getBody() != null) {
+            for (PsiStatement statement : method.getBody().getStatements()) {
+                if (statement instanceof PsiIfStatement) {
+                    PsiIfStatement ifStmt = (PsiIfStatement) statement;
+                    if (containsThrowStatement(ifStmt)) {
+                        PsiExpression condition = ifStmt.getCondition();
+                        String conditionText = condition.getText();
+
+                        // 替换常量
+                        conditionText = replaceConstantsInCondition(conditionText, constants);
+
+                        // 反转条件来表示非异常的情况
+                        String negatedCondition = negateCondition(conditionText);
+                        conditionsMap.computeIfAbsent(literalValue, k -> new HashSet<>()).add(negatedCondition);
+                        conditions.add(negatedCondition);
+                        System.out.println("conditionText：" + negatedCondition);
                     }
                 }
             }
         }
+        return conditions;
     }
 
     private String negateCondition(String condition) {
@@ -181,5 +206,31 @@ public class SafeConditionAction extends AnAction {
 
         return condition;
     }
+
+    public static Map<String, String> parseConditions(List<String> conditions) {
+        Map<String, String> parsedConditions = new HashMap<>();
+        for (String condition : conditions) {
+            // 仅处理形如 "variable1 operator variable2" 的条件
+            String[] parts = condition.split("\\s+");
+            if (parts.length == 3) {
+                String leftVar = parts[0];
+                String operator = parts[1];
+                String rightVar = parts[2];
+
+                // 检查操作符是否是比较大小的操作符
+                if (Arrays.asList("<=", "<", ">=", ">").contains(operator)) {
+                    // 如果条件是两个变量之间的比较
+                    if (Character.isLetter(leftVar.charAt(0)) && Character.isLetter(rightVar.charAt(0))) {
+                        // 构建值字符串，这里确保值是包含操作符和比较值的完整字符串
+                        String conditionExpression = operator + " " + rightVar;
+                        parsedConditions.put(leftVar, conditionExpression);
+                        System.out.println("parsedConditions:" + leftVar + conditionExpression);
+                    }
+                }
+            }
+        }
+        return parsedConditions;
+    }
+
 
 }

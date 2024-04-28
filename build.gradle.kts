@@ -74,4 +74,8 @@ dependencies {
     implementation("org.gradle:gradle-tooling-api:7.3-20210825160000+0000")
     implementation("com.squareup.okhttp3:okhttp:4.9.0") // 添加HTTP客户端库的依赖。如果你打算使用OkHttp，添加这个依赖。请检查最新版本
 }
+java {
+    sourceCompatibility = JavaVersion.VERSION_16
+    targetCompatibility = JavaVersion.VERSION_16
+}
 

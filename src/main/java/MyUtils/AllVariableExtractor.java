@@ -37,6 +37,11 @@ public class AllVariableExtractor {
         // Extract boolean variables and literal constants
         List<Expression> expressions = methodDeclaration.findAll(Expression.class);
         for (Expression e : expressions) {
+            // 检查表达式是否为数组初始化的一部分
+            boolean isPartOfArrayInitialization = e.findAncestor(ArrayInitializerExpr.class).isPresent();
+            if (isPartOfArrayInitialization) {
+                continue;  // 跳过此元素的处理
+            }
             String type;
             String name = e.toString();
             if (!isArgumentOfAssertionMethod(e)) {
@@ -81,6 +86,7 @@ public class AllVariableExtractor {
                     ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
                     type = determineArrayType(arrayInitializer.getValues());
                     name = arrayToString(arrayInitializer.getValues());  // 用修改后的名字包括数组内容
+                    System.out.println("name" + name);
                     VariableInfo variableInfo = new VariableInfo(name, type);
                     variableInfo.setStartPosition(e.getBegin().get().line);
                     variableInfo.setEndPosition(e.getEnd().get().line);
@@ -94,12 +100,13 @@ public class AllVariableExtractor {
     private static String arrayToString(NodeList<Expression> values) {
         return values.stream()
                 .map(Expression::toString)
-                .collect(Collectors.joining(", ", "\\{", "\\}"));
+                .collect(Collectors.joining(", ", "{", "}"));
     }
 
+    // 根据数组中的第一个元素的类型，确定数组类型
     private static String determineArrayType(NodeList<Expression> values) {
         if (values.isEmpty()) {
-            return "Object[]";
+            return "Object[]";  // 空数组默认为 Object[]
         }
         Expression firstElement = values.get(0);
         if (firstElement.isIntegerLiteralExpr()) {
@@ -112,9 +119,13 @@ public class AllVariableExtractor {
             return "char[]";
         } else if (firstElement.isStringLiteralExpr()) {
             return "String[]";
+        } else if (firstElement.isLongLiteralExpr()) {
+            return "long[]";
+        } else {
+            return "Object[]";  // 如果无法匹配到以上任何一种类型，则默认为 Object[]
         }
-        return "Object[]";
     }
+
 
     /**
      * Checks if the given expression is an argument of an assertion method.

@@ -1,10 +1,12 @@
 package MyUtils;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
 import com.intellij.refactoring.introduceVariable.IntroduceVariableBase;
 import com.intellij.refactoring.introduceVariable.IntroduceVariableHandler;
@@ -88,10 +90,14 @@ public class ExtractVariable implements Runnable {
                 handler.invokeImpl(project, expr, null, finalChoice, editor);
                 // 保存文档
                 FileDocumentManager.getInstance().saveDocument(document);
+
             } catch (Exception e) {
                 e.printStackTrace();
             }
+
         });
+        // Additionally, you may want to sync the file system to reflect changes immediately
+        VirtualFileManager.getInstance().syncRefresh();
     }
 
     @Override
