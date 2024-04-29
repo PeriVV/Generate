@@ -19,6 +19,7 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.TextRange;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
@@ -105,18 +106,16 @@ public class AutoGenerationAction extends AnAction {
         PsiMethod method = PsiTreeUtil.getParentOfType(elementAt, PsiMethod.class, false);
 
         if (method != null) {
-            HashSet<PsiElement> visited = new HashSet<>();
-            exploreElement(method, visited); // Explore the method for enums
 
             // 解析集合大小
-            final Map<String, CombinedAction.CollectionState> collectionStates = new HashMap<>();
+            final Map<String, CollectionState> collectionStates = new HashMap<>();
             method.accept(new JavaRecursiveElementVisitor() {
                 @Override
                 public void visitLocalVariable(PsiLocalVariable variable) {
                     super.visitLocalVariable(variable);
                     // Assume every local variable could be a collection with initial size 0
                     int position = variable.getTextRange().getStartOffset();
-                    collectionStates.putIfAbsent(variable.getName(), new CombinedAction.CollectionState(variable.getName(), 0, position));
+                    collectionStates.putIfAbsent(variable.getName(), new CollectionState(variable.getName(), 0, position));
                 }
 
                 @Override
@@ -149,7 +148,7 @@ public class AutoGenerationAction extends AnAction {
                                                 int start = Integer.parseInt(arguments[0].getText());
                                                 int end = Integer.parseInt(arguments[1].getText());
                                                 int count = Math.abs(end - start) + 1;
-                                                collectionStates.put(newVariableName, new CombinedAction.CollectionState(newVariableName, count, position));
+                                                collectionStates.put(newVariableName, new CollectionState(newVariableName, count, position));
                                             } catch (NumberFormatException ex) {
                                                 ex.printStackTrace();
                                             }
@@ -160,7 +159,7 @@ public class AutoGenerationAction extends AnAction {
                         } else {
                             // 处理其他集合操作，如“add”、“remove”等，并在每次操作时输出
                             if (collectionStates.containsKey(sourceVariableName)) {
-                                CombinedAction.CollectionState state = collectionStates.get(sourceVariableName);
+                                CollectionState state = collectionStates.get(sourceVariableName);
                                 if (methodName != null && (methodName.contains("add") || methodName.contains("push"))) {
                                     state.size++;
                                 } else if (methodName != null && (methodName.contains("remove") || methodName.contains("pop") || methodName.contains("poll"))) {
@@ -169,7 +168,7 @@ public class AutoGenerationAction extends AnAction {
                                     state.size = 0;
                                 }
                                 // 更新集合状态
-                                collectionStates.put(sourceVariableName, new CombinedAction.CollectionState(sourceVariableName, state.size, position));
+                                collectionStates.put(sourceVariableName, new CollectionState(sourceVariableName, state.size, position));
                                 System.out.println("Variable '" + sourceVariableName + "' has " + state.size + " elements at position " + position);
                             }
                         }
@@ -178,8 +177,9 @@ public class AutoGenerationAction extends AnAction {
 
             });
 
+            System.out.println("collectionStates.size()" + collectionStates.size());
             Map<String, Set<String>> argumentValuesByType = new HashMap<>();
-            List<CombinedAction.MethodCallDetail> methodCalls1 = new ArrayList<>();
+            List<MethodCallDetail> methodCalls1 = new ArrayList<>();
 
             method.accept(new JavaRecursiveElementVisitor() {
                 @Override
@@ -204,7 +204,7 @@ public class AutoGenerationAction extends AnAction {
                             }
                         }
                         int position = expression.getTextRange().getStartOffset();
-                        methodCalls1.add(new CombinedAction.MethodCallDetail(methodName, relevantArguments, position));
+                        methodCalls1.add(new MethodCallDetail(methodName, relevantArguments, position));
                     }
                 }
             });
@@ -220,6 +220,7 @@ public class AutoGenerationAction extends AnAction {
         List<VariableInfo> inputVariables = AllVariableExtractor.extractInputVariables(methodBody);
         List<VariableInfo> outputVariables = AllVariableExtractor.extractOutputVariables(methodBody);
 
+
         // 修改方法名
         methodDeclaration.setName(methodDeclaration.getNameAsString() + "forGenerate");
         // 去掉assert语句
@@ -233,6 +234,7 @@ public class AutoGenerationAction extends AnAction {
         arrayTypes.put("boolean[]", "Boolean");
         arrayTypes.put("String[]", "String");
 
+
         // 先处理数组
         for (VariableInfo variable : inputVariables) {
             String variableType = variable.getType();
@@ -243,7 +245,7 @@ public class AutoGenerationAction extends AnAction {
                     String generatorFunction = arrayTypes.get(variableType);
                     // 正确转义数组类型名称以用于正则表达式
                     regexPattern = "new\\s+" + variableType.replace("[]", "\\[\\]") + "\\s*\\{.*?\\}";
-                    replaceValue = "DataGenerator.generate" + generatorFunction + "Array(1, 10, 1, 1000)";
+                    replaceValue = "DataGenerator.generate" + generatorFunction + "Array(1, 10, -10, 10)";
 
                     // 替换数组初始化
                     newMethodCode = newMethodCode.replaceAll(regexPattern, replaceValue);
@@ -264,10 +266,10 @@ public class AutoGenerationAction extends AnAction {
                 System.out.println(regexPattern);
                 switch (variableType) {
                     case "int":
-                        replaceValue = "DataGenerator.generateInteger(" + Integer.MIN_VALUE + ", " + Integer.MAX_VALUE + ")";
+                        replaceValue = "DataGenerator.generateInteger(-1 ,3)";
                         break;
                     case "double":
-                        replaceValue = "DataGenerator.generateDouble(" + Double.MIN_VALUE + ", " + Double.MAX_VALUE + ", 2)";
+                        replaceValue = "DataGenerator.generateDouble(-10, 10, 4)";
                         break;
                     case "String":
                         replaceValue = "DataGenerator.generateString(\"[a-z]{5,10}\")";
@@ -306,8 +308,7 @@ public class AutoGenerationAction extends AnAction {
             }
             newMethodCode += "\tDataGenerator.getOutput(" + variableName + ");\n}";
         }
-
-        newMethodCode += "\n\t@Test\n\tpublic void testData(){\n\t\ttry {\n\t\t\tint iteration = 1100000;\n\t\t\tDataGenerator.init();\n\t\t\tfor (int i=0;i<iteration;i++){\n\t\t\t\t//put your test method invocation here.\n\t\t\t\t" + methodDeclaration.getNameAsString() + "();\n\t\t\t\tDataGenerator.finishTestCase();\n\t\t\t}\n\t\t}catch (Exception exception){\n\t\t\texception.printStackTrace();\n\t\t}finally {\n\t\t\tDataGenerator.close();\n\t\t}\n\t}";
+        newMethodCode += "\n\t@Test\n\tpublic void testData(){\n\t\ttry {\n\t\t\tint iteration = 1100000;\n\t\t\tDataGenerator.init();\n\t\t\tfor (int i=0;i<iteration;i++){\n\t\t\t\t//put your test method invocation here.\n\t\t\t\t" + "\n\t\ttry {\n\t\t\t" + methodDeclaration.getNameAsString() + "();\n\t\t} catch (Exception exception) {\n\t\t\tDataGenerator.getOutput(\"ERROR\");\n\t\t\t}\n\t\t\t\tDataGenerator.finishTestCase();\n\t\t\t}\n\t\t}catch (Exception exception){\n\t\t\texception.printStackTrace();\n\t\t}finally {\n\t\t\tDataGenerator.close();\n\t\t}\n\t}";
 
         int endOffset = findMethodEndOffset(document, startOffset);
 
@@ -423,34 +424,59 @@ public class AutoGenerationAction extends AnAction {
     }
 
 
-    private void exploreElement(PsiElement element, Set<PsiElement> visited) {
+    private void exploreElement(PsiElement element, Set<PsiElement> visited, Document document, int startOffset, int endOffset) {
         if (element == null || visited.contains(element)) {
+            return;
+        }
+        // 检查元素是否完全位于选择范围内
+        TextRange elementRange = element.getTextRange();
+        if (elementRange.getEndOffset() < startOffset || elementRange.getStartOffset() > endOffset) {
             return;
         }
         visited.add(element);
 
         if (element instanceof PsiReferenceExpression) {
             PsiElement resolvedElement = ((PsiReferenceExpression) element).resolve();
-            if (resolvedElement instanceof PsiEnumConstant) {
-                reportEnumUsage((PsiEnumConstant) resolvedElement);
+            if (resolvedElement != null && resolvedElement instanceof PsiEnumConstant) {
+                TextRange resolvedRange = resolvedElement.getTextRange();
+                // 再次确认解析到的枚举常量确实位于选中的方法体内
+                if (resolvedRange.getStartOffset() >= startOffset && resolvedRange.getEndOffset() <= endOffset) {
+                    int textOffset = resolvedRange.getStartOffset();
+                    System.out.println("枚举的偏移量：" + textOffset);
+                    reportEnumUsage((PsiEnumConstant) resolvedElement, document, startOffset, endOffset);
+                }
             }
         }
 
         for (PsiElement child : element.getChildren()) {
-            exploreElement(child, visited);
+            exploreElement(child, visited, document, startOffset, endOffset);
         }
     }
 
-    private void reportEnumUsage(PsiEnumConstant enumConstant) {
+
+    private void reportEnumUsage(PsiEnumConstant enumConstant, Document document, int startOffset, int endOffset) {
         PsiClass enumClass = enumConstant.getContainingClass();
         if (enumClass != null) {
-            System.out.println("Enum value used: " + enumClass.getName() + "." + enumConstant.getName());
-            System.out.println("All enum values in " + enumClass.getName() + ":");
+            String enumClassName = enumClass.getName();
+            List<String> enumNames = new ArrayList<>();
             for (PsiField field : enumClass.getFields()) {
                 if (field instanceof PsiEnumConstant) {
+                    // Store the fully qualified name directly
+                    enumNames.add(enumClassName + "." + field.getName());
                     System.out.println(" - " + field.getName());
                 }
             }
+
+            String methodCall = "DataGenerator.generateEnumConstantFromList(" + enumNames + ")";
+            System.out.println("methodCall:" + methodCall);
+
+            Runnable runnable = () -> document.replaceString(startOffset, endOffset, methodCall);
+            System.out.println("替换！！");
+            WriteCommandAction.runWriteCommandAction(enumClass.getProject(), runnable);
+
+            // 以下都是输出
+            System.out.println("Enum value used: " + enumClass.getName() + "." + enumConstant.getName());
+            System.out.println("All enum values in " + enumClass.getName() + ":");
         }
     }
 
