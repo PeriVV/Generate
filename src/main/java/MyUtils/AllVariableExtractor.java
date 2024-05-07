@@ -24,6 +24,11 @@ public class AllVariableExtractor {
             "assertNotSame", "assertFalse", "assertTrue", "assertThat"
     ));
 
+    // 添加一个新的集合来存储不应提取的变量名称
+    private static final Set<String> EXCLUDED_VARIABLES = new HashSet<>(Arrays.asList(
+            "epsilon", "delta", "message"
+    ));
+
     /**
      * Extracts input variables from the given method signature.
      *
@@ -36,7 +41,12 @@ public class AllVariableExtractor {
 
         // Extract boolean variables and literal constants
         List<Expression> expressions = methodDeclaration.findAll(Expression.class);
+        Set<Expression> processedExpressions = new HashSet<>();  // 用于追踪已处理的表达式
+
         for (Expression e : expressions) {
+            if (processedExpressions.contains(e)) {
+                continue;  // 如果这个表达式已被处理，跳过
+            }
             // 检查表达式是否为数组初始化的一部分
             boolean isPartOfArrayInitialization = e.findAncestor(ArrayInitializerExpr.class).isPresent();
             if (isPartOfArrayInitialization) {
@@ -45,55 +55,66 @@ public class AllVariableExtractor {
             String type;
             String name = e.toString();
             if (!isArgumentOfAssertionMethod(e)) {
-                if (e.isBooleanLiteralExpr() || e.isLiteralExpr()) {
-                    if (e.isBooleanLiteralExpr()) {
-                        type = "boolean";
-                    } else if (e.isIntegerLiteralExpr()) {
-                        type = "int";
-                    } else if (e.isDoubleLiteralExpr()) {
-                        type = "double";
-                    } else if (e.isCharLiteralExpr()) {
-                        type = "char";
-                    } else if (e.isLongLiteralExpr()) {
-                        type = "long";
-                    } else if (e.isStringLiteralExpr()) {
-                        type = "String";
+                if (e instanceof UnaryExpr) {
+                    UnaryExpr unaryExpr = (UnaryExpr) e;
+                    Expression innerExpr = unaryExpr.getExpression();
+                    if (unaryExpr.getOperator() == UnaryExpr.Operator.MINUS && (innerExpr.isIntegerLiteralExpr() || innerExpr.isDoubleLiteralExpr())) {
+                        name = unaryExpr.toString(); // name will include the minus sign, e.g., "-1"
+                        System.out.println("负数：" + name);
+                        type = innerExpr.isIntegerLiteralExpr() ? "int" : "double"; // Simplified type detection
+                        processedExpressions.add(innerExpr);  // 标记内部表达式为已处理
                     } else {
-                        type = "Object";
+                        continue; // Skip non-literal expressions or non-negative sign cases
                     }
-
-                    StringBuilder callContext = new StringBuilder(); // 使用StringBuilder收集调用上下文信息
-
-                    Node currentNode = e;
-                    while (currentNode != null) {
-                        if (currentNode instanceof MethodCallExpr) {
-                            MethodCallExpr methodCall = (MethodCallExpr) currentNode;
-                            callContext.append("Method call: ").append(methodCall.getNameAsString());
-                            break; // Found the closest method call context
-                        } else if (currentNode instanceof ObjectCreationExpr) {
-                            ObjectCreationExpr constructorCall = (ObjectCreationExpr) currentNode;
-                            callContext.append("Constructor call: ").append(constructorCall.getTypeAsString());
-                            break; // Found the closest constructor call context
-                        }
-                        currentNode = currentNode.getParentNode().orElse(null);
-                    }
-
-                    VariableInfo variableInfo = new VariableInfo(name, type);
-                    variableInfo.setStartPosition(e.getBegin().get().line);
-                    variableInfo.setEndPosition(e.getEnd().get().line);
-                    variableInfoList.add(variableInfo);
-                } else if (e instanceof ArrayInitializerExpr) {
-                    ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
-                    type = determineArrayType(arrayInitializer.getValues());
-                    name = arrayToString(arrayInitializer.getValues());  // 用修改后的名字包括数组内容
-                    System.out.println("name" + name);
-                    VariableInfo variableInfo = new VariableInfo(name, type);
-                    variableInfo.setStartPosition(e.getBegin().get().line);
-                    variableInfo.setEndPosition(e.getEnd().get().line);
-                    variableInfoList.add(variableInfo);
+                } else if (e.isBooleanLiteralExpr()) {
+                    type = "boolean";
+                } else if (e.isIntegerLiteralExpr()) {
+                    type = "int";
+                } else if (e.isDoubleLiteralExpr()) {
+                    type = "double";
+                } else if (e.isCharLiteralExpr()) {
+                    type = "char";
+                } else if (e.isLongLiteralExpr()) {
+                    type = "long";
+                } else if (e.isStringLiteralExpr()) {
+                    type = "String";
+                } else {
+                    continue;
                 }
+
+                StringBuilder callContext = new StringBuilder(); // 使用StringBuilder收集调用上下文信息
+
+                Node currentNode = e;
+                while (currentNode != null) {
+                    if (currentNode instanceof MethodCallExpr) {
+                        MethodCallExpr methodCall = (MethodCallExpr) currentNode;
+                        callContext.append("Method call: ").append(methodCall.getNameAsString());
+                        break; // Found the closest method call context
+                    } else if (currentNode instanceof ObjectCreationExpr) {
+                        ObjectCreationExpr constructorCall = (ObjectCreationExpr) currentNode;
+                        callContext.append("Constructor call: ").append(constructorCall.getTypeAsString());
+                        break; // Found the closest constructor call context
+                    }
+                    currentNode = currentNode.getParentNode().orElse(null);
+                }
+
+                VariableInfo variableInfo = new VariableInfo(name, type);
+                System.out.println("name:" + name + ", type:" + type);
+                variableInfo.setStartPosition(e.getBegin().get().line);
+                variableInfo.setEndPosition(e.getEnd().get().line);
+                variableInfoList.add(variableInfo);
+            } else if (e instanceof ArrayInitializerExpr) {
+                ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
+                type = determineArrayType(arrayInitializer.getValues());
+                name = arrayToString(arrayInitializer.getValues());  // 用修改后的名字包括数组内容
+                System.out.println("识别到的数组：" + name);
+                VariableInfo variableInfo = new VariableInfo(name, type);
+                variableInfo.setStartPosition(e.getBegin().get().line);
+                variableInfo.setEndPosition(e.getEnd().get().line);
+                variableInfoList.add(variableInfo);
             }
         }
+
         return variableInfoList;
     }
 
@@ -174,12 +195,12 @@ public class AllVariableExtractor {
 
                         // Exclude constants based on convention or predefined list
                         // Here, assuming all constants are in uppercase
-                        if (variableName.equals(variableName.toUpperCase())) {
+                        if (variableName.equals(variableName.toUpperCase()) || EXCLUDED_VARIABLES.contains(variableName)) {
                             continue; // Skip if it's a constant
                         }
 
                         // Proceed to handle non-constant variables
-                        System.out.println(variableName);
+                        System.out.println("提取输出：" + variableName);
                         String variableType = getTypeOfVariable(methodDeclaration, variableName);
 
                         VariableInfo outputVariable = new VariableInfo(variableName, variableType);

@@ -30,6 +30,8 @@ import java.io.*;
 import java.util.*;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class AutoGenerationAction extends AnAction {
 
@@ -68,6 +70,7 @@ public class AutoGenerationAction extends AnAction {
         final Editor editor = e.getData(CommonDataKeys.EDITOR);
         Project project = e.getProject();
         assert editor != null;
+        assert project != null;
 
         String selectedText = editor.getSelectionModel().getSelectedText();
         if (selectedText == null || selectedText.isEmpty()) {
@@ -79,9 +82,8 @@ public class AutoGenerationAction extends AnAction {
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
-        if (methodBody == null) {
-            return;
-        }
+        if (methodBody == null) return;
+
         MethodDeclaration methodDeclaration = StaticJavaParser.parseMethodDeclaration(methodBody);
 
         String absoluteJavaFilePath = getAbsoluteFilePath(editor);
@@ -95,15 +97,17 @@ public class AutoGenerationAction extends AnAction {
         // 这一步把断言中以表达式为输出的actual output提取为变量
         extractActualOutputAsVariables(project, absoluteJavaFilePath, document, methodCalls, startOffset);
 
-
         /*开始Combine*/
-        final PsiFile psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.getDocument());
 
+        PsiFile psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.getDocument());
         if (psiFile == null) return;
 
         int offset = editor.getSelectionModel().getSelectionStart();
         PsiElement elementAt = psiFile.findElementAt(offset);
         PsiMethod method = PsiTreeUtil.getParentOfType(elementAt, PsiMethod.class, false);
+
+        PsiDocumentManager.getInstance(project).commitAllDocuments();
+
 
         if (method != null) {
 
@@ -177,7 +181,7 @@ public class AutoGenerationAction extends AnAction {
 
             });
 
-            System.out.println("collectionStates.size()" + collectionStates.size());
+            System.out.println("collectionStates.size(): " + collectionStates.size());
             Map<String, Set<String>> argumentValuesByType = new HashMap<>();
             List<MethodCallDetail> methodCalls1 = new ArrayList<>();
 
@@ -220,7 +224,6 @@ public class AutoGenerationAction extends AnAction {
         List<VariableInfo> inputVariables = AllVariableExtractor.extractInputVariables(methodBody);
         List<VariableInfo> outputVariables = AllVariableExtractor.extractOutputVariables(methodBody);
 
-
         // 修改方法名
         methodDeclaration.setName(methodDeclaration.getNameAsString() + "forGenerate");
         // 去掉assert语句
@@ -236,7 +239,8 @@ public class AutoGenerationAction extends AnAction {
 
 
         // 先处理数组
-        for (VariableInfo variable : inputVariables) {
+        for (
+                VariableInfo variable : inputVariables) {
             String variableType = variable.getType();
             String regexPattern = "";  // 初始化正则表达式字符串
 
@@ -245,7 +249,7 @@ public class AutoGenerationAction extends AnAction {
                     String generatorFunction = arrayTypes.get(variableType);
                     // 正确转义数组类型名称以用于正则表达式
                     regexPattern = "new\\s+" + variableType.replace("[]", "\\[\\]") + "\\s*\\{.*?\\}";
-                    replaceValue = "DataGenerator.generate" + generatorFunction + "Array(1, 10, -10, 10)";
+                    replaceValue = "DataGenerator.generate" + generatorFunction + "Array(0, 10, 0, 3)";
 
                     // 替换数组初始化
                     newMethodCode = newMethodCode.replaceAll(regexPattern, replaceValue);
@@ -262,14 +266,14 @@ public class AutoGenerationAction extends AnAction {
             if (!variableType.endsWith("[]")) {
                 // 针对基本类型的处理，确保替换的是独立的变量或字面量，而非方法的一部分
                 System.out.println("非数组的变量：" + variableName);
-                regexPattern = "(?<!\\.)\\b" + Pattern.quote(variableName) + "\\b(?![\\w.])";
+                regexPattern = "(?<!\\w|\\.)\\Q" + variableName + "\\E(?!\\w|\\.)";
                 System.out.println(regexPattern);
                 switch (variableType) {
                     case "int":
-                        replaceValue = "DataGenerator.generateInteger(-1 ,3)";
+                        replaceValue = "DataGenerator.generateInteger(" + Integer.MIN_VALUE + "," + Integer.MAX_VALUE + ")";
                         break;
                     case "double":
-                        replaceValue = "DataGenerator.generateDouble(-10, 10, 4)";
+                        replaceValue = "DataGenerator.generateDouble(" + Double.MIN_VALUE + "," + Double.MAX_VALUE + ", 2)";
                         break;
                     case "String":
                         replaceValue = "DataGenerator.generateString(\"[a-z]{5,10}\")";
@@ -308,18 +312,83 @@ public class AutoGenerationAction extends AnAction {
             }
             newMethodCode += "\tDataGenerator.getOutput(" + variableName + ");\n}";
         }
+
         newMethodCode += "\n\t@Test\n\tpublic void testData(){\n\t\ttry {\n\t\t\tint iteration = 1100000;\n\t\t\tDataGenerator.init();\n\t\t\tfor (int i=0;i<iteration;i++){\n\t\t\t\t//put your test method invocation here.\n\t\t\t\t" + "\n\t\ttry {\n\t\t\t" + methodDeclaration.getNameAsString() + "();\n\t\t} catch (Exception exception) {\n\t\t\tDataGenerator.getOutput(\"ERROR\");\n\t\t\t}\n\t\t\t\tDataGenerator.finishTestCase();\n\t\t\t}\n\t\t}catch (Exception exception){\n\t\t\texception.printStackTrace();\n\t\t}finally {\n\t\t\tDataGenerator.close();\n\t\t}\n\t}";
 
-        int endOffset = findMethodEndOffset(document, startOffset);
+//        int endOffset = findMethodEndOffset(document, startOffset);
+//
+//        if (endOffset != -1) {
+//            String insertText = "\n" + newMethodCode + "\n";
+//            Runnable runnable = () -> editor.getDocument().insertString(endOffset, insertText);
+//            WriteCommandAction.runWriteCommandAction(project, runnable);
+//            // 调用生成的测试方法
+//            assert project != null;
+//            runCurrentProject(project);
+//        }
+        // 插入新代码
 
-        if (endOffset != -1) {
-            String insertText = "\n" + newMethodCode + "\n";
-            Runnable runnable = () -> editor.getDocument().insertString(endOffset, insertText);
-            WriteCommandAction.runWriteCommandAction(project, runnable);
-            // 调用生成的测试方法
-            assert project != null;
-            runCurrentProject(project);
+        String finalNewMethodCode = newMethodCode;
+        WriteCommandAction.runWriteCommandAction(project, () -> {
+            int endOffset = findMethodEndOffset(document, startOffset);
+            if (endOffset != -1) {
+                String insertText = "\n" + finalNewMethodCode + "\n";
+                document.insertString(endOffset, insertText);
+                PsiDocumentManager.getInstance(project).commitDocument(document);
+            }
+        });
+
+        PsiDocumentManager.getInstance(project).commitDocument(document);
+        psiFile = PsiDocumentManager.getInstance(project).getPsiFile(document);
+
+        // 确定新代码的偏移量
+        int newCodeStartOffset = findMethodEndOffset(document, startOffset) + 1;
+        int newCodeEndOffset = newCodeStartOffset + newMethodCode.length();
+
+        if (psiFile != null) {
+            PsiElement newCodeElement = PsiTreeUtil.findElementOfClassAtRange(psiFile, newCodeStartOffset, newCodeEndOffset, PsiElement.class);
+            Set<TextReplacement> replacements = new HashSet<>();
+
+            if (newCodeElement != null) {
+                newCodeElement.accept(new JavaRecursiveElementVisitor() {
+                    @Override
+                    public void visitElement(PsiElement element) {
+                        super.visitElement(element);
+                        if (element instanceof PsiJavaCodeReferenceElement) {
+                            PsiElement resolved = ((PsiJavaCodeReferenceElement) element).resolve();
+                            if (resolved instanceof PsiEnumConstant) {
+                                PsiEnumConstant enumConstant = (PsiEnumConstant) resolved;
+                                PsiClass enumClass = enumConstant.getContainingClass();
+                                if (enumClass != null && enumClass.isEnum()) {
+                                    String enumClassName = enumClass.getName();  // 获取枚举类的名字
+                                    List<String> enumNames = Stream.of(enumClass.getFields())
+                                            .filter(f -> f instanceof PsiEnumConstant)
+                                            .map(PsiField::getName)
+                                            .map(name -> "\"" + name + "\"")
+                                            .collect(Collectors.toList());
+                                    String replacementText = enumClassName + ".valueOf(DataGenerator.generateEnumConstantFromList(Arrays.asList(" + String.join(", ", enumNames) + ")))";
+                                    replacements.add(new TextReplacement(element.getTextRange(), replacementText));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // 替换文本，从后往前以避免偏移量问题
+            List<TextReplacement> sortedReplacements = new ArrayList<>(replacements);
+            sortedReplacements.sort(Comparator.comparingInt(a -> -a.getRange().getStartOffset()));
+
+            WriteCommandAction.runWriteCommandAction(project, () -> {
+                for (TextReplacement replacement : sortedReplacements) {
+                    document.replaceString(replacement.getRange().getStartOffset(), replacement.getRange().getEndOffset(), replacement.getReplacementText());
+                }
+                // 提交更改并刷新
+                PsiDocumentManager.getInstance(project).commitDocument(document);
+                VirtualFileManager.getInstance().syncRefresh();
+            });
         }
+        // 调用生成的测试方法
+        runCurrentProject(project);
     }
 
     private void extractActualOutputAsVariables(Project project, String absoluteJavaFilePath, Document document, List<MethodCallExpr> methodCalls, int startOffset) {
@@ -333,23 +402,23 @@ public class AutoGenerationAction extends AnAction {
                     List<Expression> arguments = methodCall.getArguments();
                     for (Expression argument : arguments) {
                         // 判断表达式类型
-                        if (argument instanceof MethodCallExpr) {
-                            String expression = argument.toString();
 
-                            // 然后将 startOffset 传递给 getOffset 方法
-                            int offset = getOffset(absoluteJavaFilePath, expression, startOffset);
-                            if (offset != -1) {  // 确保找到了有效的偏移量
-                                // 根据光标位置替换
-                                idea_parseEachJavaFileOfSpecificCommit(document, project, absoluteJavaFilePath, offset, expression);
-                            } else {
-                            }
+                        String expression = argument.toString();
+                        // 然后将 startOffset 传递给 getOffset 方法
+                        int offset = getOffset(absoluteJavaFilePath, expression, startOffset);
+                        if (offset != -1) {  // 确保找到了有效的偏移量
+                            // 根据光标位置替换
+                            idea_parseEachJavaFileOfSpecificCommit(document, project, absoluteJavaFilePath, offset, expression);
+                        } else {
+
                         }
                     }
                 }
             }
-
             writeToFile(absoluteJavaFilePath, document, document.getText());
 
+            // 提交更改并刷新
+            PsiDocumentManager.getInstance(project).commitDocument(document);
             // 保存文档
             FileDocumentManager.getInstance().saveDocument(document);
             // 同步文件系统，以立即呈现更改的内容
@@ -442,7 +511,6 @@ public class AutoGenerationAction extends AnAction {
                 // 再次确认解析到的枚举常量确实位于选中的方法体内
                 if (resolvedRange.getStartOffset() >= startOffset && resolvedRange.getEndOffset() <= endOffset) {
                     int textOffset = resolvedRange.getStartOffset();
-                    System.out.println("枚举的偏移量：" + textOffset);
                     reportEnumUsage((PsiEnumConstant) resolvedElement, document, startOffset, endOffset);
                 }
             }
@@ -468,10 +536,8 @@ public class AutoGenerationAction extends AnAction {
             }
 
             String methodCall = "DataGenerator.generateEnumConstantFromList(" + enumNames + ")";
-            System.out.println("methodCall:" + methodCall);
 
             Runnable runnable = () -> document.replaceString(startOffset, endOffset, methodCall);
-            System.out.println("替换！！");
             WriteCommandAction.runWriteCommandAction(enumClass.getProject(), runnable);
 
             // 以下都是输出
