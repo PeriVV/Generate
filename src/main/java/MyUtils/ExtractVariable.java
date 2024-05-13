@@ -88,16 +88,13 @@ public class ExtractVariable implements Runnable {
         WriteCommandAction.runWriteCommandAction(project, () -> {
             try {
                 handler.invokeImpl(project, expr, null, finalChoice, editor);
-                // 保存文档
+                // 保存文档，不可删除这行代码
                 FileDocumentManager.getInstance().saveDocument(document);
-
             } catch (Exception e) {
                 e.printStackTrace();
             }
 
         });
-        // Additionally, you may want to sync the file system to reflect changes immediately
-        VirtualFileManager.getInstance().syncRefresh();
     }
 
     @Override

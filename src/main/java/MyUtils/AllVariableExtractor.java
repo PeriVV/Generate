@@ -58,10 +58,11 @@ public class AllVariableExtractor {
                 if (e instanceof UnaryExpr) {
                     UnaryExpr unaryExpr = (UnaryExpr) e;
                     Expression innerExpr = unaryExpr.getExpression();
-                    if (unaryExpr.getOperator() == UnaryExpr.Operator.MINUS && (innerExpr.isIntegerLiteralExpr() || innerExpr.isDoubleLiteralExpr())) {
+                    if (unaryExpr.getOperator() == UnaryExpr.Operator.MINUS &&
+                            (innerExpr.isIntegerLiteralExpr() || innerExpr.isDoubleLiteralExpr())) {
                         name = unaryExpr.toString(); // name will include the minus sign, e.g., "-1"
                         System.out.println("负数：" + name);
-                        type = innerExpr.isIntegerLiteralExpr() ? "int" : "double"; // Simplified type detection
+                        type = innerExpr.isIntegerLiteralExpr() ? "int" : "double";
                         processedExpressions.add(innerExpr);  // 标记内部表达式为已处理
                     } else {
                         continue; // Skip non-literal expressions or non-negative sign cases

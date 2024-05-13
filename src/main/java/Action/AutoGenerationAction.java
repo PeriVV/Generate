@@ -1,10 +1,12 @@
 package Action;
 
 import MyUtils.*;
+import Service.ChatGPTRequester;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.*;
 import com.github.javaparser.ast.stmt.BlockStmt;
+import com.google.gson.Gson;
 import com.intellij.execution.ExecutionManager;
 import com.intellij.execution.RunManager;
 import com.intellij.execution.RunnerAndConfigurationSettings;
@@ -19,17 +21,16 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.util.TextRange;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
 import com.intellij.psi.util.PsiTreeUtil;
+import org.json.JSONObject;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.*;
 import java.util.*;
 import java.util.List;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -97,8 +98,10 @@ public class AutoGenerationAction extends AnAction {
         // 这一步把断言中以表达式为输出的actual output提取为变量
         extractActualOutputAsVariables(project, absoluteJavaFilePath, document, methodCalls, startOffset);
 
-        /*开始Combine*/
+        // 在进行变量提取或进一步操作之前，提交所有文档更改
+        PsiDocumentManager.getInstance(project).commitDocument(document);
 
+        /*开始Combine*/
         PsiFile psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.getDocument());
         if (psiFile == null) return;
 
@@ -108,11 +111,10 @@ public class AutoGenerationAction extends AnAction {
 
         PsiDocumentManager.getInstance(project).commitAllDocuments();
 
-
+        // 解析集合大小
+        final Map<String, CollectionState> collectionStates = new HashMap<>();
         if (method != null) {
 
-            // 解析集合大小
-            final Map<String, CollectionState> collectionStates = new HashMap<>();
             method.accept(new JavaRecursiveElementVisitor() {
                 @Override
                 public void visitLocalVariable(PsiLocalVariable variable) {
@@ -134,50 +136,50 @@ public class AutoGenerationAction extends AnAction {
                         String sourceVariableName = qualifierExpression.getText();
                         int position = expression.getTextRange().getStartOffset();
 
-                        // 针对“copy”或“Copy”方法的特殊处理
-                        if (methodName != null && (methodName.contains("copy") || methodName.contains("Copy"))) {
-                            PsiElement parent = expression.getParent();
-
-                            while (!(parent instanceof PsiDeclarationStatement) && parent != null) {
-                                parent = parent.getParent();
+//                        // 针对“copy”或“Copy”方法的特殊处理
+//                        if (methodName != null && (methodName.contains("copy") || methodName.contains("Copy"))) {
+//                            PsiElement parent = expression.getParent();
+//
+//                            while (!(parent instanceof PsiDeclarationStatement) && parent != null) {
+//                                parent = parent.getParent();
+//                            }
+//                            if (parent != null) {
+//                                for (PsiElement element : ((PsiDeclarationStatement) parent).getDeclaredElements()) {
+//                                    if (element instanceof PsiLocalVariable) {
+//                                        PsiLocalVariable localVariable = (PsiLocalVariable) element;
+//                                        String newVariableName = localVariable.getName(); // 新集合的变量名
+//                                        PsiExpression[] arguments = expression.getArgumentList().getExpressions();
+//                                        if (arguments.length >= 2) {
+//                                            try {
+//                                                int start = Integer.parseInt(arguments[0].getText());
+//                                                int end = Integer.parseInt(arguments[1].getText());
+//                                                int count = Math.abs(end - start) + 1;
+//                                                collectionStates.put(newVariableName, new CollectionState(newVariableName, count, position));
+//                                            } catch (NumberFormatException ex) {
+//                                                ex.printStackTrace();
+//                                            }
+//                                        }
+//                                    }
+//                                }
+//                            }
+//                        } else {
+                        // 处理其他集合操作，如“add”、“remove”等，并在每次操作时输出
+                        if (collectionStates.containsKey(sourceVariableName)) {
+                            CollectionState state = collectionStates.get(sourceVariableName);
+                            if (methodName != null && (methodName.contains("add") || methodName.contains("push"))) {
+                                state.size++;
+                            } else if (methodName != null && (methodName.contains("remove") || methodName.contains("pop") || methodName.contains("poll"))) {
+                                state.size = Math.max(0, state.size - 1);
+                            } else if ("clear".equals(methodName)) {
+                                state.size = 0;
                             }
-                            if (parent != null) {
-                                for (PsiElement element : ((PsiDeclarationStatement) parent).getDeclaredElements()) {
-                                    if (element instanceof PsiLocalVariable) {
-                                        PsiLocalVariable localVariable = (PsiLocalVariable) element;
-                                        String newVariableName = localVariable.getName(); // 新集合的变量名
-                                        PsiExpression[] arguments = expression.getArgumentList().getExpressions();
-                                        if (arguments.length >= 2) {
-                                            try {
-                                                int start = Integer.parseInt(arguments[0].getText());
-                                                int end = Integer.parseInt(arguments[1].getText());
-                                                int count = Math.abs(end - start) + 1;
-                                                collectionStates.put(newVariableName, new CollectionState(newVariableName, count, position));
-                                            } catch (NumberFormatException ex) {
-                                                ex.printStackTrace();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // 处理其他集合操作，如“add”、“remove”等，并在每次操作时输出
-                            if (collectionStates.containsKey(sourceVariableName)) {
-                                CollectionState state = collectionStates.get(sourceVariableName);
-                                if (methodName != null && (methodName.contains("add") || methodName.contains("push"))) {
-                                    state.size++;
-                                } else if (methodName != null && (methodName.contains("remove") || methodName.contains("pop") || methodName.contains("poll"))) {
-                                    state.size = Math.max(0, state.size - 1);
-                                } else if ("clear".equals(methodName)) {
-                                    state.size = 0;
-                                }
-                                // 更新集合状态
-                                collectionStates.put(sourceVariableName, new CollectionState(sourceVariableName, state.size, position));
-                                System.out.println("Variable '" + sourceVariableName + "' has " + state.size + " elements at position " + position);
-                            }
+                            // 更新集合状态
+                            collectionStates.put(sourceVariableName, new CollectionState(sourceVariableName, state.size, position));
+                            System.out.println("Variable '" + sourceVariableName + "' has " + state.size + " elements at position " + position);
                         }
                     }
                 }
+//                }
 
             });
 
@@ -217,7 +219,12 @@ public class AutoGenerationAction extends AnAction {
             methodCalls1.forEach(call ->
                     System.out.println("Method Call: " + call.methodName + ", Arguments: " + String.join(", ", call.arguments) + ", Position: " + call.position));
         }
+
+
         /*结束Combine*/
+
+        // 在进行变量提取或进一步操作之前，提交所有文档更改
+        PsiDocumentManager.getInstance(project).commitDocument(document);
 
 
         // 从选择的方法中提取输入和输出
@@ -255,6 +262,8 @@ public class AutoGenerationAction extends AnAction {
                     newMethodCode = newMethodCode.replaceAll(regexPattern, replaceValue);
                 }
             }
+            // 在进行变量提取或进一步操作之前，提交所有文档更改
+            PsiDocumentManager.getInstance(project).commitDocument(document);
         }
 
         // 再处理非数组基本类型
@@ -265,46 +274,50 @@ public class AutoGenerationAction extends AnAction {
 
             if (!variableType.endsWith("[]")) {
                 // 针对基本类型的处理，确保替换的是独立的变量或字面量，而非方法的一部分
-                System.out.println("非数组的变量：" + variableName);
+//                System.out.println("非数组的变量：" + variableName);
                 regexPattern = "(?<!\\w|\\.)\\Q" + variableName + "\\E(?!\\w|\\.)";
-                System.out.println(regexPattern);
-                switch (variableType) {
-                    case "int":
-                        replaceValue = "DataGenerator.generateInteger(" + Integer.MIN_VALUE + "," + Integer.MAX_VALUE + ")";
-                        break;
-                    case "double":
-                        replaceValue = "DataGenerator.generateDouble(" + Double.MIN_VALUE + "," + Double.MAX_VALUE + ", 2)";
-                        break;
-                    case "String":
-                        replaceValue = "DataGenerator.generateString(\"[a-z]{5,10}\")";
-                        break;
-                    case "byte":
-                        replaceValue = "DataGenerator.generateByte(" + Byte.MIN_VALUE + ", " + Byte.MAX_VALUE + ")";
-                        break;
-                    case "short":
-                        replaceValue = "DataGenerator.generateShort(" + Short.MIN_VALUE + ", " + Short.MAX_VALUE + ")";
-                        break;
-                    case "long":
-                        replaceValue = "DataGenerator.generateLong(" + Long.MIN_VALUE + ", " + Long.MAX_VALUE + ")";
-                        break;
-                    case "float":
-                        replaceValue = "DataGenerator.generateFloat(" + Float.MIN_VALUE + ", " + Float.MAX_VALUE + ", 2)";
-                        break;
-                    case "char":
-                        replaceValue = "DataGenerator.generateChar()";
-                        break;
-                    case "boolean":
-                        replaceValue = "DataGenerator.generateBoolean()";
-                        break;
-                }
 
-                if (replaceValue != null && !regexPattern.isEmpty()) {
-                    newMethodCode = newMethodCode.replaceAll(regexPattern, replaceValue);
+                if (variableType.equals("int") && isLiteralUsedAsIndex(variableName, method)) {
+                    // 如果用作索引，使用特定的数据生成逻辑
+                    replaceValue = "DataGenerator.generateInteger(0, " + (collectionStates.size() - 1) + ")";
+                } else if (variableType.equals("int") && isLiteralUsedAsYear(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-3, 2024)";
+                } else if (variableType.equals("int") && isLiteralUsedAsMonth(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-1, 12)";
+                } else if (variableType.equals("int") && isLiteralUsedAsDay(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-1, 31)";
+                } else if (variableType.equals("int") && isLiteralUsedAsHour(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-1, 23)";
+                } else if (variableType.equals("int") && isLiteralUsedAsMinute(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-1, 59)";
+                } else if (variableType.equals("int") && isLiteralUsedAsSecond(variableName, method)) {
+                    replaceValue = "DataGenerator.generateInteger(-1, 59)";
+                } else {
+                    replaceValue = switch (variableType) {
+                        case "int" ->
+                                "DataGenerator.generateInteger(" + Integer.MIN_VALUE + "," + Integer.MAX_VALUE + ")";
+                        case "double" ->
+                                "DataGenerator.generateDouble(" + Double.MIN_VALUE + "," + Double.MAX_VALUE + ", 2)";
+                        case "String" -> "DataGenerator.generateString([a-zA-Z0-9]{0,5})";
+                        case "byte" -> "DataGenerator.generateByte(" + Byte.MIN_VALUE + ", " + Byte.MAX_VALUE + ")";
+                        case "short" -> "DataGenerator.generateShort(" + Short.MIN_VALUE + ", " + Short.MAX_VALUE + ")";
+                        case "long" ->
+                                "DataGenerator.generateLong(" + Integer.MIN_VALUE + ", " + Integer.MAX_VALUE + ")";
+                        case "float" ->
+                                "DataGenerator.generateFloat(" + Float.MIN_VALUE + ", " + Float.MAX_VALUE + ", 2)";
+                        case "char" -> "DataGenerator.generateChar()";
+                        case "boolean" -> "DataGenerator.generateBoolean()";
+                        default -> replaceValue;
+                    };
                 }
+            }
+            if (replaceValue != null && !regexPattern.isEmpty()) {
+                newMethodCode = newMethodCode.replaceAll(regexPattern, replaceValue);
             }
         }
 
-        for (VariableInfo variable : outputVariables) {
+        for (
+                VariableInfo variable : outputVariables) {
             String variableName = variable.getName();
             int lastIndex = newMethodCode.lastIndexOf("}");
             if (lastIndex != -1) {
@@ -315,29 +328,18 @@ public class AutoGenerationAction extends AnAction {
 
         newMethodCode += "\n\t@Test\n\tpublic void testData(){\n\t\ttry {\n\t\t\tint iteration = 1100000;\n\t\t\tDataGenerator.init();\n\t\t\tfor (int i=0;i<iteration;i++){\n\t\t\t\t//put your test method invocation here.\n\t\t\t\t" + "\n\t\ttry {\n\t\t\t" + methodDeclaration.getNameAsString() + "();\n\t\t} catch (Exception exception) {\n\t\t\tDataGenerator.getOutput(\"ERROR\");\n\t\t\t}\n\t\t\t\tDataGenerator.finishTestCase();\n\t\t\t}\n\t\t}catch (Exception exception){\n\t\t\texception.printStackTrace();\n\t\t}finally {\n\t\t\tDataGenerator.close();\n\t\t}\n\t}";
 
-//        int endOffset = findMethodEndOffset(document, startOffset);
-//
-//        if (endOffset != -1) {
-//            String insertText = "\n" + newMethodCode + "\n";
-//            Runnable runnable = () -> editor.getDocument().insertString(endOffset, insertText);
-//            WriteCommandAction.runWriteCommandAction(project, runnable);
-//            // 调用生成的测试方法
-//            assert project != null;
-//            runCurrentProject(project);
-//        }
-        // 插入新代码
 
         String finalNewMethodCode = newMethodCode;
-        WriteCommandAction.runWriteCommandAction(project, () -> {
+        WriteCommandAction.runWriteCommandAction(project, () ->
+
+        {
             int endOffset = findMethodEndOffset(document, startOffset);
             if (endOffset != -1) {
                 String insertText = "\n" + finalNewMethodCode + "\n";
                 document.insertString(endOffset, insertText);
-                PsiDocumentManager.getInstance(project).commitDocument(document);
             }
         });
 
-        PsiDocumentManager.getInstance(project).commitDocument(document);
         psiFile = PsiDocumentManager.getInstance(project).getPsiFile(document);
 
         // 确定新代码的偏移量
@@ -387,43 +389,141 @@ public class AutoGenerationAction extends AnAction {
                 VirtualFileManager.getInstance().syncRefresh();
             });
         }
+
         // 调用生成的测试方法
         runCurrentProject(project);
+
+    }
+
+    private boolean isLiteralUsedAsIndex(String variableName, PsiMethod method) {
+        final boolean[] isIndexUsed = {false};
+        method.accept(new JavaRecursiveElementVisitor() {
+            @Override
+            public void visitMethodCallExpression(PsiMethodCallExpression expression) {
+                super.visitMethodCallExpression(expression);
+                PsiExpression[] arguments = expression.getArgumentList().getExpressions();
+                PsiMethod calledMethod = expression.resolveMethod();
+                if (calledMethod != null) {
+                    PsiParameter[] parameters = calledMethod.getParameterList().getParameters();
+                    for (int i = 0; i < parameters.length; i++) {
+                        if (i < arguments.length) {
+                            PsiExpression arg = arguments[i];
+                            if (arg instanceof PsiLiteralExpression && arg.getText().equals(variableName)) {
+                                PsiParameter param = parameters[i];
+                                String lowerCase = param.getName().toLowerCase();
+//                                System.out.println("形参名称是：" + lowerCase);
+                                if (lowerCase.contains("index") || lowerCase.contains("start") || lowerCase.contains("end")) {
+//                                    System.out.println("有数组索引啦！");
+                                    isIndexUsed[0] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        return isIndexUsed[0];
+    }
+
+    // 通用的日期单位检测函数
+    private boolean isLiteralUsedForDateUnit(String variableName, PsiMethod method, String[] keywords) {
+        final boolean[] isUnitUsed = {false};
+
+        method.accept(new JavaRecursiveElementVisitor() {
+            @Override
+            public void visitMethodCallExpression(PsiMethodCallExpression expression) {
+                super.visitMethodCallExpression(expression);
+                inspectArguments(expression.getArgumentList().getExpressions(), expression.resolveMethod());
+            }
+
+            @Override
+            public void visitNewExpression(PsiNewExpression expression) {
+                super.visitNewExpression(expression);
+                inspectArguments(expression.getArgumentList().getExpressions(), expression.resolveConstructor());
+            }
+
+            private void inspectArguments(PsiExpression[] arguments, PsiMethod method) {
+                if (method != null) {
+                    PsiParameter[] parameters = method.getParameterList().getParameters();
+                    for (int i = 0; i < parameters.length; i++) {
+                        if (i < arguments.length) {
+                            PsiExpression arg = arguments[i];
+                            PsiParameter param = parameters[i];
+                            String paramNameLowerCase = param.getName().toLowerCase();
+
+                            // 检查形参名称是否包含目标关键字
+                            boolean matchesKeyword = false;
+                            for (String keyword : keywords) {
+                                if (paramNameLowerCase.contains(keyword.toLowerCase())) {
+                                    matchesKeyword = true;
+//                                    System.out.println("形参 '" + param.getName() + "' 包含 '" + keyword + "'");
+                                    break;
+                                }
+                            }
+
+                            // 检查与指定变量名匹配的字面量
+                            if (matchesKeyword && arg instanceof PsiLiteralExpression && arg.getText().equals(variableName)) {
+//                                System.out.println("字面量参数 '" + arg.getText() + "' 与指定变量名 '" + variableName + "' 匹配");
+                                isUnitUsed[0] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        return isUnitUsed[0];
+    }
+
+    // 检查字面量是否作为年份参数使用
+    private boolean isLiteralUsedAsYear(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"year"});
+    }
+
+    private boolean isLiteralUsedAsMonth(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"month"});
+    }
+
+    private boolean isLiteralUsedAsDay(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"day"});
+    }
+
+    private boolean isLiteralUsedAsHour(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"hour"});
+    }
+
+    private boolean isLiteralUsedAsMinute(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"minute"});
+    }
+
+    private boolean isLiteralUsedAsSecond(String variableName, PsiMethod method) {
+        return isLiteralUsedForDateUnit(variableName, method, new String[]{"second"});
     }
 
     private void extractActualOutputAsVariables(Project project, String absoluteJavaFilePath, Document document, List<MethodCallExpr> methodCalls, int startOffset) {
         // 在进行任何更改之前保存所有文档
         FileDocumentManager.getInstance().saveAllDocuments();
-        WriteCommandAction.runWriteCommandAction(project, () -> {
-            // 这个代码块负责把断言中的真实输出提取为变量
-            for (MethodCallExpr methodCall : methodCalls) {
-                String methodName = methodCall.getNameAsString();
-                if (ASSERTION_METHODS.contains(methodName)) {
-                    List<Expression> arguments = methodCall.getArguments();
-                    for (Expression argument : arguments) {
-                        // 判断表达式类型
+        // 这个代码块负责把断言中的真实输出提取为变量
+        for (MethodCallExpr methodCall : methodCalls) {
+            String methodName = methodCall.getNameAsString();
+            if (ASSERTION_METHODS.contains(methodName)) {
+                List<Expression> arguments = methodCall.getArguments();
+                for (Expression argument : arguments) {
+                    // 判断表达式类型
 
-                        String expression = argument.toString();
-                        // 然后将 startOffset 传递给 getOffset 方法
-                        int offset = getOffset(absoluteJavaFilePath, expression, startOffset);
-                        if (offset != -1) {  // 确保找到了有效的偏移量
-                            // 根据光标位置替换
-                            idea_parseEachJavaFileOfSpecificCommit(document, project, absoluteJavaFilePath, offset, expression);
-                        } else {
-
-                        }
+                    String expression = argument.toString();
+                    // 然后将 startOffset 传递给 getOffset 方法
+                    int offset = getOffset(absoluteJavaFilePath, expression, startOffset);
+                    if (offset != -1) {  // 确保找到了有效的偏移量
+                        // 根据光标位置替换
+                        idea_parseEachJavaFileOfSpecificCommit(document, project, absoluteJavaFilePath, offset, expression);
+                    } else {
+//                        System.out.println("未找到有效偏移量");
                     }
                 }
             }
-            writeToFile(absoluteJavaFilePath, document, document.getText());
-
-            // 提交更改并刷新
-            PsiDocumentManager.getInstance(project).commitDocument(document);
-            // 保存文档
-            FileDocumentManager.getInstance().saveDocument(document);
-            // 同步文件系统，以立即呈现更改的内容
-            VirtualFileManager.getInstance().syncRefresh();
-        });
+        }
+        writeToFile(absoluteJavaFilePath, document, document.getText());
     }
 
     public static int getOffset(String filePath, String searchString, int startOffset) {
@@ -492,60 +592,6 @@ public class AutoGenerationAction extends AnAction {
         }
     }
 
-
-    private void exploreElement(PsiElement element, Set<PsiElement> visited, Document document, int startOffset, int endOffset) {
-        if (element == null || visited.contains(element)) {
-            return;
-        }
-        // 检查元素是否完全位于选择范围内
-        TextRange elementRange = element.getTextRange();
-        if (elementRange.getEndOffset() < startOffset || elementRange.getStartOffset() > endOffset) {
-            return;
-        }
-        visited.add(element);
-
-        if (element instanceof PsiReferenceExpression) {
-            PsiElement resolvedElement = ((PsiReferenceExpression) element).resolve();
-            if (resolvedElement != null && resolvedElement instanceof PsiEnumConstant) {
-                TextRange resolvedRange = resolvedElement.getTextRange();
-                // 再次确认解析到的枚举常量确实位于选中的方法体内
-                if (resolvedRange.getStartOffset() >= startOffset && resolvedRange.getEndOffset() <= endOffset) {
-                    int textOffset = resolvedRange.getStartOffset();
-                    reportEnumUsage((PsiEnumConstant) resolvedElement, document, startOffset, endOffset);
-                }
-            }
-        }
-
-        for (PsiElement child : element.getChildren()) {
-            exploreElement(child, visited, document, startOffset, endOffset);
-        }
-    }
-
-
-    private void reportEnumUsage(PsiEnumConstant enumConstant, Document document, int startOffset, int endOffset) {
-        PsiClass enumClass = enumConstant.getContainingClass();
-        if (enumClass != null) {
-            String enumClassName = enumClass.getName();
-            List<String> enumNames = new ArrayList<>();
-            for (PsiField field : enumClass.getFields()) {
-                if (field instanceof PsiEnumConstant) {
-                    // Store the fully qualified name directly
-                    enumNames.add(enumClassName + "." + field.getName());
-                    System.out.println(" - " + field.getName());
-                }
-            }
-
-            String methodCall = "DataGenerator.generateEnumConstantFromList(" + enumNames + ")";
-
-            Runnable runnable = () -> document.replaceString(startOffset, endOffset, methodCall);
-            WriteCommandAction.runWriteCommandAction(enumClass.getProject(), runnable);
-
-            // 以下都是输出
-            System.out.println("Enum value used: " + enumClass.getName() + "." + enumConstant.getName());
-            System.out.println("All enum values in " + enumClass.getName() + ":");
-        }
-    }
-
     public static void runCurrentProject(Project project) {
         // 获取当前项目的根目录
         VirtualFile baseDir = project.getBaseDir();
@@ -569,4 +615,45 @@ public class AutoGenerationAction extends AnAction {
         ExecutionManager.getInstance(project).restartRunProfile(executionEnvironment);
     }
 
+
+    public String generateString(String string) {
+        System.out.println("传进来的参数是：" + string);
+        // 你可以在这里设置你想要请求的具体问题或者指令
+        String prompt = "This is a string literal in the test case:" + string.replaceAll("\"", "") + ". Please generate a regular expression for me. I can randomly generate strings based on the regular expression. Please use [0-9] to represent numbers. Your reply only returns the regular expression, no other content is needed.";
+
+        String response = null;
+        try {
+            System.out.println("prompt是：" + prompt);
+            response = ChatGPTRequester.getRegex(prompt);
+            System.out.println("Generated Regex: " + response);
+            // 这里处理得到的结果，例如显示到用户界面或进一步处理数据
+        } catch (IOException ex) {
+            System.err.println("Error while calling ChatGPT API: " + ex.getMessage());
+            // 在这里处理可能的错误情况，例如网络错误或API服务问题
+        }
+
+        // 提取 content 字段的值
+        String extractedContent = extractContentWithJSON(response);
+
+        // 需要进一步转义反斜杠
+        String escapedRegex = extractedContent.replace("\\", "\\\\\\\\");
+        System.out.println("Extracted Content: " + escapedRegex);
+
+
+        return escapedRegex;
+    }
+
+    public static String extractContentWithJSON(String response) {
+        try {
+            JSONObject jsonResponse = new JSONObject(response);
+            String content = jsonResponse.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message")
+                    .getString("content");
+            return content;
+        } catch (Exception e) {
+            System.err.println("Error parsing JSON: " + e.getMessage());
+            return "Error in JSON parsing";
+        }
+    }
 }

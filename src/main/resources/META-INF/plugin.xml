@@ -29,14 +29,17 @@
     </extensions>
     <actions>
         <!-- Add your actions here -->
-        <action class="Action.AutoGenerationAction" id="$AutoGenerate" text="Auto Generate" />
-        <action class="Action.CombinedAction" id="$Combined" text="Combined" />
-        <action class="Action.SafeConditionAction" id="$SafeCondition" text="Safe Condition" />
+        <action class="Action.AutoGenerationAction" id="$AutoGenerate" text="Auto Generate"/>
+        <action class="Action.CombinedAction" id="$Combined" text="Combined"/>
+        <action class="Action.SafeConditionAction" id="$SafeCondition" text="Safe Condition"/>
+        <action class="Action.OpenAIAction" id="$OpenAI" text="OpenAI"/>
+
         <group id="DataGeneratorGroup" text="EditorPopupMenu">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <reference ref="$AutoGenerate" />
-            <reference ref="$Combined" />
-            <reference ref="$SafeCondition" />
+            <reference ref="$AutoGenerate"/>
+            <reference ref="$Combined"/>
+            <reference ref="$SafeCondition"/>
+            <reference ref="$OpenAI"/>
         </group>
     </actions>
 
