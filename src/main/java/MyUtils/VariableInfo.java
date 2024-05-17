@@ -3,6 +3,7 @@ package MyUtils;
 public class VariableInfo {
     private String name;
     private String type;
+
     private int startPosition;
     private int endPosition;
 
@@ -17,6 +18,10 @@ public class VariableInfo {
 
     public String getType() {
         return type;
+    }
+
+    public int getStartPosition() {
+        return startPosition;
     }
 
     public void setStartPosition(int startPosition) {

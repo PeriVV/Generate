@@ -35,7 +35,7 @@ public class AllVariableExtractor {
      * @param method Method signature to extract variables from.
      * @return List of VariableInfo objects representing input variables.
      */
-    public static List<VariableInfo> extractInputVariables(String method) {
+    public static List<VariableInfo> extractInputVariables(String method, int methodStartOffset) {
         List<VariableInfo> variableInfoList = new ArrayList<>();
         MethodDeclaration methodDeclaration = StaticJavaParser.parseMethodDeclaration(method);
 
@@ -101,8 +101,20 @@ public class AllVariableExtractor {
 
                 VariableInfo variableInfo = new VariableInfo(name, type);
                 System.out.println("name:" + name + ", type:" + type);
-                variableInfo.setStartPosition(e.getBegin().get().line);
-                variableInfo.setEndPosition(e.getEnd().get().line);
+                // 设置字面量的开始和结束偏移量
+                String[] lines = method.split("\n");  // 将方法体分割成行
+                // 获取字面量的位置信息
+                int line = e.getBegin().get().line - 1;  // JavaParser行号从1开始
+                int column = e.getBegin().get().column - 1;  // 列号从1开始
+
+                // 计算字面量在方法中的字符偏移量
+                int offset = 0;
+                for (int i = 0; i < line; i++) {
+                    offset += lines[i].length() + 1;  // 加1因为每行结束有换行符
+                }
+                offset += column + (line + 1) * 4 - 4;  // 每一行加4个字符的偏移
+                int startPosition = methodStartOffset + offset;  // 调整列偏移
+                variableInfo.setStartPosition(startPosition);
                 variableInfoList.add(variableInfo);
             } else if (e instanceof ArrayInitializerExpr) {
                 ArrayInitializerExpr arrayInitializer = (ArrayInitializerExpr) e;
@@ -110,8 +122,21 @@ public class AllVariableExtractor {
                 name = arrayToString(arrayInitializer.getValues());  // 用修改后的名字包括数组内容
                 System.out.println("识别到的数组：" + name);
                 VariableInfo variableInfo = new VariableInfo(name, type);
-                variableInfo.setStartPosition(e.getBegin().get().line);
-                variableInfo.setEndPosition(e.getEnd().get().line);
+                // 设置字面量的开始和结束偏移量
+                String[] lines = method.split("\n");  // 将方法体分割成行
+                // 获取字面量的位置信息
+                int line = e.getBegin().get().line - 1;  // JavaParser行号从1开始
+                int column = e.getBegin().get().column - 1;  // 列号从1开始
+
+                // 计算字面量在方法中的字符偏移量
+                int offset = 0;
+                for (int i = 0; i < line; i++) {
+                    offset += lines[i].length() + 1;  // 加1因为每行结束有换行符
+                }
+                offset += column + (line + 1) * 4 - 4;  // 每一行加4个字符的偏移
+
+                int startPosition = methodStartOffset + offset;  // 调整列偏移
+                variableInfo.setStartPosition(startPosition);
                 variableInfoList.add(variableInfo);
             }
         }
@@ -201,7 +226,6 @@ public class AllVariableExtractor {
                         }
 
                         // Proceed to handle non-constant variables
-                        System.out.println("提取输出：" + variableName);
                         String variableType = getTypeOfVariable(methodDeclaration, variableName);
 
                         VariableInfo outputVariable = new VariableInfo(variableName, variableType);

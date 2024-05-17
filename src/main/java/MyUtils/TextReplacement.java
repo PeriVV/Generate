@@ -2,9 +2,7 @@ package MyUtils;
 
 import com.intellij.openapi.util.TextRange;
 
-import java.util.HashSet;
 import java.util.Objects;
-import java.util.Set;
 
 public class TextReplacement {
     private final TextRange range;
