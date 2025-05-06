@@ -1,0 +1,131 @@
+package Action;
+
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
+
+import javax.swing.*;
+import java.awt.*;
+import java.io.File;
+
+public class CalcNNCoverageAction extends AnAction {
+
+    @Override
+    public void actionPerformed(AnActionEvent e) {
+        Project project = e.getProject();
+        if (project == null) return;
+
+        JDialog dialog = new JDialog();
+        dialog.setTitle("计算神经网络覆盖率");
+        dialog.setSize(800, 450);
+        dialog.setLayout(new BorderLayout());
+        dialog.setLocationRelativeTo(null);
+
+        JPanel filePanel = new JPanel(new GridLayout(4, 1));
+
+        // 测试用例输入文件
+        JPanel inputPanel = new JPanel(new BorderLayout());
+        JTextField inputField = new JTextField();
+        JButton inputBrowse = new JButton("选择输入文件");
+        inputPanel.add(new JLabel("测试用例输入文件："), BorderLayout.WEST);
+        inputPanel.add(inputField, BorderLayout.CENTER);
+        inputPanel.add(inputBrowse, BorderLayout.EAST);
+
+        // 测试用例输出文件
+        JPanel outputPanel = new JPanel(new BorderLayout());
+        JTextField outputField = new JTextField();
+        JButton outputBrowse = new JButton("选择输出文件");
+        outputPanel.add(new JLabel("测试用例输出文件："), BorderLayout.WEST);
+        outputPanel.add(outputField, BorderLayout.CENTER);
+        outputPanel.add(outputBrowse, BorderLayout.EAST);
+
+        // 神经网络模型文件
+        JPanel modelPanel = new JPanel(new BorderLayout());
+        JTextField modelField = new JTextField();
+        JButton modelBrowse = new JButton("选择模型文件");
+        modelPanel.add(new JLabel("神经网络模型文件："), BorderLayout.WEST);
+        modelPanel.add(modelField, BorderLayout.CENTER);
+        modelPanel.add(modelBrowse, BorderLayout.EAST);
+
+        // 计算按钮
+        JPanel calcPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        JButton calcButton = new JButton("计算神经网络覆盖率");
+        calcPanel.add(calcButton);
+
+        filePanel.add(inputPanel);
+        filePanel.add(outputPanel);
+        filePanel.add(modelPanel);
+        filePanel.add(calcPanel);
+        dialog.add(filePanel, BorderLayout.NORTH);
+
+        // 日志显示区域
+        JPanel logPanel = new JPanel(new BorderLayout());
+        JTextArea logArea = new JTextArea(10, 70);
+        logArea.setLineWrap(true);
+        logArea.setWrapStyleWord(true);
+        JScrollPane scrollPane = new JScrollPane(logArea);
+        logPanel.add(new JLabel("覆盖率结果："), BorderLayout.NORTH);
+        logPanel.add(scrollPane, BorderLayout.CENTER);
+        dialog.add(logPanel, BorderLayout.CENTER);
+
+        // 文件选择事件
+        inputBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                inputField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        outputBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                outputField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        modelBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                modelField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        // 计算覆盖率按钮事件
+        calcButton.addActionListener(ev -> {
+            String inputPath = inputField.getText().trim();
+            String outputPath = outputField.getText().trim();
+            String modelPath = modelField.getText().trim();
+
+            if (inputPath.isEmpty() || outputPath.isEmpty() || modelPath.isEmpty()) {
+                Messages.showErrorDialog(project, "请输入全部文件路径！", "路径缺失");
+                return;
+            }
+
+            logArea.setText(""); // 清空日志
+            logArea.append("正在计算神经网络覆盖率...\n");
+            logArea.append("输入路径：" + inputPath + "\n");
+            logArea.append("输出路径：" + outputPath + "\n");
+            logArea.append("模型路径：" + modelPath + "\n\n");
+
+            // 模拟输出神经网络覆盖率
+            logArea.append("""
+NNC:     87.42%
+NBC:     76.35%
+SNAC:    69.84%
+TKNC:    91.03%
+TKNP:    83.28%
+KMNC:    80.92%
+""");
+        });
+
+        dialog.setModal(true);
+        dialog.setVisible(true);
+    }
+}

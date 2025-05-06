@@ -1,13 +1,12 @@
 package MyUtils;
 
-import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
-import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.vfs.VirtualFileManager;
-import com.intellij.psi.*;
+import com.intellij.psi.PsiDocumentManager;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiExpression;
+import com.intellij.psi.PsiFile;
 import com.intellij.refactoring.introduceVariable.IntroduceVariableBase;
 import com.intellij.refactoring.introduceVariable.IntroduceVariableHandler;
 
@@ -39,10 +38,13 @@ public class ExtractVariable implements Runnable {
         while (element != null) {
             int length1 = element.getTextLength();
             int length2 = expression.length();
+            System.out.println("length1:" + length1);
+            System.out.println("length2:" + length2);
             if (length1 == length2) {
                 break;
             }
             element = element.getParent();
+            System.out.println("parent element:" + element);
         }
         if (element instanceof PsiExpression) {
             return (PsiExpression) element;
@@ -53,16 +55,13 @@ public class ExtractVariable implements Runnable {
     //执行提取变量操作的方法。
     public void extractVariable() {
         if (expr == null) {
-            System.out.println("未找到有效的PsiExpression");
             return;
         }
-        System.out.println("提取变量的表达式：" + expr.getText());
         IntroduceVariableHandler handler = new IntroduceVariableHandler();
         Map<String, IntroduceVariableBase.JavaReplaceChoice> choices = handler.getPossibleReplaceChoices(project, expr);// handler.getPossibleReplaceChoices(project, expr);
         IntroduceVariableBase.JavaReplaceChoice choice = IntroduceVariableBase.JavaReplaceChoice.NO;
         int maxReplacedExpr = 0;
         for (Map.Entry<String, IntroduceVariableBase.JavaReplaceChoice> e : choices.entrySet()) {
-            System.out.println("选项：" + e.getKey() + " -> " + e.getValue());
             IntroduceVariableBase.JavaReplaceChoice c = e.getValue();
             if (choice == IntroduceVariableBase.JavaReplaceChoice.NO && !e.getKey().contains("will change")) {
                 choice = c;
@@ -81,23 +80,12 @@ public class ExtractVariable implements Runnable {
                 }
             }
         }
-        System.out.println("最终选择：" + choice);
         // invoke the api of idea to conduct extract variable.
-        // 执行提取变量操作
-        IntroduceVariableBase.JavaReplaceChoice finalChoice = choice;
-        WriteCommandAction.runWriteCommandAction(project, () -> {
-            try {
-                handler.invokeImpl(project, expr, null, finalChoice, editor);
-                // 保存文档
-                FileDocumentManager.getInstance().saveDocument(document);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-
-        });
-        // Additionally, you may want to sync the file system to reflect changes immediately
-        VirtualFileManager.getInstance().syncRefresh();
+        try {
+            handler.invokeImpl(project, expr, null, choice, editor);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     @Override

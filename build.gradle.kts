@@ -73,6 +73,7 @@ dependencies {
     implementation("org.apache.commons:commons-lang3:3.12.0")// 添加 Apache Commons Lang 依赖
     implementation("org.gradle:gradle-tooling-api:7.3-20210825160000+0000")
     implementation("com.squareup.okhttp3:okhttp:4.9.0") // 添加HTTP客户端库的依赖。如果你打算使用OkHttp，添加这个依赖。请检查最新版本
+    implementation ("org.json:json:20210307")
 }
 java {
     sourceCompatibility = JavaVersion.VERSION_16
