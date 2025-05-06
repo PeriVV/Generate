@@ -1,0 +1,107 @@
+package Action;
+
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
+
+import javax.swing.*;
+import java.awt.*;
+import java.io.File;
+
+public class FitTestCasesToNNAction extends AnAction {
+
+    @Override
+    public void actionPerformed(AnActionEvent e) {
+        Project project = e.getProject();
+        if (project == null) return;
+
+        JDialog dialog = new JDialog();
+        dialog.setTitle("拟合测试用例到神经网络模型");
+        dialog.setSize(800, 400);
+        dialog.setLayout(new BorderLayout());
+        dialog.setLocationRelativeTo(null);
+
+        // 顶部：文件路径区域
+        JPanel filePanel = new JPanel(new GridLayout(3, 1));
+
+        // 输入路径
+        JPanel inputPanel = new JPanel(new BorderLayout());
+        JTextField inputField = new JTextField();
+        JButton inputBrowse = new JButton("选择输入文件");
+        inputPanel.add(new JLabel("测试用例输入文件："), BorderLayout.WEST);
+        inputPanel.add(inputField, BorderLayout.CENTER);
+        inputPanel.add(inputBrowse, BorderLayout.EAST);
+
+        // 输出路径
+        JPanel outputPanel = new JPanel(new BorderLayout());
+        JTextField outputField = new JTextField();
+        JButton outputBrowse = new JButton("选择输出文件");
+        outputPanel.add(new JLabel("测试用例输出文件："), BorderLayout.WEST);
+        outputPanel.add(outputField, BorderLayout.CENTER);
+        outputPanel.add(outputBrowse, BorderLayout.EAST);
+
+        // 拟合按钮
+        JPanel fitPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        JButton fitButton = new JButton("开始拟合");
+        fitPanel.add(fitButton);
+
+        filePanel.add(inputPanel);
+        filePanel.add(outputPanel);
+        filePanel.add(fitPanel);
+        dialog.add(filePanel, BorderLayout.NORTH);
+
+        // 中部：多行文本框（可手写，可追加）
+        JPanel logPanel = new JPanel(new BorderLayout());
+        JTextArea logArea = new JTextArea(10, 70);
+        logArea.setLineWrap(true);
+        logArea.setWrapStyleWord(true);
+        JScrollPane scrollPane = new JScrollPane(logArea);
+        logPanel.add(new JLabel("拟合详细信息："), BorderLayout.NORTH);
+        logPanel.add(scrollPane, BorderLayout.CENTER);
+        dialog.add(logPanel, BorderLayout.CENTER);
+
+        // 事件：浏览按钮
+        inputBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                inputField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        outputBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                outputField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        // 事件：开始拟合按钮
+        fitButton.addActionListener(ev -> {
+            String inputPath = inputField.getText().trim();
+            String outputPath = outputField.getText().trim();
+
+            if (inputPath.isEmpty() || outputPath.isEmpty()) {
+                Messages.showErrorDialog(project, "请输入输入和输出文件路径！", "路径缺失");
+                return;
+            }
+
+            // 模拟拟合过程日志
+            logArea.append("开始拟合...\n");
+            logArea.append("读取输入文件: " + inputPath + "\n");
+            logArea.append("读取输出文件: " + outputPath + "\n");
+
+            // 你可以在此替换为神经网络训练调用
+            // NeuralFitter.fit(inputPath, outputPath, logArea);
+
+            logArea.append("拟合完成！（此为模拟输出）\n\n");
+        });
+
+        dialog.setModal(true);
+        dialog.setVisible(true);
+    }
+}
