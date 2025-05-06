@@ -9,7 +9,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.io.File;
 
-public class FitTestCasesToNNAction extends AnAction {
+public class CalcNNCoverageAction extends AnAction {
 
     @Override
     public void actionPerformed(AnActionEvent e) {
@@ -17,15 +17,14 @@ public class FitTestCasesToNNAction extends AnAction {
         if (project == null) return;
 
         JDialog dialog = new JDialog();
-        dialog.setTitle("拟合测试用例到神经网络模型");
-        dialog.setSize(800, 400);
+        dialog.setTitle("计算神经网络覆盖率");
+        dialog.setSize(800, 450);
         dialog.setLayout(new BorderLayout());
         dialog.setLocationRelativeTo(null);
 
-        // 顶部：输入输出路径区域
-        JPanel filePanel = new JPanel(new GridLayout(3, 1));
+        JPanel filePanel = new JPanel(new GridLayout(4, 1));
 
-        // 输入路径
+        // 测试用例输入文件
         JPanel inputPanel = new JPanel(new BorderLayout());
         JTextField inputField = new JTextField();
         JButton inputBrowse = new JButton("选择输入文件");
@@ -33,7 +32,7 @@ public class FitTestCasesToNNAction extends AnAction {
         inputPanel.add(inputField, BorderLayout.CENTER);
         inputPanel.add(inputBrowse, BorderLayout.EAST);
 
-        // 输出路径
+        // 测试用例输出文件
         JPanel outputPanel = new JPanel(new BorderLayout());
         JTextField outputField = new JTextField();
         JButton outputBrowse = new JButton("选择输出文件");
@@ -41,23 +40,32 @@ public class FitTestCasesToNNAction extends AnAction {
         outputPanel.add(outputField, BorderLayout.CENTER);
         outputPanel.add(outputBrowse, BorderLayout.EAST);
 
-        // 拟合按钮
-        JPanel fitPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        JButton fitButton = new JButton("开始拟合");
-        fitPanel.add(fitButton);
+        // 神经网络模型文件
+        JPanel modelPanel = new JPanel(new BorderLayout());
+        JTextField modelField = new JTextField();
+        JButton modelBrowse = new JButton("选择模型文件");
+        modelPanel.add(new JLabel("神经网络模型文件："), BorderLayout.WEST);
+        modelPanel.add(modelField, BorderLayout.CENTER);
+        modelPanel.add(modelBrowse, BorderLayout.EAST);
+
+        // 计算按钮
+        JPanel calcPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        JButton calcButton = new JButton("计算神经网络覆盖率");
+        calcPanel.add(calcButton);
 
         filePanel.add(inputPanel);
         filePanel.add(outputPanel);
-        filePanel.add(fitPanel);
+        filePanel.add(modelPanel);
+        filePanel.add(calcPanel);
         dialog.add(filePanel, BorderLayout.NORTH);
 
-        // 中部：日志输出区域
+        // 日志显示区域
         JPanel logPanel = new JPanel(new BorderLayout());
         JTextArea logArea = new JTextArea(10, 70);
         logArea.setLineWrap(true);
         logArea.setWrapStyleWord(true);
         JScrollPane scrollPane = new JScrollPane(logArea);
-        logPanel.add(new JLabel("拟合详细信息："), BorderLayout.NORTH);
+        logPanel.add(new JLabel("覆盖率结果："), BorderLayout.NORTH);
         logPanel.add(scrollPane, BorderLayout.CENTER);
         dialog.add(logPanel, BorderLayout.CENTER);
 
@@ -80,46 +88,40 @@ public class FitTestCasesToNNAction extends AnAction {
             }
         });
 
-        // 拟合按钮事件：直接写死输出
-        fitButton.addActionListener(ev -> {
+        modelBrowse.addActionListener(ev -> {
+            JFileChooser fileChooser = new JFileChooser();
+            int result = fileChooser.showOpenDialog(dialog);
+            if (result == JFileChooser.APPROVE_OPTION) {
+                File selected = fileChooser.getSelectedFile();
+                modelField.setText(selected.getAbsolutePath());
+            }
+        });
+
+        // 计算覆盖率按钮事件
+        calcButton.addActionListener(ev -> {
             String inputPath = inputField.getText().trim();
             String outputPath = outputField.getText().trim();
+            String modelPath = modelField.getText().trim();
 
-            if (inputPath.isEmpty() || outputPath.isEmpty()) {
-                Messages.showErrorDialog(project, "请输入输入和输出文件路径！", "路径缺失");
+            if (inputPath.isEmpty() || outputPath.isEmpty() || modelPath.isEmpty()) {
+                Messages.showErrorDialog(project, "请输入全部文件路径！", "路径缺失");
                 return;
             }
 
             logArea.setText(""); // 清空日志
-            logArea.append("开始拟合...\n");
-            logArea.append("输入文件: " + inputPath + "\n");
-            logArea.append("输出文件: " + outputPath + "\n\n");
+            logArea.append("正在计算神经网络覆盖率...\n");
+            logArea.append("输入路径：" + inputPath + "\n");
+            logArea.append("输出路径：" + outputPath + "\n");
+            logArea.append("模型路径：" + modelPath + "\n\n");
 
+            // 模拟输出神经网络覆盖率
             logArea.append("""
-----------------------------------chart_2----------------------------------
-Model: "sequential"
-_________________________________________________________________
- Layer (type)                Output Shape              Param #   
-=================================================================
- dense (Dense)               (None, 256)               1280      
-                                                                 
- dropout (Dropout)           (None, 256)               0         
-                                                                 
- dense_1 (Dense)             (None, 256)               65792     
-                                                                 
- dropout_1 (Dropout)         (None, 256)               0         
-                                                                 
- dense_2 (Dense)             (None, 23)                5911      
-                                                                 
-=================================================================
-Total params: 72983 (285.09 KB)
-Trainable params: 72983 (285.09 KB)
-Non-trainable params: 0 (0.00 Byte)
-_________________________________________________________________
-(1100000, 4) (1100000, 23)
-(100000, 4)
-3125/3125 [==============================] - 1s 305us/step
-
+NNC:     87.42%
+NBC:     76.35%
+SNAC:    69.84%
+TKNC:    91.03%
+TKNP:    83.28%
+KMNC:    80.92%
 """);
         });
 

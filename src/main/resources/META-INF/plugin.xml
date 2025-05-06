@@ -27,21 +27,6 @@
     <extensions defaultExtensionNs="com.intellij">
 
     </extensions>
-<!--    <actions>-->
-<!--        &lt;!&ndash; Add your actions here &ndash;&gt;-->
-<!--        <action class="Action.AutoGenerationAction" id="$AutoGenerate" text="Auto Generate"/>-->
-<!--        <action class="Action.CombinedAction" id="$Combined" text="Combined"/>-->
-<!--        <action class="Action.SafeConditionAction" id="$SafeCondition" text="Safe Condition"/>-->
-<!--        <action class="Action.OpenAIAction" id="$OpenAI" text="OpenAI"/>-->
-
-<!--        <group id="DataGeneratorGroup" text="EditorPopupMenu">-->
-<!--            <add-to-group group-id="EditorPopupMenu" anchor="last"/>-->
-<!--            <reference ref="$AutoGenerate"/>-->
-<!--            <reference ref="$Combined"/>-->
-<!--            <reference ref="$SafeCondition"/>-->
-<!--            <reference ref="$OpenAI"/>-->
-<!--        </group>-->
-<!--    </actions>-->
     <actions>
         <!-- Add your actions here -->
         <action class="Action.ExtractVariableAction" id="$ExtractVariableAction" text="Extract Variables" />
@@ -49,6 +34,11 @@
         <action class="Action.SafeConditionAction" id="$SafeCondition" text="SafeCondition" />
         <action class="Action.SelectTestCaseAction" id="$SelectTestCase" text="SelectTestCase" />
         <action class="Action.FitTestCasesToNNAction" id="$FitTestCasesToNNAction" text="FitTestCasesToNNAction" />
+        <action class="Action.CalcNNCoverageAction" id="$CalcNNCoverageAction" text="CalcNNCoverageAction" />
+        <action class="Action.CorrelationAnalysisAction" id="$CorrelationAnalysisAction" text="CorrelationAnalysisAction" />
+
+
+
         <group id="DataGeneratorGroup" text="EditorPopupMenu">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <reference ref="$ExtractVariableAction" />
@@ -56,6 +46,8 @@
             <reference ref="$SafeCondition" />
             <reference ref="$SelectTestCase" />
             <reference ref="$FitTestCasesToNNAction" />
+            <reference ref="$CalcNNCoverageAction" />
+            <reference ref="$CorrelationAnalysisAction" />
         </group>
     </actions>
 </idea-plugin>
