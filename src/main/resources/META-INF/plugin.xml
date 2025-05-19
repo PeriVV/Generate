@@ -31,7 +31,7 @@
         <!-- Add your actions here -->
         <action class="Action.ExtractVariableAction" id="$ExtractVariableAction" text="Extract Variables" />
         <action class="Action.SelectTestMethodAction" id="$SelectTestMethod" text="Generate Data" />
-        <action class="Action.SafeConditionAction" id="$SafeCondition" text="SafeCondition" />
+<!--        <action class="Action.SafeConditionAction" id="$SafeCondition" text="SafeCondition" />-->
         <action class="Action.SelectTestCaseAction" id="$SelectTestCase" text="SelectTestCase" />
         <action class="Action.FitTestCasesToNNAction" id="$FitTestCasesToNNAction" text="FitTestCasesToNNAction" />
         <action class="Action.CalcNNCoverageAction" id="$CalcNNCoverageAction" text="CalcNNCoverageAction" />
@@ -43,7 +43,7 @@
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <reference ref="$ExtractVariableAction" />
             <reference ref="$SelectTestMethod" />
-            <reference ref="$SafeCondition" />
+<!--            <reference ref="$SafeCondition" />-->
             <reference ref="$SelectTestCase" />
             <reference ref="$FitTestCasesToNNAction" />
             <reference ref="$CalcNNCoverageAction" />
