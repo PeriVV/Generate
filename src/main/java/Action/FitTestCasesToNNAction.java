@@ -7,7 +7,7 @@ import com.intellij.openapi.ui.Messages;
 
 import javax.swing.*;
 import java.awt.*;
-import java.io.File;
+import java.io.*;
 
 public class FitTestCasesToNNAction extends AnAction {
 
@@ -80,7 +80,7 @@ public class FitTestCasesToNNAction extends AnAction {
             }
         });
 
-        // 拟合按钮事件：直接写死输出
+        // 开始拟合按钮
         fitButton.addActionListener(ev -> {
             String inputPath = inputField.getText().trim();
             String outputPath = outputField.getText().trim();
@@ -90,40 +90,50 @@ public class FitTestCasesToNNAction extends AnAction {
                 return;
             }
 
-            logArea.setText(""); // 清空日志
             logArea.append("开始拟合...\n");
             logArea.append("输入文件: " + inputPath + "\n");
-            logArea.append("输出文件: " + outputPath + "\n\n");
+            logArea.append("输出文件: " + outputPath + "\n");
 
-            logArea.append("""
-----------------------------------chart_2----------------------------------
-Model: "sequential"
-_________________________________________________________________
- Layer (type)                Output Shape              Param #   
-=================================================================
- dense (Dense)               (None, 256)               1280      
-                                                                 
- dropout (Dropout)           (None, 256)               0         
-                                                                 
- dense_1 (Dense)             (None, 256)               65792     
-                                                                 
- dropout_1 (Dropout)         (None, 256)               0         
-                                                                 
- dense_2 (Dense)             (None, 23)                5911      
-                                                                 
-=================================================================
-Total params: 72983 (285.09 KB)
-Trainable params: 72983 (285.09 KB)
-Non-trainable params: 0 (0.00 Byte)
-_________________________________________________________________
-(1100000, 4) (1100000, 23)
-(100000, 4)
-3125/3125 [==============================] - 1s 305us/step
+            String trainScript = "/Users/weiwei/个人文件夹/BIT/研究生课程/个人实验/neuron_coverage/train.py";
 
-""");
+            new Thread(() -> {
+                runPythonScript(trainScript, logArea, inputPath, outputPath);
+                SwingUtilities.invokeLater(() -> logArea.append("全部执行完成。\n"));
+            }).start();
         });
 
         dialog.setModal(true);
         dialog.setVisible(true);
+    }
+
+    private void runPythonScript(String scriptPath, JTextArea logArea, String inputPath, String outputPath) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("/usr/bin/python3", scriptPath, inputPath, outputPath);
+            pb.redirectErrorStream(true);
+
+            // 设置 Python 的工作目录为脚本所在目录
+            File scriptFile = new File(scriptPath);
+            pb.directory(scriptFile.getParentFile());
+
+
+            Process process = pb.start();
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String finalLine = line;
+                    SwingUtilities.invokeLater(() -> logArea.append(finalLine + "\n"));
+                }
+            }
+
+            int exitCode = process.waitFor();
+            SwingUtilities.invokeLater(() ->
+                    logArea.append("脚本执行结束（退出码：" + exitCode + "）\n\n"));
+
+        } catch (Exception ex) {
+            SwingUtilities.invokeLater(() ->
+                    logArea.append("执行脚本时出错：" + ex.getMessage() + "\n"));
+        }
     }
 }

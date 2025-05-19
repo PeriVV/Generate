@@ -97,15 +97,7 @@ public class CorrelationAnalysisAction extends AnAction {
             logArea.append("神经网络覆盖率文件：" + nnPath + "\n\n");
 
             // 模拟结果
-            logArea.append("""
-相关系数（Pearson）：
-NNC   - CC:     0.79
-NBC   - CC:     0.89
-SNAC  - CC:     0.89
-TKNC  - CC:     0.92
-TKNP  - CC:     0.79
-KMNC  - CC:     0.81
-""");
+            logArea.append("00");
         });
 
         // 点击绘制图像
@@ -115,7 +107,7 @@ KMNC  - CC:     0.81
                 File imageFile = new File("/Users/weiwei/个人文件夹/BIT/研究生课程/个人实验/智能软件测试项目结题/图片4.png");
                 if (imageFile.exists()) {
                     Desktop.getDesktop().open(imageFile);
-                    logArea.append("图像已打开：" + imageFile.getAbsolutePath() + "\n");
+                    logArea.append("相关性折线图已绘制完成。保存在：" + imageFile.getAbsolutePath() + "\n");
                 } else {
                     logArea.append("图像文件不存在。\n");
                 }
