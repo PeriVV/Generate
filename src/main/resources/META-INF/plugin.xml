@@ -5,7 +5,7 @@
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
-    <name>GenerateTestCases</name>
+    <name>UnitMind</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
     <vendor email="123@yourcompany.com" url="http://www.yourcompany.cn">nonono</vendor>
@@ -13,7 +13,7 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
-    <description>1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+    <description>UnitMind is an IntelliJ IDEA plugin for analyzing Java methods and generating JUnit5 + Mockito unit test drafts.
     </description>
 
     <!-- Product and plugin compatibility requirements.
@@ -22,32 +22,25 @@
     <depends>com.intellij.modules.lang</depends>
     <depends>com.intellij.modules.java</depends>
 
-    <!-- Extension points defined by the plugin.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-
+        <toolWindow
+                id="UnitMind"
+                anchor="right"
+                factoryClass="com.casc.unittestagent.toolwindow.UnitMindToolWindowFactory"
+                canCloseContents="false"/>
     </extensions>
     <actions>
-        <!-- Add your actions here -->
-        <action class="Action.ExtractVariableAction" id="$ExtractVariableAction" text="Extract Variables" />
-        <action class="Action.SelectTestMethodAction" id="$SelectTestMethod" text="Generate Data" />
-<!--        <action class="Action.SafeConditionAction" id="$SafeCondition" text="SafeCondition" />-->
-        <action class="Action.SelectTestCaseAction" id="$SelectTestCase" text="SelectTestCase" />
-        <action class="Action.FitTestCasesToNNAction" id="$FitTestCasesToNNAction" text="FitTestCasesToNNAction" />
-        <action class="Action.CalcNNCoverageAction" id="$CalcNNCoverageAction" text="CalcNNCoverageAction" />
-        <action class="Action.CorrelationAnalysisAction" id="$CorrelationAnalysisAction" text="CorrelationAnalysisAction" />
-
-
-
-        <group id="DataGeneratorGroup" text="EditorPopupMenu">
+        <action id="UnitTestAgent.GenerateUnitTestMvp"
+                class="com.casc.unittestagent.action.GenerateUnitTestMvpAction"
+                text="UnitMind：生成单元测试"
+                description="在 UnitMind 右侧工具窗口中为当前 Java 方法生成 JUnit5 与 Mockito 单元测试草稿">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <reference ref="$ExtractVariableAction" />
-            <reference ref="$SelectTestMethod" />
-<!--            <reference ref="$SafeCondition" />-->
-            <reference ref="$SelectTestCase" />
-            <reference ref="$FitTestCasesToNNAction" />
-            <reference ref="$CalcNNCoverageAction" />
-            <reference ref="$CorrelationAnalysisAction" />
-        </group>
+        </action>
+        <action id="UnitTestAgent.ConfigureTestDataRange"
+                class="com.casc.unittestagent.action.ConfigureTestDataRangeAction"
+                text="UnitMind：测试数据生成配置"
+                description="配置 UnitMind 生成单元测试时使用的随机测试数据范围">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

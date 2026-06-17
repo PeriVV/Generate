@@ -5,7 +5,11 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0-SNAPSHOT"
+version = "1.0.0"
+
+base {
+    archivesName.set("UnitMind")
+}
 
 repositories {
     maven { url = uri("https://plugins.jetbrains.com/maven") }
@@ -21,28 +25,31 @@ repositories {
     google()
 }
 
-// Configure Gradle IntelliJ Plugin
-// Read more: https://plugins.jetbrains.com/docs/intellij/tools-gradle-intellij-plugin.html
+// 配置 Gradle IntelliJ 插件，用于声明目标 IDE 版本和插件依赖。
+// 参考文档：https://plugins.jetbrains.com/docs/intellij/tools-gradle-intellij-plugin.html
 intellij {
+    pluginName.set("UnitMind")
     version.set("2022.2.5")
-    type.set("IC") // Target IDE Platform
+    type.set("IC") // 目标 IDE 平台为 IntelliJ IDEA Community
 
     plugins.set(arrayListOf("java", "gradle"))
 }
 
 tasks {
-    // Set the JVM compatibility versions
+    // 设置 Java 与 Kotlin 编译产物的 JVM 兼容版本
     withType<JavaCompile> {
         sourceCompatibility = "17"
         targetCompatibility = "17"
+        options.encoding = "UTF-8"
     }
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         kotlinOptions.jvmTarget = "17"
+        kotlinOptions.freeCompilerArgs += "-Xjsr305=strict"
     }
 
     patchPluginXml {
         sinceBuild.set("222")
-        untilBuild.set("232.*")
+        untilBuild.set("253.*")
     }
 
     signPlugin {
@@ -65,18 +72,20 @@ dependencies {
     implementation("org.eclipse.platform:org.eclipse.core.resources:3.14.0")
     implementation("org.eclipse.platform:org.eclipse.equinox.common:3.14.100")
     implementation("org.eclipse.platform:org.eclipse.core.runtime:3.20.100")
-    // https://mvnrepository.com/artifact/com.github.javaparser/javaparser-core
-    implementation("com.github.javaparser:javaparser-core:3.25.1")
-    // https://mvnrepository.com/artifact/com.github.javaparser/javaparser-symbol-solver-core
-    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.23.0")
+    // JavaParser 核心库，用于解析 Java 源码结构。
+    implementation("com.github.javaparser:javaparser-core:3.25.10")
+    // JavaParser 符号求解库，为后续更复杂的类型分析预留依赖。
+    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.25.10")
 
-    implementation("org.apache.commons:commons-lang3:3.12.0")// 添加 Apache Commons Lang 依赖
+    implementation("org.apache.commons:commons-lang3:3.12.0")
     implementation("org.gradle:gradle-tooling-api:7.3-20210825160000+0000")
-    implementation("com.squareup.okhttp3:okhttp:4.9.0") // 添加HTTP客户端库的依赖。如果你打算使用OkHttp，添加这个依赖。请检查最新版本
+    implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation ("org.json:json:20210307")
 }
 java {
-    sourceCompatibility = JavaVersion.VERSION_16
-    targetCompatibility = JavaVersion.VERSION_16
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
-
