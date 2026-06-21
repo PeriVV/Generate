@@ -71,7 +71,7 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
     private JScrollPane table(DefaultTableModel model) {
         JBTable table = new JBTable(model);
         table.setRowHeight(26);
-        table.setAutoResizeMode(JBTable.AUTO_RESIZE_OFF);
+        table.setAutoResizeMode(JBTable.AUTO_RESIZE_ALL_COLUMNS);
         JScrollPane scrollPane = new JScrollPane(table);
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);

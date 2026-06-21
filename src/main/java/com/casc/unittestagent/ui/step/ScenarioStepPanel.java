@@ -32,7 +32,7 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
         DefaultTableModel model = model(result);
         JBTable table = new JBTable(model);
         table.setRowHeight(26);
-        table.setAutoResizeMode(JBTable.AUTO_RESIZE_OFF);
+        table.setAutoResizeMode(JBTable.AUTO_RESIZE_ALL_COLUMNS);
         JScrollPane scrollPane = new JScrollPane(table);
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
