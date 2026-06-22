@@ -7,7 +7,7 @@ import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.StepStatus;
 import com.casc.unittestagent.service.UnitTestGenerationService;
-import com.casc.unittestagent.ui.TestDataRangeConfigDialog;
+import com.casc.unittestagent.ui.UnitMindSettingsDialog;
 import com.casc.unittestagent.ui.component.UnitMindHeaderPanel;
 import com.casc.unittestagent.ui.component.UnitMindStepperPanel;
 import com.casc.unittestagent.ui.step.ConstraintStepPanel;
@@ -18,6 +18,7 @@ import com.casc.unittestagent.ui.step.TestCodeStepPanel;
 import com.casc.unittestagent.ui.step.WriteFileStepPanel;
 import com.casc.unittestagent.writer.TestFileWriter;
 import com.casc.unittestagent.writer.TestWriteMode;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
@@ -29,6 +30,7 @@ import com.intellij.util.ui.JBUI;
 
 import javax.swing.JButton;
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.FlowLayout;
@@ -99,7 +101,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         setBorder(JBUI.Borders.empty());
 
         headerPanel = new UnitMindHeaderPanel(
-                () -> new TestDataRangeConfigDialog(project).show(),
+                () -> new UnitMindSettingsDialog(project).show(),
                 this::analyzeCurrentMethod
         );
         stepperPanel = new UnitMindStepperPanel(STEPS, this::switchStep);
@@ -242,8 +244,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         contentPanel.add(new ConstraintStepPanel(generationResult), STEPS[1]);
         contentPanel.add(new ScenarioStepPanel(generationResult, this::rebuildSteps), STEPS[2]);
         contentPanel.add(new MockStrategyStepPanel(generationResult), STEPS[3]);
-        testCodeStepPanel = new TestCodeStepPanel(project, generationStatus, currentCode(), lastError,
-                () -> Messages.showInfoMessage(project, "格式化代码功能将在后续版本接入 IDEA CodeStyle。", "UnitMind"));
+        testCodeStepPanel = new TestCodeStepPanel(project, generationStatus, currentCode(), lastError, generationNote(), this::regenerateTestCode);
         contentPanel.add(testCodeStepPanel, STEPS[4]);
         contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[5]);
         showCurrentStep();
@@ -327,6 +328,47 @@ public class UnitMindToolWindowPanel extends JPanel {
     }
 
     /**
+     * 使用当前代码和用户补充要求再次请求大模型。
+     */
+    private void regenerateTestCode(String feedback) {
+        if (generationResult == null || generationResult.getMethodModel() == null) {
+            Messages.showWarningDialog(project, "请先完成方法分析。", "UnitMind");
+            return;
+        }
+        editedCode = currentCode();
+        generationStatus = GenerationStatus.RUNNING;
+        stepStatuses[4] = StepStatus.RUNNING;
+        currentStepIndex = 4;
+        rebuildSteps();
+        String currentCode = editedCode;
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                GenerationResult regenerated = generationService.regenerateWithLlmFeedback(generationResult, currentCode, feedback);
+                SwingUtilities.invokeLater(() -> {
+                    generationResult = regenerated;
+                    GeneratedTestFile file = generationResult.getGeneratedTestFile();
+                    generatedCode = file == null ? "" : file.getContent();
+                    editedCode = generatedCode;
+                    generationStatus = GenerationStatus.SUCCESS;
+                    stepStatuses[3] = StepStatus.SUCCESS;
+                    stepStatuses[4] = StepStatus.SUCCESS;
+                    lastError = "";
+                    rebuildSteps();
+                });
+            } catch (Exception ex) {
+                String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                SwingUtilities.invokeLater(() -> {
+                    generationStatus = GenerationStatus.SUCCESS;
+                    stepStatuses[4] = StepStatus.WARNING;
+                    lastError = message;
+                    Messages.showErrorDialog(project, message, "UnitMind 大模型重新生成失败");
+                    rebuildSteps();
+                });
+            }
+        });
+    }
+
+    /**
      * 获取当前编辑后的测试代码。
      */
     private String currentCode() {
@@ -364,6 +406,25 @@ public class UnitMindToolWindowPanel extends JPanel {
             return lastError == null ? "" : lastError;
         }
         return String.join("\n", generationResult.getWarnings());
+    }
+
+    /**
+     * 测试代码来源提示。
+     */
+    private String generationNote() {
+        if (generationResult == null) {
+            return "";
+        }
+        if (generationResult.isGeneratedByLlm()) {
+            return "当前测试代码由大模型根据静态分析结果生成，请检查后再写入测试文件。";
+        }
+        if (generationResult.isRuleBasedFallback()) {
+            if (generationResult.getLlmMessage() != null && generationResult.getLlmMessage().startsWith("大模型生成失败")) {
+                return generationResult.getLlmMessage() + " 当前显示规则兜底测试代码。";
+            }
+            return "当前测试代码为规则兜底生成，大模型生成失败或未启用。";
+        }
+        return generationResult.getLlmMessage() == null ? "" : generationResult.getLlmMessage();
     }
 
     /**

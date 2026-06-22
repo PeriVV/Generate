@@ -1,0 +1,111 @@
+2026-06-21T23:16:44.885+0800 [DEBUG] [org.gradle.launcher.daemon.bootstrap.DaemonMain] Assuming the daemon was started with following jvm opts: [--add-opens=java.base/java.util=ALL-UNNAMED, --add-opens=java.base/java.lang=ALL-UNNAMED, --add-opens=java.base/java.lang.invoke=ALL-UNNAMED, --add-opens=java.prefs/java.util.prefs=ALL-UNNAMED, --add-opens=java.base/java.nio.charset=ALL-UNNAMED, --add-opens=java.base/java.net=ALL-UNNAMED, --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED, -XX:MaxMetaspaceSize=384m, -XX:+HeapDumpOnOutOfMemoryError, -Xms256m, -Xmx512m, -Dfile.encoding=UTF-8, -Duser.country, -Duser.language=en, -Duser.variant]
+2026-06-21T23:16:44.951+0800 [INFO] [org.gradle.launcher.daemon.server.Daemon] start() called on daemon - DefaultDaemonContext[uid=9ae8734a-dbec-4ece-bf37-5f7ccd39aae0,javaHome=/usr/lib/jvm/java-17-openjdk-amd64,daemonRegistryDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/daemon,pid=13506,idleTimeout=120000,priority=NORMAL,applyInstrumentationAgent=true,daemonOpts=--add-opens=java.base/java.util=ALL-UNNAMED,--add-opens=java.base/java.lang=ALL-UNNAMED,--add-opens=java.base/java.lang.invoke=ALL-UNNAMED,--add-opens=java.prefs/java.util.prefs=ALL-UNNAMED,--add-opens=java.base/java.nio.charset=ALL-UNNAMED,--add-opens=java.base/java.net=ALL-UNNAMED,--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED,-XX:MaxMetaspaceSize=384m,-XX:+HeapDumpOnOutOfMemoryError,-Xms256m,-Xmx512m,-Dfile.encoding=UTF-8,-Duser.country,-Duser.language=en,-Duser.variant]
+2026-06-21T23:16:44.966+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Adding IP addresses for network interface eth4
+2026-06-21T23:16:44.967+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Is this a loopback interface? false
+2026-06-21T23:16:44.968+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Adding remote address /192.168.1.6
+2026-06-21T23:16:44.968+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Adding IP addresses for network interface lo
+2026-06-21T23:16:44.969+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Is this a loopback interface? true
+2026-06-21T23:16:44.969+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Adding loopback address /0:0:0:0:0:0:0:1%lo
+2026-06-21T23:16:44.970+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Ignoring remote address on loopback interface /10.255.255.254
+2026-06-21T23:16:44.971+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.InetAddresses] Adding loopback address /127.0.0.1
+2026-06-21T23:16:44.972+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.TcpIncomingConnector] Listening on [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]].
+2026-06-21T23:16:44.983+0800 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] Daemon starting at: Sun Jun 21 23:16:44 CST 2026, with address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:44.984+0800 [INFO] [org.gradle.launcher.daemon.server.DaemonRegistryUpdater] Advertising the daemon address to the clients: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:44.985+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonRegistryUpdater] Advertised daemon context: DefaultDaemonContext[uid=9ae8734a-dbec-4ece-bf37-5f7ccd39aae0,javaHome=/usr/lib/jvm/java-17-openjdk-amd64,daemonRegistryDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/daemon,pid=13506,idleTimeout=120000,priority=NORMAL,applyInstrumentationAgent=true,daemonOpts=--add-opens=java.base/java.util=ALL-UNNAMED,--add-opens=java.base/java.lang=ALL-UNNAMED,--add-opens=java.base/java.lang.invoke=ALL-UNNAMED,--add-opens=java.prefs/java.util.prefs=ALL-UNNAMED,--add-opens=java.base/java.nio.charset=ALL-UNNAMED,--add-opens=java.base/java.net=ALL-UNNAMED,--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED,-XX:MaxMetaspaceSize=384m,-XX:+HeapDumpOnOutOfMemoryError,-Xms256m,-Xmx512m,-Dfile.encoding=UTF-8,-Duser.country,-Duser.language=en,-Duser.variant]
+2026-06-21T23:16:44.986+0800 [DEBUG] [org.gradle.launcher.daemon.registry.PersistentDaemonRegistry] Storing daemon address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]], context: DefaultDaemonContext[uid=9ae8734a-dbec-4ece-bf37-5f7ccd39aae0,javaHome=/usr/lib/jvm/java-17-openjdk-amd64,daemonRegistryDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/daemon,pid=13506,idleTimeout=120000,priority=NORMAL,applyInstrumentationAgent=true,daemonOpts=--add-opens=java.base/java.util=ALL-UNNAMED,--add-opens=java.base/java.lang=ALL-UNNAMED,--add-opens=java.base/java.lang.invoke=ALL-UNNAMED,--add-opens=java.prefs/java.util.prefs=ALL-UNNAMED,--add-opens=java.base/java.nio.charset=ALL-UNNAMED,--add-opens=java.base/java.net=ALL-UNNAMED,--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED,-XX:MaxMetaspaceSize=384m,-XX:+HeapDumpOnOutOfMemoryError,-Xms256m,-Xmx512m,-Dfile.encoding=UTF-8,-Duser.country,-Duser.language=en,-Duser.variant]
+2026-06-21T23:16:44.995+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Waiting to acquire exclusive lock on daemon addresses registry.
+2026-06-21T23:16:44.998+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Lock acquired on daemon addresses registry.
+2026-06-21T23:16:44.999+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on daemon addresses registry.
+2026-06-21T23:16:45.002+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Waiting to acquire exclusive lock on daemon addresses registry.
+2026-06-21T23:16:45.003+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Lock acquired on daemon addresses registry.
+2026-06-21T23:16:45.006+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on daemon addresses registry.
+2026-06-21T23:16:45.008+0800 [LIFECYCLE] [org.gradle.launcher.daemon.server.Daemon] Daemon server started.
+2026-06-21T23:16:45.009+0800 [DEBUG] [org.gradle.launcher.daemon.bootstrap.DaemonStartupCommunication] Completed writing the daemon greeting. Closing streams...
+2026-06-21T23:16:45.012+0800 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] stopOnExpiration() called on daemon
+2026-06-21T23:16:45.013+0800 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] awaitExpiration() called on daemon
+2026-06-21T23:16:45.013+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] daemon is running. Sleeping until state changes.
+2026-06-21T23:16:45.026+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.TcpIncomingConnector] Accepted connection from /127.0.0.1:48060 to /127.0.0.1:44985.
+2026-06-21T23:16:45.039+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 29: received class org.gradle.launcher.daemon.protocol.Build
+2026-06-21T23:16:45.040+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultDaemonConnection] thread 29: Received non-IO message from client: Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}
+2026-06-21T23:16:45.040+0800 [INFO] [org.gradle.launcher.daemon.server.DefaultIncomingConnectionHandler] Received command: Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}.
+2026-06-21T23:16:45.041+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultIncomingConnectionHandler] Starting executing command: Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate} with connection: socket connection from /127.0.0.1:44985 to /127.0.0.1:48060.
+2026-06-21T23:16:45.043+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Command execution: started DaemonCommandExecution[command = Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}, connection = DefaultDaemonConnection: socket connection from /127.0.0.1:44985 to /127.0.0.1:48060] after 0.0 minutes of idle
+2026-06-21T23:16:45.046+0800 [INFO] [org.gradle.launcher.daemon.server.DaemonRegistryUpdater] Marking the daemon as busy, address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:45.047+0800 [DEBUG] [org.gradle.launcher.daemon.registry.PersistentDaemonRegistry] Marking busy by address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:45.048+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Waiting to acquire exclusive lock on daemon addresses registry.
+2026-06-21T23:16:45.050+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Lock acquired on daemon addresses registry.
+2026-06-21T23:16:45.053+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on daemon addresses registry.
+2026-06-21T23:16:45.055+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] resetting idle timer
+2026-06-21T23:16:45.055+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] daemon is running. Sleeping until state changes.
+2026-06-21T23:16:45.056+0800 [INFO] [org.gradle.launcher.daemon.server.exec.StartBuildOrRespondWithBusy] Daemon is about to start building Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}. Dispatching build started information...
+2026-06-21T23:16:45.056+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 31: dispatching org.gradle.launcher.daemon.protocol.BuildStarted@8a9d059
+2026-06-21T23:16:45.058+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.EstablishBuildEnvironment] Configuring env variables: [PATH, LESSCLOSE, NO_PROXY, XDG_DATA_DIRS, https_proxy, GIT_PAGER, WSL2_GUI_APPS_ENABLED, TERM, HTTP_PROXY, LANG, DBUS_SESSION_BUS_ADDRESS, DISPLAY, GH_PAGER, GRADLE_USER_HOME, NVM_INC, WAYLAND_DISPLAY, COLORTERM, HTTPS_PROXY, CODEX_THREAD_ID, LOGNAME, PWD, NO_COLOR, _, CODEX_MANAGED_BY_NPM, CODEX_CI, http_proxy, no_proxy, NVM_CD_FLAGS, SHELL, NVM_DIR, LESSOPEN, WSL_INTEROP, WSL_DISTRO_NAME, PAGER, HOSTTYPE, USER, PULSE_SERVER, NAME, LC_ALL, WSLENV, LC_CTYPE, LS_COLORS, XDG_RUNTIME_DIR, CODEX_MANAGED_PACKAGE_ROOT, NVM_BIN, HOME, SHLVL]
+2026-06-21T23:16:45.059+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 29: received class org.gradle.launcher.daemon.protocol.CloseInput
+2026-06-21T23:16:45.060+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultDaemonConnection] thread 29: Received IO message from client: org.gradle.launcher.daemon.protocol.CloseInput@5b732043
+2026-06-21T23:16:45.061+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.LogToClient] About to start relaying all logs to the client via the connection.
+2026-06-21T23:16:45.062+0800 [INFO] [org.gradle.launcher.daemon.server.exec.LogToClient] The client will now receive all logging from the daemon (pid: 13506). The daemon log file: /mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/daemon/8.1.1/daemon-13506.out.log
+2026-06-21T23:16:45.063+0800 [INFO] [org.gradle.launcher.daemon.server.exec.ForwardClientInput] Closing daemon's stdin at end of input.
+2026-06-21T23:16:45.063+0800 [INFO] [org.gradle.launcher.daemon.server.exec.ForwardClientInput] The daemon will no longer process any standard input.
+2026-06-21T23:16:45.063+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.RequestStopIfSingleUsedDaemon] Requesting daemon stop after processing Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}
+2026-06-21T23:16:45.065+0800 [LIFECYCLE] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Daemon will be stopped at the end of the build 
+2026-06-21T23:16:45.066+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Stop as soon as idle requested. The daemon is busy: true
+2026-06-21T23:16:45.067+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] daemon stop has been requested. Sleeping until state changes.
+2026-06-21T23:16:45.067+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.ExecuteBuild] The daemon has started executing the build.
+2026-06-21T23:16:45.068+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.ExecuteBuild] Executing build with daemon context: DefaultDaemonContext[uid=9ae8734a-dbec-4ece-bf37-5f7ccd39aae0,javaHome=/usr/lib/jvm/java-17-openjdk-amd64,daemonRegistryDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/daemon,pid=13506,idleTimeout=120000,priority=NORMAL,applyInstrumentationAgent=true,daemonOpts=--add-opens=java.base/java.util=ALL-UNNAMED,--add-opens=java.base/java.lang=ALL-UNNAMED,--add-opens=java.base/java.lang.invoke=ALL-UNNAMED,--add-opens=java.prefs/java.util.prefs=ALL-UNNAMED,--add-opens=java.base/java.nio.charset=ALL-UNNAMED,--add-opens=java.base/java.net=ALL-UNNAMED,--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED,-XX:MaxMetaspaceSize=384m,-XX:+HeapDumpOnOutOfMemoryError,-Xms256m,-Xmx512m,-Dfile.encoding=UTF-8,-Duser.country,-Duser.language=en,-Duser.variant]
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Gradle could not start your build.
+> Could not create service of type ChecksumService using BuildSessionScopeServices.createChecksumService().
+   > java.io.IOException: Input/output error
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+
+* Get more help at https://help.gradle.org
+
+BUILD FAILED in 1s
+2026-06-21T23:16:45.684+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.ExecuteBuild] The daemon has finished executing the build.
+2026-06-21T23:16:45.689+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] daemon stop has been requested. Sleeping until state changes.
+2026-06-21T23:16:45.690+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Command execution: finished waiting for DaemonCommandExecution[command = Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}, connection = DefaultDaemonConnection: socket connection from /127.0.0.1:44985 to /127.0.0.1:48060]. Result org.gradle.launcher.daemon.server.DaemonStateCoordinator@4f31d38 with state StopRequested
+2026-06-21T23:16:45.691+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Command execution: completed DaemonCommandExecution[command = Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}, connection = DefaultDaemonConnection: socket connection from /127.0.0.1:44985 to /127.0.0.1:48060]
+2026-06-21T23:16:45.691+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] resetting idle timer
+2026-06-21T23:16:45.692+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] Marking daemon stopped due to command completed and stop requested. The daemon is running a build: false
+2026-06-21T23:16:45.693+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonStateCoordinator] daemon has stopped.
+2026-06-21T23:16:45.693+0800 [DEBUG] [org.gradle.launcher.daemon.server.exec.ReturnResult] Daemon is dispatching the build result: Success[value=org.gradle.launcher.exec.BuildActionResult@7ab077ae]
+2026-06-21T23:16:45.693+0800 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] stop() called on daemon
+2026-06-21T23:16:45.694+0800 [INFO] [org.gradle.launcher.daemon.server.Daemon] Stop requested. Daemon is removing its presence from the registry...
+2026-06-21T23:16:45.694+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 28: dispatching Success[value=org.gradle.launcher.exec.BuildActionResult@7ab077ae]
+2026-06-21T23:16:45.695+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonRegistryUpdater] Removing our presence to clients, eg. removing this address from the registry: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:45.696+0800 [DEBUG] [org.gradle.launcher.daemon.registry.PersistentDaemonRegistry] Removing daemon address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:45.698+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Waiting to acquire exclusive lock on daemon addresses registry.
+2026-06-21T23:16:45.700+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultIncomingConnectionHandler] Finishing executing command: Build{id=dae1f0b2-768d-458a-8f4e-751fa743b5a8, currentDir=/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate}
+2026-06-21T23:16:45.700+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Lock acquired on daemon addresses registry.
+2026-06-21T23:16:45.704+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on daemon addresses registry.
+2026-06-21T23:16:45.707+0800 [DEBUG] [org.gradle.launcher.daemon.server.DaemonRegistryUpdater] Address removed from registry.
+2026-06-21T23:16:45.711+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 29: received class org.gradle.launcher.daemon.protocol.Finished
+2026-06-21T23:16:45.711+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultDaemonConnection] thread 29: Received non-IO message from client: org.gradle.launcher.daemon.protocol.Finished@672cc4ed
+2026-06-21T23:16:45.712+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultIncomingConnectionHandler] Received finished message: org.gradle.launcher.daemon.protocol.Finished@672cc4ed
+2026-06-21T23:16:45.713+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 28: stopping connection
+2026-06-21T23:16:45.714+0800 [DEBUG] [org.gradle.internal.remote.internal.inet.SocketConnection] Discarding EOFException: java.io.EOFException
+2026-06-21T23:16:45.714+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 29: received null
+2026-06-21T23:16:45.715+0800 [DEBUG] [org.gradle.launcher.daemon.server.DefaultDaemonConnection] thread 29: Received end-of-input from client.
+2026-06-21T23:16:45.715+0800 [DEBUG] [org.gradle.launcher.daemon.server.SynchronizedDispatchConnection] thread 28: stopping connection
+2026-06-21T23:16:45.718+0800 [DEBUG] [org.gradle.cache.internal.DefaultCacheCoordinator] Cache jars (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/jars-9) was closed 0 times.
+2026-06-21T23:16:45.719+0800 [DEBUG] [org.gradle.internal.watch.vfs.impl.WatchingVirtualFileSystem] Closing VFS, dropping state
+2026-06-21T23:16:45.720+0800 [DEBUG] [org.gradle.internal.watch.registry.impl.DefaultFileWatcherRegistry] Finished listening to file system change events
+2026-06-21T23:16:45.720+0800 [DEBUG] [org.gradle.cache.internal.DefaultCacheCoordinator] Cache Generated Gradle JARs cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/8.1.1/generated-gradle-jars) was closed 0 times.
+2026-06-21T23:16:45.722+0800 [DEBUG] [org.gradle.cache.internal.LockOnDemandCrossProcessCacheAccess] Releasing file lock for artifact cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/modules-2)
+2026-06-21T23:16:45.722+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on artifact cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/modules-2).
+2026-06-21T23:16:45.725+0800 [DEBUG] [org.gradle.cache.internal.LockOnDemandCrossProcessCacheAccess] Releasing file lock for journal cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/journal-1)
+2026-06-21T23:16:45.726+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on journal cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/journal-1).
+2026-06-21T23:16:45.727+0800 [DEBUG] [org.gradle.cache.internal.LockOnDemandCrossProcessCacheAccess] Releasing file lock for file hash cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/8.1.1/fileHashes)
+2026-06-21T23:16:45.728+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on file hash cache (/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/.gradle-home/caches/8.1.1/fileHashes).
+Daemon vm is shutting down... The daemon has exited normally or was terminated in response to a user interrupt.
+2026-06-21T23:16:45.731+0800 [DEBUG] [org.gradle.launcher.daemon.registry.PersistentDaemonRegistry] Removing daemon address: [84990746-5ac0-4aca-a650-2da7a628e11b port:44985, addresses:[localhost/127.0.0.1]]
+2026-06-21T23:16:45.733+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Waiting to acquire exclusive lock on daemon addresses registry.
+2026-06-21T23:16:45.735+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Lock acquired on daemon addresses registry.
+2026-06-21T23:16:45.738+0800 [DEBUG] [org.gradle.cache.internal.DefaultFileLockManager] Releasing lock on daemon addresses registry.

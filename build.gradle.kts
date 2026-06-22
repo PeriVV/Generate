@@ -32,7 +32,7 @@ intellij {
     version.set("2022.2.5")
     type.set("IC") // 目标 IDE 平台为 IntelliJ IDEA Community
 
-    plugins.set(arrayListOf("java", "gradle"))
+    plugins.set(arrayListOf("java"))
 }
 
 tasks {
@@ -78,7 +78,6 @@ dependencies {
     implementation("com.github.javaparser:javaparser-symbol-solver-core:3.25.10")
 
     implementation("org.apache.commons:commons-lang3:3.12.0")
-    implementation("org.gradle:gradle-tooling-api:7.3-20210825160000+0000")
     implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation ("org.json:json:20210307")
 }

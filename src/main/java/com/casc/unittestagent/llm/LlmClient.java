@@ -7,12 +7,11 @@ package com.casc.unittestagent.llm;
  */
 public interface LlmClient {
     /**
-     * 执行一次大模型补全请求。
-     * 具体实现可以访问远程服务，也可以在离线场景返回空结果。
+     * 执行一次单元测试生成请求。
      *
-     * @param prompt 发送给大模型服务的提示词内容
-     * @return 大模型返回的补全文本；离线实现可以返回空字符串
+     * @param request 发送给大模型服务的结构化上下文
+     * @return 大模型返回的 Mock 策略和测试代码
      * @throws Exception 当具体客户端实现请求失败时抛出
      */
-    String complete(String prompt) throws Exception;
+    LlmGenerationResponse generateUnitTest(LlmGenerationRequest request) throws Exception;
 }

@@ -35,6 +35,8 @@ public class MethodModel {
     private List<BranchModel> branches = new ArrayList<>();
     /** 被测方法涉及的外部依赖列表，用于生成 Mock 字段和 verify 规则。 */
     private List<DependencyModel> dependencies = new ArrayList<>();
+    /** 被测方法的调用点列表，用于向大模型补充真实业务调用方式。 */
+    private List<MethodUsageModel> usages = new ArrayList<>();
     /** 当前类声明的方法名列表，用于区分本类内部调用和普通函数调用。 */
     private List<String> declaredMethodNames = new ArrayList<>();
 
@@ -348,6 +350,24 @@ public class MethodModel {
      */
     public void setDependencies(List<DependencyModel> dependencies) {
         this.dependencies = dependencies;
+    }
+
+    /**
+     * 读取被测方法的调用点列表。
+     *
+     * @return 调用点模型列表
+     */
+    public List<MethodUsageModel> getUsages() {
+        return usages;
+    }
+
+    /**
+     * 更新被测方法的调用点列表。
+     *
+     * @param usages 调用点模型列表
+     */
+    public void setUsages(List<MethodUsageModel> usages) {
+        this.usages = usages;
     }
 
     /**

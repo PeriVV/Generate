@@ -19,6 +19,12 @@ public class GenerationResult {
     private GeneratedTestFile generatedTestFile;
     /** 生成过程中的可恢复告警，服务层用它把异常信息反馈给用户。 */
     private List<String> warnings = new ArrayList<>();
+    /** 测试代码是否来自大模型。 */
+    private boolean generatedByLlm;
+    /** 测试代码是否来自规则兜底。 */
+    private boolean ruleBasedFallback;
+    /** 大模型调用状态或失败原因。 */
+    private String llmMessage;
 
     /**
      * 读取源码分析得到的方法模型，是后续所有生成结果的基础上下文。
@@ -138,5 +144,29 @@ public class GenerationResult {
      */
     public void setWarnings(List<String> warnings) {
         this.warnings = warnings;
+    }
+
+    public boolean isGeneratedByLlm() {
+        return generatedByLlm;
+    }
+
+    public void setGeneratedByLlm(boolean generatedByLlm) {
+        this.generatedByLlm = generatedByLlm;
+    }
+
+    public boolean isRuleBasedFallback() {
+        return ruleBasedFallback;
+    }
+
+    public void setRuleBasedFallback(boolean ruleBasedFallback) {
+        this.ruleBasedFallback = ruleBasedFallback;
+    }
+
+    public String getLlmMessage() {
+        return llmMessage;
+    }
+
+    public void setLlmMessage(String llmMessage) {
+        this.llmMessage = llmMessage;
     }
 }

@@ -28,6 +28,8 @@ public class JavaSourceAnalyzer {
     private final ConstraintExtractor constraintExtractor = new ConstraintExtractor();
     /** 依赖提取器，负责识别字段依赖和调用方法。 */
     private final DependencyExtractor dependencyExtractor = new DependencyExtractor();
+    /** 调用点提取器，负责识别当前类内对被测方法的调用。 */
+    private final MethodUsageExtractor methodUsageExtractor = new MethodUsageExtractor();
     /** JavaParser 实例，显式使用 Java 17 语言级别以兼容 switch expression、record、yield 和 var。 */
     private final JavaParser javaParser;
 
@@ -82,6 +84,7 @@ public class JavaSourceAnalyzer {
         model.setConstraints(constraintExtractor.extract(methodDeclaration));
         model.setBranches(constraintExtractor.extractBranches(methodDeclaration));
         model.setDependencies(dependencyExtractor.extract(classDeclaration.get(), methodDeclaration));
+        model.setUsages(methodUsageExtractor.extract(classDeclaration.get(), methodDeclaration));
         return model;
     }
 

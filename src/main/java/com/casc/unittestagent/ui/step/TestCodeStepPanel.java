@@ -9,17 +9,21 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.EditorFactory;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.EditorTextField;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.util.ui.JBUI;
 
 import javax.swing.JButton;
+import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
+import javax.swing.JTextArea;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
+import java.util.function.Consumer;
 
 /**
  * 测试代码步骤面板。
@@ -30,6 +34,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     private EditorTextField editorTextField;
     /** 原始生成代码。 */
     private final String generatedCode;
+    /** 用户补充要求输入框。 */
+    private JTextArea feedbackArea;
 
     /**
      * 创建测试代码页。
@@ -38,13 +44,15 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
      * @param status 测试代码生成状态
      * @param code 当前测试代码
      * @param error 错误详情
-     * @param onFormat 格式化动作
+     * @param generationNote 测试代码来源提示
+     * @param onRegenerate 带补充要求再次生成动作
      */
     public TestCodeStepPanel(Project project,
                              GenerationStatus status,
                              String code,
                              String error,
-                             Runnable onFormat) {
+                             String generationNote,
+                             Consumer<String> onRegenerate) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         this.generatedCode = code == null ? "" : code;
@@ -61,6 +69,12 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
             return;
         }
 
+        if (generationNote != null && !generationNote.isBlank()) {
+            JBLabel note = new JBLabel(generationNote);
+            note.setBorder(JBUI.Borders.emptyBottom(8));
+            add(note, BorderLayout.NORTH);
+        }
+
         Document document = EditorFactory.getInstance().createDocument(this.generatedCode);
         editorTextField = new EditorTextField(document, project, JavaFileType.INSTANCE, false, false);
         editorTextField.setOneLineMode(false);
@@ -70,17 +84,27 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         add(scrollPane, BorderLayout.CENTER);
 
+        JPanel bottom = new JPanel(new BorderLayout(0, 6));
+        JPanel feedbackPanel = new JPanel(new BorderLayout(6, 0));
+        feedbackArea = new JTextArea(2, 60);
+        feedbackArea.setLineWrap(true);
+        feedbackArea.setWrapStyleWord(true);
+        feedbackPanel.add(new JLabel("补充要求"), BorderLayout.WEST);
+        feedbackPanel.add(new JScrollPane(feedbackArea), BorderLayout.CENTER);
+        bottom.add(feedbackPanel, BorderLayout.CENTER);
+
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         JButton copy = new JButton("复制代码");
         JButton restore = new JButton("恢复生成代码");
-        JButton format = new JButton("格式化代码");
+        JButton regenerate = new JButton("再次生成");
         copy.addActionListener(event -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(getCode()), null));
         restore.addActionListener(event -> setCode(generatedCode));
-        format.addActionListener(event -> onFormat.run());
+        regenerate.addActionListener(event -> onRegenerate.accept(feedbackArea.getText()));
         buttons.add(copy);
         buttons.add(restore);
-        buttons.add(format);
-        add(buttons, BorderLayout.SOUTH);
+        buttons.add(regenerate);
+        bottom.add(buttons, BorderLayout.SOUTH);
+        add(bottom, BorderLayout.SOUTH);
     }
 
     /**

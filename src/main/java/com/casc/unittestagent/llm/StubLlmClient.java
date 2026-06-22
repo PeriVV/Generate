@@ -12,11 +12,13 @@ public class StubLlmClient implements LlmClient {
      *
       * 异常情况：无主动抛出的受检异常；非法输入通常会通过空结果、告警或表格校验处理。
       *
-     * @param prompt 发送给大模型服务的提示词内容
+     * @param request 发送给大模型服务的提示词内容
      * @return 远程大模型返回的补全文本
      */
     @Override
-    public String complete(String prompt) {
-        return "";
+    public LlmGenerationResponse generateUnitTest(LlmGenerationRequest request) {
+        LlmGenerationResponse response = new LlmGenerationResponse();
+        response.setTestCode("");
+        return response;
     }
 }
