@@ -13,7 +13,7 @@ import java.util.List;
  */
 public class TestDataRangeTableModel extends AbstractTableModel {
     /** 配置表格的列名定义，顺序需要和 getValueAt、setValueAt 保持一致。 */
-    private final String[] columns = {"类型", "最小值", "最大值", "小数位数", "字符串规则"};
+    private final String[] columns = {"类型", "最小值", "最大值", "小数位数", "字符串规则", "候选值"};
     /** 当前进程内生效的测试数据范围配置列表。 */
     private List<TestDataRangeConfig> configs;
 
@@ -93,6 +93,8 @@ public class TestDataRangeTableModel extends AbstractTableModel {
                 return config.getDecimalScale() == null ? "-" : config.getDecimalScale();
             case 4:
                 return valueOrDash(config.getStringRegex());
+            case 5:
+                return valueOrDash(config.getCandidateValues());
             default:
                 return "";
         }
@@ -116,6 +118,9 @@ public class TestDataRangeTableModel extends AbstractTableModel {
         }
         if (config.isStringType()) {
             return columnIndex == 4;
+        }
+        if (config.isCandidateType()) {
+            return columnIndex == 5;
         }
         if (config.isFloatingType()) {
             return columnIndex == 1 || columnIndex == 2 || columnIndex == 3;
@@ -157,6 +162,9 @@ public class TestDataRangeTableModel extends AbstractTableModel {
                 break;
             case 4:
                 config.setStringRegex(text);
+                break;
+            case 5:
+                config.setCandidateValues(text);
                 break;
             default:
                 break;
@@ -210,6 +218,10 @@ public class TestDataRangeTableModel extends AbstractTableModel {
                 }
                 continue;
             }
+            if (config.isCandidateType()) {
+                validateCandidateValues(config, errors);
+                continue;
+            }
 
             try {
                 double min = Double.parseDouble(config.getMinValue());
@@ -229,6 +241,51 @@ public class TestDataRangeTableModel extends AbstractTableModel {
             }
         }
         return errors;
+    }
+
+    /**
+     * 校验候选值配置。
+     * boolean 候选值只能是 true 或 false；char 候选值必须是单个字符或单字符字面量。
+     */
+    private void validateCandidateValues(TestDataRangeConfig config, List<String> errors) {
+        String candidateValues = config.getCandidateValues();
+        if (candidateValues == null || candidateValues.isBlank()) {
+            errors.add(config.getTypeName() + " 的候选值不能为空。");
+            return;
+        }
+
+        String[] candidates = candidateValues.split(",");
+        boolean hasCandidate = false;
+        for (String rawCandidate : candidates) {
+            String candidate = rawCandidate.trim();
+            if (candidate.isBlank()) {
+                continue;
+            }
+            hasCandidate = true;
+            if (config.isBooleanType()
+                    && !"true".equalsIgnoreCase(candidate)
+                    && !"false".equalsIgnoreCase(candidate)) {
+                errors.add(config.getTypeName() + " 的候选值只能填写 true 或 false。");
+                return;
+            }
+            if (config.isCharacterType() && normalizeCharCandidate(candidate).length() != 1) {
+                errors.add(config.getTypeName() + " 的候选值必须是单个字符，多个字符请用英文逗号分隔。");
+                return;
+            }
+        }
+        if (!hasCandidate) {
+            errors.add(config.getTypeName() + " 的候选值不能为空。");
+        }
+    }
+
+    /**
+     * 去除 char 候选值外层单引号，便于校验用户输入。
+     */
+    private String normalizeCharCandidate(String candidate) {
+        if (candidate.length() >= 2 && candidate.startsWith("'") && candidate.endsWith("'")) {
+            return candidate.substring(1, candidate.length() - 1);
+        }
+        return candidate;
     }
 
     /**

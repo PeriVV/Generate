@@ -81,6 +81,7 @@ public class ConstraintExtractor {
             branch.setSafeCondition(negate(ifStmt.getCondition()));
             branch.setAction("throw");
             branch.setExceptionType(extractExceptionType(throwStatements.get(0)));
+            branch.setPreconditions(precedingThrowGuardSafeConditions(methodDeclaration, ifStmt));
             branches.add(branch);
         }
 
@@ -97,7 +98,7 @@ public class ConstraintExtractor {
 
     /**
      * 追加 switch 分支模型。
-     * switch expression 的 case 和 default 是 resolveTemplate 这类方法的核心路径，必须进入场景规划视图。
+     * switch expression 的 case 和 default 是分支覆盖的重要路径，必须进入场景规划视图。
      */
     private void appendSwitchBranches(List<BranchModel> branches, String selector, List<SwitchEntry> entries) {
         for (SwitchEntry entry : entries) {
@@ -115,6 +116,30 @@ public class ConstraintExtractor {
             }
             branches.add(branch);
         }
+    }
+
+    /**
+     * 收集目标 throw 分支之前的异常保护条件的安全反向条件。
+     * 这些条件用于生成目标异常路径时先绕过更早的无关异常分支。
+     */
+    private List<String> precedingThrowGuardSafeConditions(MethodDeclaration methodDeclaration, IfStmt targetIf) {
+        List<String> preconditions = new ArrayList<>();
+        if (targetIf.getBegin().isEmpty()) {
+            return preconditions;
+        }
+        int targetLine = targetIf.getBegin().get().line;
+        for (IfStmt ifStmt : methodDeclaration.findAll(IfStmt.class)) {
+            if (ifStmt == targetIf || ifStmt.getBegin().isEmpty()) {
+                continue;
+            }
+            if (ifStmt.getBegin().get().line >= targetLine) {
+                continue;
+            }
+            if (!ifStmt.getThenStmt().findAll(ThrowStmt.class).isEmpty()) {
+                preconditions.add(negate(ifStmt.getCondition()));
+            }
+        }
+        return preconditions;
     }
 
     /**

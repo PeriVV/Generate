@@ -1,6 +1,7 @@
 package com.casc.unittestagent.llm;
 
 import com.casc.unittestagent.model.BranchModel;
+import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.ConstraintModel;
 import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.MethodUsageModel;
@@ -19,15 +20,19 @@ public class LlmGenerationRequest {
     private String methodName;
     private String methodSignature;
     private String returnType;
+    private String accessModifier;
     private String methodSourceCode;
     private String classFields;
     private String imports;
+    private List<String> knownTypes = new ArrayList<>();
+    private List<String> chainedCallReturnTypes = new ArrayList<>();
     private List<ParameterModel> parameters = new ArrayList<>();
     private List<ConstraintModel> constraints = new ArrayList<>();
     private List<BranchModel> branches = new ArrayList<>();
     private List<TestScenario> scenarios = new ArrayList<>();
     private List<DependencyModel> dependencies = new ArrayList<>();
     private List<MethodUsageModel> usages = new ArrayList<>();
+    private List<CallContextModel> callContexts = new ArrayList<>();
     private String existingTestCodeSummary;
     private String userInstruction;
     private String testFramework = "JUnit5";
@@ -73,6 +78,14 @@ public class LlmGenerationRequest {
         this.returnType = returnType;
     }
 
+    public String getAccessModifier() {
+        return accessModifier;
+    }
+
+    public void setAccessModifier(String accessModifier) {
+        this.accessModifier = accessModifier;
+    }
+
     public String getMethodSourceCode() {
         return methodSourceCode;
     }
@@ -95,6 +108,22 @@ public class LlmGenerationRequest {
 
     public void setImports(String imports) {
         this.imports = imports;
+    }
+
+    public List<String> getKnownTypes() {
+        return knownTypes;
+    }
+
+    public void setKnownTypes(List<String> knownTypes) {
+        this.knownTypes = knownTypes;
+    }
+
+    public List<String> getChainedCallReturnTypes() {
+        return chainedCallReturnTypes;
+    }
+
+    public void setChainedCallReturnTypes(List<String> chainedCallReturnTypes) {
+        this.chainedCallReturnTypes = chainedCallReturnTypes;
     }
 
     public List<ParameterModel> getParameters() {
@@ -143,6 +172,14 @@ public class LlmGenerationRequest {
 
     public void setUsages(List<MethodUsageModel> usages) {
         this.usages = usages;
+    }
+
+    public List<CallContextModel> getCallContexts() {
+        return callContexts;
+    }
+
+    public void setCallContexts(List<CallContextModel> callContexts) {
+        this.callContexts = callContexts;
     }
 
     public String getExistingTestCodeSummary() {

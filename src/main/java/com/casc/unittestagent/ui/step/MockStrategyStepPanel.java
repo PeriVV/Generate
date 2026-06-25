@@ -8,31 +8,89 @@ import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
 
+import javax.swing.JButton;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
+import java.awt.FlowLayout;
+import java.awt.GridLayout;
 
 /**
  * Mock 策略步骤面板。
- * 页面使用一个统一表格展示字段依赖、参数依赖、静态方法、本类内部调用和局部对象调用。
+ * 页面同时展示静态策略和用户手动调用得到的大模型候选策略，由用户选择后续测试代码生成使用哪一份。
  */
 public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
     /**
      * 创建 Mock 策略页。
      *
      * @param result 生成结果
+     * @param llmRunning 是否正在调用大模型生成 Mock 策略
+     * @param onGenerateLlmMockStrategy 调用大模型生成候选 Mock 策略
+     * @param onUseStaticMockStrategy 选择静态 Mock 策略
+     * @param onUseLlmMockStrategy 选择大模型候选 Mock 策略
      */
-    public MockStrategyStepPanel(GenerationResult result) {
+    public MockStrategyStepPanel(GenerationResult result,
+                                 boolean llmRunning,
+                                 Runnable onGenerateLlmMockStrategy,
+                                 Runnable onUseStaticMockStrategy,
+                                 Runnable onUseLlmMockStrategy) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
-        add(new UnitMindSectionPanel("Mock策略", table(model(result))), BorderLayout.CENTER);
+        add(toolbar(result, llmRunning, onGenerateLlmMockStrategy, onUseStaticMockStrategy, onUseLlmMockStrategy), BorderLayout.NORTH);
+
+        JPanel body = new JPanel(new GridLayout(0, 1, 0, 8));
+        body.add(new UnitMindSectionPanel("静态分析 Mock 策略", table(model(result == null ? null : result.getMockStrategy(), false))));
+        if (result != null && result.getLlmMockStrategy() != null) {
+            body.add(new UnitMindSectionPanel("大模型候选 Mock 策略", table(model(result.getLlmMockStrategy(), true))));
+        } else {
+            body.add(new UnitMindSectionPanel("大模型候选 Mock 策略", table(emptyLlmModel(llmRunning))));
+        }
+        add(body, BorderLayout.CENTER);
+    }
+
+    /**
+     * 构建顶部操作栏。
+     */
+    private JPanel toolbar(GenerationResult result,
+                           boolean llmRunning,
+                           Runnable onGenerateLlmMockStrategy,
+                           Runnable onUseStaticMockStrategy,
+                           Runnable onUseLlmMockStrategy) {
+        JPanel panel = new JPanel(new BorderLayout());
+        JLabel selected = new JLabel("当前用于测试代码生成：" + selectedText(result));
+        panel.add(selected, BorderLayout.WEST);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JButton generate = new JButton(llmRunning ? "大模型生成中..." : "调用大模型 Mock 策略");
+        JButton useStatic = new JButton("使用静态策略");
+        JButton useLlm = new JButton("使用大模型策略");
+        generate.setEnabled(!llmRunning && result != null && result.getMethodModel() != null);
+        useStatic.setEnabled(result != null && result.getMockStrategy() != null);
+        useLlm.setEnabled(result != null && result.getLlmMockStrategy() != null);
+        generate.addActionListener(event -> onGenerateLlmMockStrategy.run());
+        useStatic.addActionListener(event -> onUseStaticMockStrategy.run());
+        useLlm.addActionListener(event -> onUseLlmMockStrategy.run());
+        buttons.add(generate);
+        buttons.add(useStatic);
+        buttons.add(useLlm);
+        panel.add(buttons, BorderLayout.EAST);
+        return panel;
+    }
+
+    private String selectedText(GenerationResult result) {
+        if (result != null && result.isUseLlmMockStrategy() && result.getLlmMockStrategy() != null) {
+            return "大模型候选策略";
+        }
+        return "静态分析策略";
     }
 
     /**
      * 构建统一 Mock 策略表格模型。
      */
-    private DefaultTableModel model(GenerationResult result) {
+    private DefaultTableModel model(MockStrategy strategy, boolean fromLlm) {
         DefaultTableModel model = new DefaultTableModel(new String[]{"生成", "依赖类型", "对象/类名", "方法", "来源", "Mockito策略", "备注"}, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -44,13 +102,9 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
                 return true;
             }
         };
-        if (result == null || result.getMethodModel() == null) {
-            model.addRow(new Object[]{false, "尚未分析", "-", "-", "-", "-", "请先点击底部“重新分析”。"});
-            return model;
-        }
-        MockStrategy strategy = result.getMockStrategy();
         if (strategy == null || strategy.getStrategyItems() == null || strategy.getStrategyItems().isEmpty()) {
-            model.addRow(new Object[]{false, "不可直接Mock", "-", "-", "-", "不处理", "未识别到字段依赖、静态方法、本类内部调用或局部对象调用。"});
+            String remark = fromLlm ? "尚未调用大模型生成候选策略。" : "未识别到字段依赖、静态方法、本类内部调用或局部对象调用。";
+            model.addRow(new Object[]{false, fromLlm ? "未生成" : "不可直接Mock", "-", "-", "-", "不处理", remark});
             return model;
         }
         for (MockStrategyItem item : strategy.getStrategyItems()) {
@@ -62,6 +116,12 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
                     item.getMockitoStrategy(),
                     item.getRemark()});
         }
+        return model;
+    }
+
+    private DefaultTableModel emptyLlmModel(boolean llmRunning) {
+        DefaultTableModel model = new DefaultTableModel(new String[]{"生成", "依赖类型", "对象/类名", "方法", "来源", "Mockito策略", "备注"}, 0);
+        model.addRow(new Object[]{false, llmRunning ? "生成中" : "未生成", "-", "-", "-", "-", llmRunning ? "正在调用大模型生成候选 Mock 策略。" : "点击上方按钮后显示大模型候选策略。"});
         return model;
     }
 

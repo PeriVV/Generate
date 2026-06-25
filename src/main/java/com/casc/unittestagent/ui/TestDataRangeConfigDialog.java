@@ -61,6 +61,7 @@ public class TestDataRangeConfigDialog extends DialogWrapper {
         table.getColumnModel().getColumn(2).setPreferredWidth(120);
         table.getColumnModel().getColumn(3).setPreferredWidth(100);
         table.getColumnModel().getColumn(4).setPreferredWidth(220);
+        table.getColumnModel().getColumn(5).setPreferredWidth(180);
 
         JButton resetButton = new JButton("恢复默认");
         resetButton.addActionListener(event -> {
@@ -74,7 +75,7 @@ public class TestDataRangeConfigDialog extends DialogWrapper {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
         panel.add(buttonPanel, BorderLayout.SOUTH);
-        panel.setPreferredSize(new Dimension(760, 260));
+        panel.setPreferredSize(new Dimension(920, 300));
         return panel;
     }
 

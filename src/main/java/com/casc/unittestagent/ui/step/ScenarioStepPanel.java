@@ -64,7 +64,7 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
             return model;
         }
         for (TestScenario scenario : result.getScenarios()) {
-            model.addRow(new Object[]{true,
+            model.addRow(new Object[]{isExecutable(scenario),
                     scenario.getType(),
                     scenario.getDisplayNameCn(),
                     triggerText(scenario),
@@ -110,6 +110,9 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
      * 生成期望结果文本。
      */
     private String expectedText(TestScenario scenario) {
+        if (!isExecutable(scenario)) {
+            return "--";
+        }
         if ("EXCEPTION".equals(scenario.getType())) {
             return "抛出异常";
         }
@@ -117,5 +120,12 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
             return "按边界输入正常处理";
         }
         return "正常返回或完成调用";
+    }
+
+    /**
+     * 判断场景是否需要进入测试代码生成。
+     */
+    private boolean isExecutable(TestScenario scenario) {
+        return scenario.getType() != null && !scenario.getType().endsWith("_REASON");
     }
 }

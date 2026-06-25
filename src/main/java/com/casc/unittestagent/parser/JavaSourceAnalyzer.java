@@ -30,6 +30,8 @@ public class JavaSourceAnalyzer {
     private final DependencyExtractor dependencyExtractor = new DependencyExtractor();
     /** 调用点提取器，负责识别当前类内对被测方法的调用。 */
     private final MethodUsageExtractor methodUsageExtractor = new MethodUsageExtractor();
+    /** 调用链上下文提取器，负责识别被测方法内部调用形态。 */
+    private final CallContextExtractor callContextExtractor = new CallContextExtractor();
     /** JavaParser 实例，显式使用 Java 17 语言级别以兼容 switch expression、record、yield 和 var。 */
     private final JavaParser javaParser;
 
@@ -75,6 +77,7 @@ public class JavaSourceAnalyzer {
         model.setClassName(classDeclaration.get().getNameAsString());
         model.setMethodName(methodDeclaration.getNameAsString());
         model.setReturnType(methodDeclaration.getType().toString());
+        model.setAccessModifier(accessModifier(methodDeclaration));
         model.setProtectedMethod(methodDeclaration.isProtected());
         model.setImports(extractImports(compilationUnit));
         model.setThrownExceptions(extractThrownExceptions(methodDeclaration));
@@ -85,7 +88,24 @@ public class JavaSourceAnalyzer {
         model.setBranches(constraintExtractor.extractBranches(methodDeclaration));
         model.setDependencies(dependencyExtractor.extract(classDeclaration.get(), methodDeclaration));
         model.setUsages(methodUsageExtractor.extract(classDeclaration.get(), methodDeclaration));
+        model.setCallContexts(callContextExtractor.extract(classDeclaration.get(), methodDeclaration));
         return model;
+    }
+
+    /**
+     * 识别方法真实访问修饰符。
+     */
+    private String accessModifier(MethodDeclaration methodDeclaration) {
+        if (methodDeclaration.isPublic()) {
+            return "public";
+        }
+        if (methodDeclaration.isProtected()) {
+            return "protected";
+        }
+        if (methodDeclaration.isPrivate()) {
+            return "private";
+        }
+        return "package-private";
     }
 
     /**

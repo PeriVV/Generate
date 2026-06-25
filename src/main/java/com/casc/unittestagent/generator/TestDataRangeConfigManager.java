@@ -95,6 +95,8 @@ public class TestDataRangeConfigManager {
         defaults.add(new TestDataRangeConfig("long / Long", "-1000", "1000", null, null));
         defaults.add(new TestDataRangeConfig("float / Float", "-100.0", "100.0", 2, null));
         defaults.add(new TestDataRangeConfig("double / Double", "-100.0", "100.0", 2, null));
+        defaults.add(new TestDataRangeConfig("boolean / Boolean", null, null, null, null, "true,false"));
+        defaults.add(new TestDataRangeConfig("char / Character", null, null, null, null, "a,Z,0"));
         defaults.add(new TestDataRangeConfig("String", null, null, null, "[A-Za-z0-9_]{6,12}"));
         return defaults;
     }

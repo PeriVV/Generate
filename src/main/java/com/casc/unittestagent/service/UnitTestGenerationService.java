@@ -1,5 +1,6 @@
 package com.casc.unittestagent.service;
 
+import com.casc.unittestagent.generator.GeneratedTestCodePostProcessor;
 import com.casc.unittestagent.generator.JUnitMockitoTestGenerator;
 import com.casc.unittestagent.generator.MockStrategyPlanner;
 import com.casc.unittestagent.generator.TestDataGenerator;
@@ -10,19 +11,25 @@ import com.casc.unittestagent.llm.LlmGenerationRequest;
 import com.casc.unittestagent.llm.LlmGenerationResponse;
 import com.casc.unittestagent.llm.OpenAiCompatibleLlmClient;
 import com.casc.unittestagent.model.DependencyModel;
+import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.GeneratedTestFile;
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.MethodUsageModel;
 import com.casc.unittestagent.model.MockStrategy;
+import com.casc.unittestagent.model.MockStrategyItem;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.parser.JavaSourceAnalyzer;
 import com.casc.unittestagent.util.PsiUtils;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Computable;
+import com.intellij.psi.PsiCallExpression;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiElement;
@@ -31,6 +38,7 @@ import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiImportStatement;
 import com.intellij.psi.PsiJavaFile;
+import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.PsiModifier;
@@ -40,12 +48,16 @@ import com.intellij.psi.PsiStatement;
 import com.intellij.psi.PsiType;
 import com.intellij.psi.search.searches.ReferencesSearch;
 import com.intellij.psi.util.PsiTreeUtil;
+import com.intellij.psi.search.GlobalSearchScope;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 编排一次单元测试生成流程。
@@ -67,6 +79,8 @@ public class UnitTestGenerationService {
     private final MockStrategyPlanner mockStrategyPlanner = new MockStrategyPlanner();
     /** 测试源码生成器，负责输出最终 JUnit 与 Mockito 代码。 */
     private final JUnitMockitoTestGenerator testGenerator = new JUnitMockitoTestGenerator();
+    /** 生成代码后处理器，负责清理无效代码并提示可编译性风险。 */
+    private final GeneratedTestCodePostProcessor generatedCodePostProcessor = new GeneratedTestCodePostProcessor();
 
     /**
      * 执行单元测试源码生成。
@@ -80,32 +94,148 @@ public class UnitTestGenerationService {
      * @return 生成流程结果或生成的测试文件模型
      */
     public GenerationResult generate(Project project, PsiFile psiFile, Editor editor) {
+        GenerationResult result = analyzeMethod(project, psiFile, editor);
+        if (result.getMethodModel() == null) {
+            return result;
+        }
+        return generateArtifacts(project, psiFile, result);
+    }
+
+    /**
+     * 只执行方法概要与参数约束所需的静态分析。
+     * 该入口不读取大模型配置、不发起 HTTP 请求，适合右键打开 UnitMind 后立即执行。
+     */
+    public GenerationResult analyzeMethod(Project project, PsiFile psiFile, Editor editor) {
         GenerationResult result = new GenerationResult();
         try {
-            LOG.info("UnitMind: start generate test code");
-            String sourceText = PsiUtils.getSourceText(psiFile);
-            String preferredMethodName = PsiUtils.getCurrentMethodName(psiFile, editor);
-
-            MethodModel methodModel;
-            try {
-                methodModel = javaSourceAnalyzer.analyze(sourceText, preferredMethodName);
-            } catch (Exception parseException) {
-                result.getWarnings().add(parseException.getMessage() == null ? parseException.getClass().getSimpleName() : parseException.getMessage());
-                methodModel = buildPsiFallbackModel(psiFile, editor, preferredMethodName);
-                result.getWarnings().add("已启用 PSI 兜底解析，仅保留当前方法的基础结构和字段依赖，用于继续生成测试草稿。");
-            }
-            enrichUsagesFromPsi(project, psiFile, editor, preferredMethodName, methodModel);
+            LOG.info("UnitMind: start static method analysis");
+            StaticAnalysisContext staticContext = ApplicationManager.getApplication().runReadAction(
+                    (Computable<StaticAnalysisContext>) () -> buildStaticAnalysisContext(psiFile, editor));
+            MethodModel methodModel = staticContext.getMethodModel();
             LOG.info("UnitMind: method = " + methodModel.getClassName() + "#" + methodModel.getMethodName());
             testDataGenerator.enrich(methodModel);
+            result.setMethodModel(methodModel);
+        } catch (Exception ex) {
+            LOG.warn("UnitMind: static method analysis failed", ex);
+            result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 基于已完成的静态分析继续生成测试场景、Mock 策略和测试代码。
+     * 大模型调用只允许发生在该阶段，不能阻塞方法概要和参数约束分析。
+     */
+    public GenerationResult generateArtifacts(Project project, PsiFile psiFile, GenerationResult result) {
+        result = planScenarios(result);
+        result = planMockStrategy(result);
+        return generateTestCode(project, psiFile, result);
+    }
+
+    /**
+     * 基于静态分析结果规划测试场景，不调用大模型。
+     */
+    public GenerationResult planScenarios(GenerationResult result) {
+        if (result == null) {
+            result = new GenerationResult();
+        }
+        try {
+            MethodModel methodModel = result.getMethodModel();
+            if (methodModel == null) {
+                throw new IllegalStateException("请先完成方法概要分析。");
+            }
             List<TestScenario> scenarios = testScenarioPlanner.plan(methodModel);
             LOG.info("UnitMind: scenario count = " + scenarios.size());
-            MockStrategy ruleMockStrategy = mockStrategyPlanner.plan(methodModel, scenarios);
+            result.setScenarios(scenarios);
+        } catch (Exception ex) {
+            LOG.warn("UnitMind: plan scenarios failed", ex);
+            result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 基于静态分析结果和规则场景规划 Mock 策略，不调用大模型。
+     */
+    public GenerationResult planMockStrategy(GenerationResult result) {
+        if (result == null) {
+            result = new GenerationResult();
+        }
+        try {
+            MethodModel methodModel = result.getMethodModel();
+            if (methodModel == null) {
+                throw new IllegalStateException("请先完成方法概要分析。");
+            }
+            if (result.getScenarios().isEmpty()) {
+                planScenarios(result);
+            }
+            MockStrategy ruleMockStrategy = mockStrategyPlanner.plan(methodModel, executableScenarios(result.getScenarios()));
             int mockCount = ruleMockStrategy.getMockFields() == null ? 0 : ruleMockStrategy.getMockFields().size();
             LOG.info("UnitMind: mock count = " + mockCount);
-            GeneratedTestFile ruleGeneratedTestFile = ensureGeneratedFile(methodModel,
-                    testGenerator.generate(methodModel, scenarios, ruleMockStrategy));
+            result.setMockStrategy(ruleMockStrategy);
+        } catch (Exception ex) {
+            LOG.warn("UnitMind: plan mock strategy failed", ex);
+            result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+        }
+        return result;
+    }
 
-            MockStrategy mockStrategy = ruleMockStrategy;
+    /**
+     * 手动调用大模型生成候选 Mock 策略，不覆盖静态 Mock 策略。
+     */
+    public GenerationResult generateLlmMockStrategy(GenerationResult result) throws Exception {
+        if (result == null || result.getMethodModel() == null) {
+            throw new IllegalStateException("请先完成方法概要分析。");
+        }
+        if (result.getScenarios().isEmpty()) {
+            planScenarios(result);
+        }
+        if (result.getMockStrategy() == null) {
+            planMockStrategy(result);
+        }
+        LlmConfig llmConfig = LlmConfigManager.load();
+        if (!llmConfig.isEnabled()) {
+            throw new IllegalStateException("大模型未启用，请先在 UnitMind 设置中启用并测试连接。");
+        }
+        MethodModel methodModel = result.getMethodModel();
+        LlmGenerationRequest llmRequest = ReadAction.compute(() ->
+                buildLlmRequest(null, methodModel, executableScenarios(result.getScenarios()), methodModel.getMethodBodyText()));
+        OpenAiCompatibleLlmClient llmClient = new OpenAiCompatibleLlmClient(llmConfig);
+        LOG.info("UnitMind LLM: generate mock strategy method=" + methodModel.getClassName() + "#" + methodModel.getMethodName());
+        LOG.info("UnitMind LLM: mock strategy prompt length=" + llmClient.promptLength(llmRequest));
+        LlmGenerationResponse llmResponse = llmClient.generateMockStrategy(llmRequest);
+        LOG.info("UnitMind LLM: mock strategy response length=" + (llmResponse.getRawResponse() == null ? 0 : llmResponse.getRawResponse().length()));
+        LOG.info("UnitMind LLM: mock strategy count=" + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
+                ? 0 : llmResponse.getMockStrategy().getStrategyItems().size()));
+        result.setLlmMockStrategy(llmResponse.getMockStrategy());
+        addWarnings(result, llmResponse.getWarnings());
+        return result;
+    }
+
+    /**
+     * 基于静态场景和静态 Mock 策略生成测试代码。只有这个阶段允许调用大模型。
+     */
+    public GenerationResult generateTestCode(Project project, PsiFile psiFile, GenerationResult result) {
+        if (result == null) {
+            result = new GenerationResult();
+        }
+        try {
+            LOG.info("UnitMind: start generate test code");
+            MethodModel methodModel = result.getMethodModel();
+            if (methodModel == null) {
+                throw new IllegalStateException("请先完成方法概要分析。");
+            }
+            if (result.getScenarios().isEmpty()) {
+                planScenarios(result);
+            }
+            if (result.getMockStrategy() == null) {
+                planMockStrategy(result);
+            }
+            List<TestScenario> scenarios = executableScenarios(result.getScenarios());
+            MockStrategy selectedMockStrategy = selectedMockStrategy(result);
+            GeneratedTestFile ruleGeneratedTestFile = ensureGeneratedFile(methodModel,
+                    testGenerator.generate(methodModel, scenarios, selectedMockStrategy));
+
             GeneratedTestFile generatedTestFile = ruleGeneratedTestFile;
             LlmConfig llmConfig = LlmConfigManager.load();
             LOG.info("UnitMind LLM: enabled=" + llmConfig.isEnabled());
@@ -115,7 +245,10 @@ public class UnitTestGenerationService {
             LOG.info("UnitMind LLM: method=" + methodModel.getClassName() + "#" + methodModel.getMethodName());
             if (llmConfig.isEnabled()) {
                 try {
-                    LlmGenerationRequest llmRequest = buildLlmRequest(methodModel, scenarios, sourceText);
+                    LlmGenerationRequest llmRequest = ReadAction.compute(
+                            () -> buildLlmRequest(project, methodModel, scenarios, methodModel.getMethodBodyText()));
+                    llmRequest.setUserInstruction("测试代码必须使用当前用户选择的 Mock 策略，不要重新选择字段级 Mock 或局部 mock。\n"
+                            + selectedMockStrategySummary(selectedMockStrategy));
                     OpenAiCompatibleLlmClient llmClient = new OpenAiCompatibleLlmClient(llmConfig);
                     LOG.info("UnitMind LLM: prompt length=" + llmClient.promptLength(llmRequest));
                     LlmGenerationResponse llmResponse = llmClient.generateUnitTest(llmRequest);
@@ -123,16 +256,14 @@ public class UnitTestGenerationService {
                     LOG.info("UnitMind LLM: mock strategy count=" + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
                             ? 0 : llmResponse.getMockStrategy().getStrategyItems().size()));
                     LOG.info("UnitMind LLM: test code length=" + (llmResponse.getTestCode() == null ? 0 : llmResponse.getTestCode().length()));
-                    if (llmResponse.getMockStrategy() != null
-                            && llmResponse.getMockStrategy().getStrategyItems() != null
-                            && !llmResponse.getMockStrategy().getStrategyItems().isEmpty()) {
-                        mockStrategy = llmResponse.getMockStrategy();
-                    }
-                    generatedTestFile = copyWithContent(ruleGeneratedTestFile, llmResponse.getTestCode());
+                    GeneratedTestCodePostProcessor.ProcessedCode processedCode =
+                            generatedCodePostProcessor.process(llmResponse.getTestCode(), methodModel);
+                    generatedTestFile = copyWithContent(ruleGeneratedTestFile, processedCode.getCode());
                     result.setGeneratedByLlm(true);
                     result.setRuleBasedFallback(false);
                     result.setLlmMessage("大模型生成完成。");
-                    result.getWarnings().addAll(llmResponse.getWarnings());
+                    addWarnings(result, llmResponse.getWarnings());
+                    addWarnings(result, processedCode.getWarnings());
                 } catch (Exception llmException) {
                     LOG.warn("UnitMind LLM: generation failed", llmException);
                     String message = llmException.getMessage() == null ? llmException.getClass().getSimpleName() : llmException.getMessage();
@@ -151,19 +282,93 @@ public class UnitTestGenerationService {
                 result.setLlmMessage("当前测试代码为规则兜底生成，大模型生成失败或未启用。");
             }
             generatedTestFile = ensureGeneratedFile(methodModel, generatedTestFile);
+            GeneratedTestCodePostProcessor.ProcessedCode processedCode =
+                    generatedCodePostProcessor.process(generatedTestFile.getContent(), methodModel);
+            generatedTestFile = copyWithContent(generatedTestFile, processedCode.getCode());
+            addWarnings(result, processedCode.getWarnings());
             int codeLength = generatedTestFile == null || generatedTestFile.getContent() == null ? 0 : generatedTestFile.getContent().length();
             LOG.info("UnitMind: generated code length = " + codeLength);
-            LOG.info("UnitMind: generated test file path = " + generatedTestPath(psiFile, generatedTestFile));
+            String sourcePath = ReadAction.compute(() ->
+                    psiFile == null || psiFile.getVirtualFile() == null ? "" : psiFile.getVirtualFile().getPath());
+            LOG.info("UnitMind: generated test file path = " + generatedTestPath(sourcePath, generatedTestFile));
 
             result.setMethodModel(methodModel);
-            result.setScenarios(scenarios);
-            result.setMockStrategy(mockStrategy);
+            result.setScenarios(result.getScenarios());
+            result.setMockStrategy(result.getMockStrategy());
             result.setGeneratedTestFile(generatedTestFile);
         } catch (Exception ex) {
             LOG.warn("UnitMind: generate test code failed", ex);
             result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
         return result;
+    }
+
+    private MockStrategy selectedMockStrategy(GenerationResult result) {
+        if (result.isUseLlmMockStrategy() && result.getLlmMockStrategy() != null) {
+            return result.getLlmMockStrategy();
+        }
+        return result.getMockStrategy();
+    }
+
+    private void addWarnings(GenerationResult result, List<String> warnings) {
+        if (result == null || warnings == null) {
+            return;
+        }
+        for (String warning : warnings) {
+            if (warning != null && !warning.isBlank() && !result.getWarnings().contains(warning)) {
+                result.getWarnings().add(warning);
+            }
+        }
+    }
+
+    private String selectedMockStrategySummary(MockStrategy strategy) {
+        if (strategy == null || strategy.getStrategyItems() == null || strategy.getStrategyItems().isEmpty()) {
+            return "当前选择的 Mock 策略为空。";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < strategy.getStrategyItems().size(); i++) {
+            if (i >= 30) {
+                builder.append("- 其余策略省略。\n");
+                break;
+            }
+            MockStrategyItem item = strategy.getStrategyItems().get(i);
+            builder.append("- enabled=").append(item.isGenerate())
+                    .append(", dependencyType=").append(item.getDependencyType())
+                    .append(", target=").append(item.getObjectName())
+                    .append(", method=").append(item.getMethodName())
+                    .append(", source=").append(item.getSource())
+                    .append(", mockitoStrategy=").append(item.getMockitoStrategy())
+                    .append(", note=").append(item.getRemark())
+                    .append("\n");
+        }
+        return builder.toString();
+    }
+
+    private List<TestScenario> executableScenarios(List<TestScenario> scenarios) {
+        List<TestScenario> executable = new ArrayList<>();
+        for (TestScenario scenario : scenarios) {
+            if (scenario.getType() == null || scenario.getType().endsWith("_REASON")) {
+                continue;
+            }
+            executable.add(scenario);
+        }
+        return executable;
+    }
+
+    /**
+     * 读取 PSI 并完成静态方法模型构建。
+     */
+    private StaticAnalysisContext buildStaticAnalysisContext(PsiFile psiFile, Editor editor) {
+        String sourceText = PsiUtils.getSourceText(psiFile);
+        String preferredMethodName = PsiUtils.getCurrentMethodName(psiFile, editor);
+
+        try {
+            MethodModel methodModel = javaSourceAnalyzer.analyze(sourceText, preferredMethodName);
+            return new StaticAnalysisContext(methodModel);
+        } catch (Exception parseException) {
+            String message = parseException.getMessage() == null ? parseException.getClass().getSimpleName() : parseException.getMessage();
+            throw new IllegalStateException("JavaParser 静态分析失败：" + message, parseException);
+        }
     }
 
     /**
@@ -178,7 +383,8 @@ public class UnitTestGenerationService {
             throw new IllegalStateException("大模型未启用，请先在 UnitMind 设置中启用并测试连接。");
         }
         MethodModel methodModel = result.getMethodModel();
-        LlmGenerationRequest llmRequest = buildLlmRequest(methodModel, result.getScenarios(), methodModel.getMethodBodyText());
+        LlmGenerationRequest llmRequest = ReadAction.compute(() ->
+                buildLlmRequest(null, methodModel, result.getScenarios(), methodModel.getMethodBodyText()));
         llmRequest.setExistingTestCodeSummary(currentCode);
         llmRequest.setUserInstruction(feedback);
         try {
@@ -195,11 +401,14 @@ public class UnitTestGenerationService {
                     && !llmResponse.getMockStrategy().getStrategyItems().isEmpty()) {
                 result.setMockStrategy(llmResponse.getMockStrategy());
             }
-            result.setGeneratedTestFile(copyWithContent(result.getGeneratedTestFile(), llmResponse.getTestCode()));
+            GeneratedTestCodePostProcessor.ProcessedCode processedCode =
+                    generatedCodePostProcessor.process(llmResponse.getTestCode(), methodModel);
+            result.setGeneratedTestFile(copyWithContent(result.getGeneratedTestFile(), processedCode.getCode()));
             result.setGeneratedByLlm(true);
             result.setRuleBasedFallback(false);
             result.setLlmMessage("大模型重新生成完成。");
-            result.getWarnings().addAll(llmResponse.getWarnings());
+            addWarnings(result, llmResponse.getWarnings());
+            addWarnings(result, processedCode.getWarnings());
             return result;
         } catch (Exception ex) {
             LOG.warn("UnitMind LLM: regenerate failed", ex);
@@ -212,22 +421,29 @@ public class UnitTestGenerationService {
     /**
      * 构造发送给大模型的结构化上下文。
      */
-    private LlmGenerationRequest buildLlmRequest(MethodModel methodModel, List<TestScenario> scenarios, String sourceText) {
+    private LlmGenerationRequest buildLlmRequest(Project project, MethodModel methodModel, List<TestScenario> scenarios, String sourceText) {
         LlmGenerationRequest request = new LlmGenerationRequest();
         request.setPackageName(methodModel.getPackageName());
         request.setClassName(methodModel.getClassName());
         request.setMethodName(methodModel.getMethodName());
         request.setMethodSignature(methodSignature(methodModel));
         request.setReturnType(methodModel.getReturnType());
+        request.setAccessModifier(methodModel.getAccessModifier());
         request.setMethodSourceCode(methodModel.getMethodBodyText() == null || methodModel.getMethodBodyText().isBlank()
                 ? sourceText : methodModel.getMethodBodyText());
         request.setImports(String.join("\n", methodModel.getImports()));
         request.setClassFields(classFields(methodModel));
+        List<String> chainedCallReturnTypes = chainedCallReturnTypes(project, methodModel);
+        methodModel.setCallContexts(enrichChainCallContexts(project, methodModel));
+        augmentImportsFromChainTypes(methodModel, chainedCallReturnTypes);
+        request.setKnownTypes(knownTypes(methodModel, chainedCallReturnTypes));
+        request.setChainedCallReturnTypes(chainedCallReturnTypes);
         request.setParameters(methodModel.getParameters());
         request.setConstraints(methodModel.getConstraints());
         request.setBranches(methodModel.getBranches());
         request.setDependencies(methodModel.getDependencies());
         request.setUsages(methodModel.getUsages());
+        request.setCallContexts(methodModel.getCallContexts());
         request.setScenarios(scenarios);
         request.setExistingTestCodeSummary("");
         request.setTestFramework("JUnit5");
@@ -426,6 +642,441 @@ public class UnitTestGenerationService {
     }
 
     /**
+     * 汇总发送给大模型的已知类型白名单。
+     * 大模型只能在这些类型、源码 import 和 JDK/JUnit/Mockito 常用类型中选择，避免按命名习惯猜类型。
+     */
+    private List<String> knownTypes(MethodModel methodModel, List<String> chainedCallReturnTypes) {
+        Set<String> types = new LinkedHashSet<>();
+        addKnownType(types, methodModel.getClassName());
+        addKnownType(types, methodModel.getReturnType());
+        for (String importName : methodModel.getImports()) {
+            if (!importName.endsWith(".*")) {
+                addKnownType(types, simpleTypeName(importName));
+            }
+        }
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            addKnownType(types, parameter.getType());
+        }
+        for (DependencyModel dependency : methodModel.getDependencies()) {
+            addKnownType(types, dependency.getFieldType());
+        }
+        for (String chainedCallReturnType : chainedCallReturnTypes) {
+            addKnownType(types, chainedTypeName(chainedCallReturnType));
+        }
+        types.add("String");
+        types.add("Object");
+        types.add("List");
+        types.add("Map");
+        types.add("Set");
+        types.add("Optional");
+        types.add("Path");
+        types.add("Files");
+        types.add("TempDir");
+        types.add("Method");
+        return new ArrayList<>(types);
+    }
+
+    private void addKnownType(Set<String> types, String type) {
+        String simple = simpleTypeName(type);
+        if (!simple.isBlank()) {
+            types.add(simple);
+        }
+    }
+
+    /**
+     * 尽量解析链式调用中间节点的真实返回类型。
+     * 无法解析时显式写入 UNKNOWN_USE_RETURNS_DEEP_STUBS，让大模型不要猜中间返回类型。
+     */
+    private List<String> chainedCallReturnTypes(Project project, MethodModel methodModel) {
+        List<String> returnTypes = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        List<CallContextModel> callContexts = methodModel.getCallContexts() == null ? new ArrayList<>() : methodModel.getCallContexts();
+        for (CallContextModel callContext : callContexts) {
+            if (!isChainContext(callContext)) {
+                continue;
+            }
+            String receiverName = ownerName(callContext.getOwner());
+            String receiverType = receiverType(methodModel, callContext.getOwner(), receiverName);
+            collectChainedCallReturnTypes(project, methodModel, callContext.getExpression(), receiverName, receiverType, returnTypes, seen);
+        }
+        if (!returnTypes.isEmpty()) {
+            return returnTypes;
+        }
+        String body = methodModel.getMethodBodyText() == null ? "" : methodModel.getMethodBodyText();
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            collectChainedCallReturnTypes(project, methodModel, body, parameter.getName(), parameter.getType(), returnTypes, seen);
+        }
+        for (DependencyModel dependency : methodModel.getDependencies()) {
+            collectChainedCallReturnTypes(project, methodModel, body, dependency.getFieldName(), dependency.getFieldType(), returnTypes, seen);
+        }
+        return returnTypes;
+    }
+
+    private void collectChainedCallReturnTypes(Project project,
+                                               MethodModel methodModel,
+                                               String expression,
+                                               String receiverName,
+                                               String receiverType,
+                                               List<String> returnTypes,
+                                               Set<String> seen) {
+        if (receiverName == null || receiverName.isBlank() || expression == null || expression.isBlank()) {
+            return;
+        }
+        List<ChainSegment> segments = parseCallChain(expression, receiverName);
+        if (segments.isEmpty()) {
+            return;
+        }
+        String currentExpression = receiverName;
+        String currentType = receiverType;
+        for (ChainSegment segment : segments) {
+            if (currentType == null || currentType.isBlank()) {
+                returnTypes.add(currentExpression + "." + segment.asCode() + "(): UNKNOWN_USE_RETURNS_DEEP_STUBS");
+                break;
+            }
+            String cacheKey = currentType + "|" + segment.getMethodName() + "|" + segment.getArgumentCount();
+            if (!seen.add(cacheKey + "|" + currentExpression)) {
+                currentExpression = currentExpression + "." + segment.asCode();
+                continue;
+            }
+            PsiClass psiClass = resolvePsiClass(project, methodModel, currentType);
+            String returnType = resolveMethodReturnType(psiClass, segment.getMethodName(), segment.getArgumentCount());
+            if (returnType == null || returnType.isBlank()) {
+                returnTypes.add(currentExpression + "." + segment.asCode() + "(): UNKNOWN_USE_RETURNS_DEEP_STUBS");
+                break;
+            }
+            returnTypes.add(currentExpression + "." + segment.asCode() + "(): " + returnType);
+            currentExpression = currentExpression + "." + segment.asCode();
+            currentType = rawType(returnType);
+        }
+    }
+
+    private String resolveMethodReturnType(PsiClass psiClass, String methodName, int argumentCount) {
+        if (psiClass == null || methodName == null || methodName.isBlank()) {
+            return null;
+        }
+        for (PsiMethod method : psiClass.findMethodsByName(methodName, true)) {
+            if (method.getParameterList().getParametersCount() == argumentCount) {
+                return canonicalTypeText(method.getReturnType(), "");
+            }
+        }
+        for (PsiMethod method : psiClass.findMethodsByName(methodName, true)) {
+            return canonicalTypeText(method.getReturnType(), "");
+        }
+        return null;
+    }
+
+    private List<CallContextModel> enrichChainCallContexts(Project project, MethodModel methodModel) {
+        List<CallContextModel> contexts = new ArrayList<>();
+        if (methodModel == null || methodModel.getCallContexts() == null) {
+            return contexts;
+        }
+
+        for (CallContextModel callContext : methodModel.getCallContexts()) {
+            CallContextModel copy = copyCallContext(callContext);
+            if (copy != null) {
+                contexts.add(copy);
+            }
+        }
+
+        Set<String> seen = new LinkedHashSet<>();
+        for (CallContextModel callContext : methodModel.getCallContexts()) {
+            if (!isChainContext(callContext)) {
+                continue;
+            }
+            String receiverName = ownerName(callContext.getOwner());
+            String receiverType = receiverType(methodModel, callContext.getOwner(), receiverName);
+            List<ChainSegment> segments = parseCallChain(callContext.getExpression(), receiverName);
+            String currentType = receiverType;
+            String currentExpression = receiverName;
+            for (ChainSegment segment : segments) {
+                if (currentType == null || currentType.isBlank()) {
+                    break;
+                }
+                String cacheKey = currentType + "|" + segment.getMethodName() + "|" + segment.getArgumentCount();
+                if (!seen.add(cacheKey)) {
+                    currentType = null;
+                    break;
+                }
+                PsiClass psiClass = resolvePsiClass(project, methodModel, currentType);
+                String returnType = resolveMethodReturnType(psiClass, segment.getMethodName(), segment.getArgumentCount());
+                CallContextModel synthetic = new CallContextModel();
+                synthetic.setKind("CHAIN_STEP_CALL");
+                synthetic.setOwner(currentType);
+                synthetic.setMethodName(segment.getMethodName());
+                synthetic.setExpression(currentExpression + "." + segment.asCode());
+                synthetic.setReturnType(returnType == null || returnType.isBlank() ? "UNKNOWN_USE_RETURNS_DEEP_STUBS" : returnType);
+                synthetic.setSignature((currentType == null || currentType.isBlank() ? "" : currentType) + "." + segment.getMethodName()
+                        + "(" + segment.getArgumentCount() + ")");
+                synthetic.setSourceCode("");
+                synthetic.setParameterUsageSummary("");
+                contexts.add(synthetic);
+                currentType = rawType(synthetic.getReturnType());
+                currentExpression = currentExpression + "." + segment.asCode();
+            }
+        }
+        return contexts;
+    }
+
+    private CallContextModel copyCallContext(CallContextModel source) {
+        if (source == null) {
+            return null;
+        }
+        CallContextModel context = new CallContextModel();
+        context.setKind(source.getKind());
+        context.setOwner(source.getOwner());
+        context.setMethodName(source.getMethodName());
+        context.setExpression(source.getExpression());
+        context.setReturnType(source.getReturnType());
+        context.setSignature(source.getSignature());
+        context.setSourceCode(source.getSourceCode());
+        context.setParameterUsageSummary(source.getParameterUsageSummary());
+        context.setNestedCalls(source.getNestedCalls() == null ? new ArrayList<>() : new ArrayList<>(source.getNestedCalls()));
+        return context;
+    }
+
+    private PsiClass resolvePsiClass(Project project, MethodModel methodModel, String type) {
+        if (project == null || type == null || type.isBlank()) {
+            return null;
+        }
+        JavaPsiFacade facade = JavaPsiFacade.getInstance(project);
+        GlobalSearchScope scope = GlobalSearchScope.allScope(project);
+        String simple = simpleTypeName(type);
+        if (type.contains(".")) {
+            PsiClass direct = facade.findClass(type, scope);
+            if (direct != null) {
+                return direct;
+            }
+        }
+        for (String importName : methodModel.getImports()) {
+            if (importName.endsWith("." + simple)) {
+                PsiClass imported = facade.findClass(importName, scope);
+                if (imported != null) {
+                    return imported;
+                }
+            }
+        }
+        if (methodModel.getPackageName() != null && !methodModel.getPackageName().isBlank()) {
+            PsiClass samePackage = facade.findClass(methodModel.getPackageName() + "." + simple, scope);
+            if (samePackage != null) {
+                return samePackage;
+            }
+        }
+        return facade.findClass("java.lang." + simple, scope);
+    }
+
+    private boolean isChainContext(CallContextModel callContext) {
+        return callContext != null
+                && callContext.getExpression() != null
+                && callContext.getExpression().contains(".")
+                && callContext.getOwner() != null
+                && !callContext.getOwner().isBlank();
+    }
+
+    private String receiverType(MethodModel methodModel, String owner, String receiverName) {
+        String type = ownerType(owner);
+        if (type != null && !type.isBlank()) {
+            return type;
+        }
+        if (receiverName != null && !receiverName.isBlank()) {
+            for (ParameterModel parameter : methodModel.getParameters()) {
+                if (receiverName.equals(parameter.getName())) {
+                    return parameter.getType();
+                }
+            }
+            for (DependencyModel dependency : methodModel.getDependencies()) {
+                if (receiverName.equals(dependency.getFieldName())) {
+                    return dependency.getFieldType();
+                }
+            }
+        }
+        return "";
+    }
+
+    private String ownerType(String owner) {
+        if (owner == null || owner.isBlank()) {
+            return "";
+        }
+        int colon = owner.indexOf(':');
+        return colon < 0 ? owner.trim() : owner.substring(colon + 1).trim();
+    }
+
+    private String ownerName(String owner) {
+        if (owner == null || owner.isBlank()) {
+            return "";
+        }
+        int colon = owner.indexOf(':');
+        return colon < 0 ? owner.trim() : owner.substring(0, colon).trim();
+    }
+
+    private List<ChainSegment> parseCallChain(String expression, String receiverName) {
+        List<ChainSegment> segments = new ArrayList<>();
+        if (expression == null || receiverName == null) {
+            return segments;
+        }
+        String text = expression.trim();
+        if (!text.startsWith(receiverName)) {
+            return segments;
+        }
+        int index = receiverName.length();
+        while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
+            index++;
+        }
+        if (index >= text.length() || text.charAt(index) != '.') {
+            return segments;
+        }
+        index++;
+        while (index < text.length()) {
+            while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
+                index++;
+            }
+            int nameStart = index;
+            while (index < text.length()) {
+                char c = text.charAt(index);
+                if (c == '(' || c == '.' || Character.isWhitespace(c)) {
+                    break;
+                }
+                index++;
+            }
+            if (index >= text.length() || index == nameStart || text.charAt(index) != '(') {
+                break;
+            }
+            String methodName = text.substring(nameStart, index).trim();
+            int openParen = index;
+            int closeParen = matchingParen(text, openParen);
+            if (closeParen < 0) {
+                break;
+            }
+            String arguments = text.substring(openParen + 1, closeParen);
+            segments.add(new ChainSegment(methodName, arguments));
+            index = closeParen + 1;
+            while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
+                index++;
+            }
+            if (index >= text.length() || text.charAt(index) != '.') {
+                break;
+            }
+            index++;
+        }
+        return segments;
+    }
+
+    private int matchingParen(String text, int openParen) {
+        if (text == null || openParen < 0 || openParen >= text.length() || text.charAt(openParen) != '(') {
+            return -1;
+        }
+        int depth = 0;
+        for (int i = openParen; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private String rawType(String type) {
+        if (type == null || type.isBlank()) {
+            return "";
+        }
+        String value = type.trim();
+        int genericStart = value.indexOf('<');
+        if (genericStart >= 0) {
+            value = value.substring(0, genericStart);
+        }
+        if (value.endsWith("[]")) {
+            value = value.substring(0, value.length() - 2);
+        }
+        return value.trim();
+    }
+
+    private String canonicalTypeText(PsiType type, String defaultValue) {
+        return type == null ? defaultValue : type.getCanonicalText();
+    }
+
+    private String chainedTypeName(String chainedCallReturnType) {
+        if (chainedCallReturnType == null || chainedCallReturnType.isBlank()) {
+            return "";
+        }
+        int index = chainedCallReturnType.lastIndexOf("): ");
+        if (index < 0) {
+            return chainedCallReturnType;
+        }
+        return chainedCallReturnType.substring(index + 3).trim();
+    }
+
+    private void augmentImportsFromChainTypes(MethodModel methodModel, List<String> chainedCallReturnTypes) {
+        if (methodModel == null || chainedCallReturnTypes == null || chainedCallReturnTypes.isEmpty()) {
+            return;
+        }
+        Set<String> imports = new LinkedHashSet<>(methodModel.getImports());
+        for (String chainedCallReturnType : chainedCallReturnTypes) {
+            String type = chainedTypeName(chainedCallReturnType);
+            if (type.contains(".") && !type.startsWith("java.lang.")) {
+                imports.add(type);
+            }
+        }
+        methodModel.setImports(new ArrayList<>(imports));
+    }
+
+    private static final class ChainSegment {
+        private final String methodName;
+        private final String arguments;
+
+        private ChainSegment(String methodName, String arguments) {
+            this.methodName = methodName == null ? "" : methodName.trim();
+            this.arguments = arguments == null ? "" : arguments.trim();
+        }
+
+        private String getMethodName() {
+            return methodName;
+        }
+
+        private int getArgumentCount() {
+            if (arguments.isBlank()) {
+                return 0;
+            }
+            int count = 1;
+            int depth = 0;
+            for (int i = 0; i < arguments.length(); i++) {
+                char c = arguments.charAt(i);
+                if (c == '(') {
+                    depth++;
+                } else if (c == ')') {
+                    depth--;
+                } else if (c == ',' && depth == 0) {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private String asCode() {
+            return methodName + "(" + arguments + ")";
+        }
+    }
+
+    private String simpleTypeName(String type) {
+        if (type == null || type.isBlank()) {
+            return "";
+        }
+        String value = type.trim();
+        int genericStart = value.indexOf('<');
+        if (genericStart >= 0) {
+            value = value.substring(0, genericStart);
+        }
+        if (value.endsWith("[]")) {
+            value = value.substring(0, value.length() - 2);
+        }
+        int dot = value.lastIndexOf('.');
+        return dot >= 0 ? value.substring(dot + 1) : value;
+    }
+
+    /**
      * 保留规则生成器推导出的文件名和包名，仅替换大模型返回的源码。
      */
     private GeneratedTestFile copyWithContent(GeneratedTestFile base, String content) {
@@ -483,14 +1134,13 @@ public class UnitTestGenerationService {
      * 推导生成测试文件的目标路径。
      * 日志使用与写入器一致的路径规则，便于从生成阶段直接定位后续会落盘的位置。
      */
-    private String generatedTestPath(PsiFile sourceFile, GeneratedTestFile generatedTestFile) {
+    private String generatedTestPath(String sourcePath, GeneratedTestFile generatedTestFile) {
         if (generatedTestFile == null) {
             return "";
         }
-        if (sourceFile == null || sourceFile.getVirtualFile() == null) {
+        if (sourcePath == null || sourcePath.isBlank()) {
             return generatedTestFile.getFileName();
         }
-        String sourcePath = sourceFile.getVirtualFile().getPath();
         String normalized = sourcePath.replace('\\', '/');
         int index = normalized.indexOf("/src/main/java/");
         if (index >= 0) {
@@ -525,6 +1175,7 @@ public class UnitTestGenerationService {
         model.setClassName(containingClass.getName());
         model.setMethodName(method.getName());
         model.setReturnType(typeText(method.getReturnType(), "void"));
+        model.setAccessModifier(psiAccessModifier(method));
         model.setProtectedMethod(method.hasModifierProperty(PsiModifier.PROTECTED));
         model.setImports(extractPsiImports(psiFile));
         model.setThrownExceptions(extractPsiThrownExceptions(method));
@@ -532,7 +1183,138 @@ public class UnitTestGenerationService {
         model.setDeclaredMethodNames(extractPsiMethodNames(containingClass));
         model.setParameters(extractPsiParameters(method));
         model.setDependencies(extractPsiDependencies(containingClass, model.getMethodBodyText()));
+        model.setCallContexts(extractPsiCallContexts(containingClass, method, model));
         return model;
+    }
+
+    private List<CallContextModel> extractPsiCallContexts(PsiClass containingClass, PsiMethod method, MethodModel model) {
+        List<CallContextModel> contexts = new ArrayList<>();
+        if (method.getBody() == null) {
+            return contexts;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (PsiMethodCallExpression call : method.getBody().getText().isBlank()
+                ? new ArrayList<PsiMethodCallExpression>()
+                : PsiTreeUtil.findChildrenOfType(method.getBody(), PsiMethodCallExpression.class)) {
+            CallContextModel context = psiCallContext(containingClass, method, model, call);
+            if (context != null && seen.add(context.getKind() + "|" + context.getExpression())) {
+                contexts.add(context);
+            }
+        }
+        return contexts;
+    }
+
+    private CallContextModel psiCallContext(PsiClass containingClass, PsiMethod currentMethod, MethodModel model, PsiMethodCallExpression call) {
+        String expression = call.getText();
+        String methodName = call.getMethodExpression().getReferenceName();
+        if (methodName == null || methodName.isBlank()) {
+            return null;
+        }
+        PsiExpression qualifier = call.getMethodExpression().getQualifierExpression();
+        if (qualifier == null || "this".equals(qualifier.getText())) {
+            PsiMethod resolved = call.resolveMethod();
+            if (resolved != null && resolved != currentMethod && resolved.getContainingClass() == containingClass) {
+                CallContextModel context = simplePsiCallContext("INTERNAL_METHOD_CALL",
+                        model.getClassName(),
+                        methodName,
+                        expression,
+                        typeText(resolved.getReturnType(), ""),
+                        psiMethodSignature(resolved),
+                        resolved.getBody() == null ? "" : resolved.getBody().getText(),
+                        psiParameterUsageSummary(resolved));
+                context.setNestedCalls(psiNestedCallSummaries(resolved));
+                return context;
+            }
+            return null;
+        }
+        String qualifierText = qualifier.getText();
+        if (Character.isUpperCase(qualifierText.charAt(0))) {
+            return simplePsiCallContext("STATIC_CALL", qualifierText, methodName, expression, "", "", "", "");
+        }
+        String root = rootReceiver(qualifierText);
+        for (ParameterModel parameter : model.getParameters()) {
+            if (parameter.getName().equals(root)) {
+                return simplePsiCallContext(qualifierText.contains(".") ? "PARAMETER_CHAIN_CALL" : "PARAMETER_OBJECT_CALL",
+                        root + ":" + parameter.getType(), methodName, expression, "", "", "", "");
+            }
+        }
+        return null;
+    }
+
+    private CallContextModel simplePsiCallContext(String kind,
+                                                  String owner,
+                                                  String methodName,
+                                                  String expression,
+                                                  String returnType,
+                                                  String signature,
+                                                  String sourceCode,
+                                                  String parameterUsageSummary) {
+        CallContextModel context = new CallContextModel();
+        context.setKind(kind);
+        context.setOwner(owner);
+        context.setMethodName(methodName);
+        context.setExpression(expression);
+        context.setReturnType(returnType);
+        context.setSignature(signature);
+        context.setSourceCode(sourceCode);
+        context.setParameterUsageSummary(parameterUsageSummary);
+        return context;
+    }
+
+    private List<String> psiNestedCallSummaries(PsiMethod method) {
+        List<String> summaries = new ArrayList<>();
+        if (method == null || method.getBody() == null) {
+            return summaries;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (PsiMethodCallExpression call : PsiTreeUtil.findChildrenOfType(method.getBody(), PsiMethodCallExpression.class)) {
+            PsiMethod resolved = call.resolveMethod();
+            if (resolved != null && resolved != method && seen.add(resolved.getName())) {
+                summaries.add(psiMethodSignature(resolved) + "; parameterUsage=" + psiParameterUsageSummary(resolved));
+            }
+        }
+        return summaries;
+    }
+
+    private String psiParameterUsageSummary(PsiMethod method) {
+        if (method == null || method.getBody() == null) {
+            return "";
+        }
+        List<String> usages = new ArrayList<>();
+        for (PsiParameter parameter : method.getParameterList().getParameters()) {
+            Set<String> calls = new LinkedHashSet<>();
+            for (PsiMethodCallExpression call : PsiTreeUtil.findChildrenOfType(method.getBody(), PsiMethodCallExpression.class)) {
+                PsiExpression qualifier = call.getMethodExpression().getQualifierExpression();
+                if (qualifier != null && parameter.getName().equals(rootReceiver(qualifier.getText()))) {
+                    calls.add(qualifier.getText() + "." + call.getMethodExpression().getReferenceName() + "(...)");
+                }
+            }
+            if (!calls.isEmpty()) {
+                usages.add(parameter.getName() + " -> " + String.join(", ", calls));
+            }
+        }
+        return usages.isEmpty() ? "未发现参数对象方法读取" : String.join("; ", usages);
+    }
+
+    private String rootReceiver(String qualifierText) {
+        int dot = qualifierText == null ? -1 : qualifierText.indexOf('.');
+        return dot < 0 ? qualifierText : qualifierText.substring(0, dot);
+    }
+
+    /**
+     * 识别 PSI 方法真实访问修饰符。
+     */
+    private String psiAccessModifier(PsiMethod method) {
+        if (method.hasModifierProperty(PsiModifier.PUBLIC)) {
+            return "public";
+        }
+        if (method.hasModifierProperty(PsiModifier.PROTECTED)) {
+            return "protected";
+        }
+        if (method.hasModifierProperty(PsiModifier.PRIVATE)) {
+            return "private";
+        }
+        return "package-private";
     }
 
     /**
@@ -717,5 +1499,21 @@ public class UnitTestGenerationService {
      */
     private String typeText(PsiType type, String defaultValue) {
         return type == null ? defaultValue : type.getPresentableText();
+    }
+
+    /**
+     * 静态分析阶段产物。
+     */
+    private static final class StaticAnalysisContext {
+        /** 当前方法模型。 */
+        private final MethodModel methodModel;
+
+        private StaticAnalysisContext(MethodModel methodModel) {
+            this.methodModel = methodModel;
+        }
+
+        private MethodModel getMethodModel() {
+            return methodModel;
+        }
     }
 }

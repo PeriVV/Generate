@@ -27,7 +27,7 @@ public class MockStrategyPlanner {
     private static final Pattern STATIC_CALL = Pattern.compile("\\b([A-Z][A-Za-z0-9_]*)\\.([a-zA-Z_][A-Za-z0-9_]*)\\s*\\(");
     /** 匹配本类内部无作用域方法调用。 */
     private static final Pattern INTERNAL_CALL = Pattern.compile("(?<![\\.\\w])([a-zA-Z_][A-Za-z0-9_]*)\\s*\\(");
-    /** 匹配由静态方法返回值创建的局部变量，例如 Connection connection = JdbcHelper.connect(...). */
+    /** 匹配由静态方法返回值创建的局部变量，例如 Resource resource = Factory.create(...). */
     private static final Pattern STATIC_LOCAL_ASSIGN = Pattern.compile("\\b([A-Z][A-Za-z0-9_<>?,\\s]*)\\s+([a-zA-Z_][A-Za-z0-9_]*)\\s*=\\s*([A-Z][A-Za-z0-9_]*)\\.([a-zA-Z_][A-Za-z0-9_]*)\\s*\\(");
     /** 匹配局部对象的方法调用。 */
     private static final Pattern SCOPED_CALL = Pattern.compile("\\b([a-zA-Z_][A-Za-z0-9_]*)\\.([a-zA-Z_][A-Za-z0-9_]*)\\s*\\(");
@@ -56,20 +56,30 @@ public class MockStrategyPlanner {
         Set<String> itemKeys = new LinkedHashSet<>();
 
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            mockFields.add(dependency.getFieldType() + " " + dependency.getFieldName());
+            String fieldType = dependency.getFieldType();
+            String fieldName = dependency.getFieldName();
+            if (looksLikeDtoType(fieldType) || looksLikePathType(fieldType)) {
+                addItem(strategyItems, itemKeys, new MockStrategyItem(false,
+                        dependency.isMethodParameter() ? "方法参数数据对象" : "字段数据对象",
+                        simpleType(fieldType),
+                        "-",
+                        fieldName,
+                        "构造测试对象/局部mock/@TempDir",
+                        dtoRemark(fieldType)));
+                continue;
+            }
+            mockFields.add(fieldType + " " + fieldName);
             addItem(strategyItems, itemKeys, new MockStrategyItem(true,
                     dependency.isMethodParameter() ? "方法参数依赖" : "字段依赖",
-                    dependency.getFieldType(),
-                    dependency.getFieldName(),
-                    dependency.getFieldName(),
+                    fieldType,
+                    fieldName,
+                    fieldName,
                     "mock",
                     dependency.isMethodParameter() ? "框架或接口型方法参数，需要作为 Mock 传入。" : "普通字段依赖，可生成 @Mock。"));
             for (String callExpression : dependency.getCallExpressions()) {
-                verifyRules.add("verify(" + dependency.getFieldName() + ")." + callExpression);
-                if (looksLikeHeaderCall(callExpression)) {
-                    whenRules.add("when(" + dependency.getFieldName() + "." + callExpression + ").thenReturn(\"demo-user\")");
-                } else if (looksLikeQuery(methodName(callExpression))) {
-                    whenRules.add("when(" + dependency.getFieldName() + "." + callExpression + ").thenReturn(" + defaultReturnValue(methodModel) + ")");
+                verifyRules.add("verify(" + fieldName + ")." + callExpression);
+                if (looksLikeQuery(methodName(callExpression))) {
+                    whenRules.add("when(" + fieldName + "." + callExpression + ").thenReturn(" + defaultReturnValue(methodModel) + ")");
                 }
             }
         }
@@ -78,11 +88,6 @@ public class MockStrategyPlanner {
         appendStaticItems(methodModel, strategyItems, itemKeys);
         appendInternalCallItems(methodModel, strategyItems, itemKeys);
         appendLocalObjectItems(methodModel, strategyItems, itemKeys);
-
-        if (looksLikeResolveTemplate(methodModel)) {
-            addIfAbsent(whenRules, "when(runtimeRegistry.getJdbcTemplate(any(), any())).thenReturn(null)");
-            addIfAbsent(whenRules, "when(runtimeRegistry.hasConfig(any(), any())).thenReturn(false)");
-        }
 
         strategy.setMockFields(mockFields);
         strategy.setVerifyRules(verifyRules);
@@ -93,8 +98,8 @@ public class MockStrategyPlanner {
     }
 
     /**
-     * 将 DTO/Request/Result 等业务对象参数展示为“构造测试对象”。
-     * 这类参数是被测方法输入数据，不应该作为普通 @Mock 字段注入。
+     * 将 DTO/Request/Result 等业务对象参数展示为“优先构造，必要时局部 mock”。
+     * 这类参数不默认生成测试类字段级 @Mock，但构造复杂或 accessor 较多时允许在测试方法内部局部 mock。
      */
     private void appendDtoParameterItems(MethodModel methodModel, List<MockStrategyItem> items, Set<String> keys) {
         String body = methodModel.getMethodBodyText() == null ? "" : methodModel.getMethodBodyText();
@@ -108,20 +113,20 @@ public class MockStrategyPlanner {
                 hasMethodCall = true;
                 String method = matcher.group(1) + "()";
                 addItem(items, keys, new MockStrategyItem(false,
-                        "方法参数依赖",
+                        "方法参数数据对象",
                         simpleType(parameter.getType()),
                         method,
                         parameter.getName() + "." + method,
-                        "构造测试对象",
+                        "优先构造；必要时局部 mock",
                         dtoRemark(parameter.getType())));
             }
             if (!hasMethodCall) {
                 addItem(items, keys, new MockStrategyItem(false,
-                        "方法参数依赖",
+                        "方法参数数据对象",
                         simpleType(parameter.getType()),
                         "-",
                         parameter.getName(),
-                        "构造测试对象",
+                        "优先构造；必要时局部 mock",
                         dtoRemark(parameter.getType())));
             }
         }
@@ -173,7 +178,7 @@ public class MockStrategyPlanner {
 
     /**
      * 识别来自静态方法返回值的局部对象依赖及其调用。
-     * 例如 Connection connection = JdbcHelper.connect(...) 后续的 commit/rollback 需要在 Mock 策略中展示。
+     * 例如 Resource resource = Factory.create(...) 后续的方法调用需要在 Mock 策略中展示。
      */
     private void appendLocalObjectItems(MethodModel methodModel, List<MockStrategyItem> items, Set<String> keys) {
         String body = methodModel.getMethodBodyText() == null ? "" : methodModel.getMethodBodyText();
@@ -239,8 +244,21 @@ public class MockStrategyPlanner {
                 || simple.endsWith("Command")
                 || simple.endsWith("Query")
                 || simple.endsWith("Param")
+                || simple.endsWith("Profile")
                 || simple.endsWith("Form")
-                || simple.endsWith("Result");
+                || simple.endsWith("Result")
+                || simple.endsWith("Request")
+                || simple.endsWith("Entity")
+                || simple.endsWith("DTO");
+    }
+
+    private boolean looksLikePathType(String type) {
+        String simple = simpleType(type);
+        return "Path".equals(simple)
+                || "File".equals(simple)
+                || "Directory".equalsIgnoreCase(simple)
+                || "PathMatcher".equals(simple)
+                || "FileSystem".equals(simple);
     }
 
     /**
@@ -249,9 +267,12 @@ public class MockStrategyPlanner {
     private String dtoRemark(String type) {
         String simple = simpleType(type);
         if (simple.endsWith("Request")) {
-            return "Request DTO，不作为 Mock。";
+            return "Request DTO 不默认生成字段级 @Mock；无法构造或 accessor 较多时可在测试方法内部局部 mock。";
         }
-        return "业务数据对象，不作为 Mock。";
+        if (looksLikePathType(type)) {
+            return "路径/文件对象不默认生成字段级 @Mock；优先使用 @TempDir 和真实临时目录。";
+        }
+        return "业务数据对象不默认生成字段级 @Mock；构造复杂时可在测试方法内部局部 mock。";
     }
 
     /**
@@ -299,14 +320,6 @@ public class MockStrategyPlanner {
     }
 
     /**
-     * 判断调用是否为请求头读取。
-     * Header 读取在 Servlet Filter 场景中决定用户上下文，因此默认生成一个稳定的 demo-user 桩。
-     */
-    private boolean looksLikeHeaderCall(String callExpression) {
-        return callExpression != null && callExpression.startsWith("getHeader(");
-    }
-
-    /**
      * 从完整调用表达式中提取方法名。
      * Mock 策略需要按方法名前缀判断是否应生成 when 规则。
      */
@@ -329,21 +342,4 @@ public class MockStrategyPlanner {
         return "null";
     }
 
-    /**
-     * 判断是否为动态数据源模板解析方法。
-     * 运行时数据源分支需要固定展示 hasConfig/getJdbcTemplate 的桩规则，避免用户遗漏异常路径。
-     */
-    private boolean looksLikeResolveTemplate(MethodModel methodModel) {
-        return methodModel != null && "resolveTemplate".equals(methodModel.getMethodName());
-    }
-
-    /**
-     * 追加去重规则。
-     * 同一调用既可能来自 AST 依赖调用，也可能来自专用业务规则，去重后预览更清晰。
-     */
-    private void addIfAbsent(List<String> rules, String rule) {
-        if (!rules.contains(rule)) {
-            rules.add(rule);
-        }
-    }
 }

@@ -19,6 +19,8 @@ public class MethodModel {
     private String methodName;
     /** 被测方法返回类型，决定生成 void 调用还是结果断言。 */
     private String returnType;
+    /** 被测方法访问修饰符，例如 public、protected、private 或 package-private。 */
+    private String accessModifier = "package-private";
     /** 被测方法是否为 protected，可用于解释测试类必须保持同包生成的原因。 */
     private boolean protectedMethod;
     /** 被测方法声明抛出的异常类型列表，生成测试方法签名和异常断言时需要参考。 */
@@ -37,6 +39,8 @@ public class MethodModel {
     private List<DependencyModel> dependencies = new ArrayList<>();
     /** 被测方法的调用点列表，用于向大模型补充真实业务调用方式。 */
     private List<MethodUsageModel> usages = new ArrayList<>();
+    /** 被测方法内部的一层调用链上下文，用于大模型补齐路径前置条件和参数对象桩。 */
+    private List<CallContextModel> callContexts = new ArrayList<>();
     /** 当前类声明的方法名列表，用于区分本类内部调用和普通函数调用。 */
     private List<String> declaredMethodNames = new ArrayList<>();
 
@@ -161,6 +165,24 @@ public class MethodModel {
     }
 
     /**
+     * 读取被测方法访问修饰符。
+     *
+     * @return 访问修饰符文本
+     */
+    public String getAccessModifier() {
+        return accessModifier;
+    }
+
+    /**
+     * 更新被测方法访问修饰符。
+     *
+     * @param accessModifier 访问修饰符文本
+     */
+    public void setAccessModifier(String accessModifier) {
+        this.accessModifier = accessModifier;
+    }
+
+    /**
      * 判断被测方法是否为 protected。
      * 生成测试类时保持同包可以直接调用 protected 方法，因此该标记用于说明访问策略。
      *
@@ -186,7 +208,7 @@ public class MethodModel {
 
     /**
      * 读取被测方法声明抛出的异常类型列表。
-     * Servlet Filter 等方法通常声明 IOException 或 ServletException，测试方法可统一 throws Exception。
+     * 声明受检异常的方法需要在测试方法中统一透传或断言异常。
      *
      * 异常情况：无主动抛出的受检异常；非法输入通常会通过空结果、告警或表格校验处理。
      *
@@ -368,6 +390,14 @@ public class MethodModel {
      */
     public void setUsages(List<MethodUsageModel> usages) {
         this.usages = usages;
+    }
+
+    public List<CallContextModel> getCallContexts() {
+        return callContexts;
+    }
+
+    public void setCallContexts(List<CallContextModel> callContexts) {
+        this.callContexts = callContexts;
     }
 
     /**

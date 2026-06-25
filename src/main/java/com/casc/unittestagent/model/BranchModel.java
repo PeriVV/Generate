@@ -1,5 +1,8 @@
 package com.casc.unittestagent.model;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 描述被测方法中的异常保护分支。
  * 解析器写入原始条件、安全条件和异常类型，场景规划器据此构造异常用例与正常绕过用例。
@@ -14,6 +17,8 @@ public class BranchModel {
     private String action;
     /** 异常分支抛出的异常类型，生成 assertThrows 时需要使用。 */
     private String exceptionType;
+    /** 到达该分支前需要满足的前置安全条件，避免测试提前失败在更早的无关分支上。 */
+    private List<String> preconditions = new ArrayList<>();
 
     /**
      * 读取源码中的原始分支条件，保留给预览页和异常场景命名使用。
@@ -109,5 +114,13 @@ public class BranchModel {
      */
     public void setExceptionType(String exceptionType) {
         this.exceptionType = exceptionType;
+    }
+
+    public List<String> getPreconditions() {
+        return preconditions;
+    }
+
+    public void setPreconditions(List<String> preconditions) {
+        this.preconditions = preconditions;
     }
 }

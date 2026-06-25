@@ -30,6 +30,17 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         String systemPrompt = promptBuilder.systemPrompt();
         String userPrompt = promptBuilder.userPrompt(request);
+        return responseParser.parse(executeChat(systemPrompt, userPrompt));
+    }
+
+    public LlmGenerationResponse generateMockStrategy(LlmGenerationRequest request) throws Exception {
+        validateConfig();
+        String systemPrompt = promptBuilder.mockStrategySystemPrompt();
+        String userPrompt = promptBuilder.mockStrategyPrompt(request);
+        return responseParser.parseMockStrategyOnly(executeChat(systemPrompt, userPrompt));
+    }
+
+    private String executeChat(String systemPrompt, String userPrompt) throws IOException {
         OkHttpClient client = new OkHttpClient.Builder()
                 .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
@@ -47,7 +58,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
             }
-            return responseParser.parse(extractMessageContent(body));
+            return extractMessageContent(body);
         }
     }
 

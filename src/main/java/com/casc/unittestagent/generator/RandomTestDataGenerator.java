@@ -4,6 +4,8 @@ import com.casc.unittestagent.model.TestDataRangeConfig;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -48,7 +50,10 @@ public class RandomTestDataGenerator {
                 return randomDecimal(type);
             case "boolean":
             case "Boolean":
-                return String.valueOf(ThreadLocalRandom.current().nextBoolean());
+                return randomCandidateLiteral(type, "true");
+            case "char":
+            case "Character":
+                return randomCandidateLiteral(type, "'a'");
             case "String":
                 return "\"" + randomAsciiString() + "\"";
             default:
@@ -70,6 +75,9 @@ public class RandomTestDataGenerator {
      */
     public String minValueExpression(String javaType) {
         Optional<TestDataRangeConfig> config = TestDataRangeConfigManager.findByType(javaType);
+        if (config.isPresent() && config.get().isCandidateType()) {
+            return candidateLiteralAt(javaType, 0);
+        }
         if (config.isEmpty() || config.get().getMinValue() == null) {
             return generateValueExpression(javaType);
         }
@@ -87,6 +95,9 @@ public class RandomTestDataGenerator {
      */
     public String maxValueExpression(String javaType) {
         Optional<TestDataRangeConfig> config = TestDataRangeConfigManager.findByType(javaType);
+        if (config.isPresent() && config.get().isCandidateType()) {
+            return candidateLiteralAt(javaType, -1);
+        }
         if (config.isEmpty() || config.get().getMaxValue() == null) {
             return generateValueExpression(javaType);
         }
@@ -104,6 +115,9 @@ public class RandomTestDataGenerator {
      */
     public String belowMinValueExpression(String javaType) {
         Optional<TestDataRangeConfig> config = TestDataRangeConfigManager.findByType(javaType);
+        if (config.isPresent() && config.get().isCandidateType()) {
+            return generateValueExpression(javaType);
+        }
         if (config.isEmpty() || config.get().getMinValue() == null) {
             return generateValueExpression(javaType);
         }
@@ -187,6 +201,99 @@ public class RandomTestDataGenerator {
             return BigDecimal.valueOf(Double.parseDouble(rawValue)).setScale(decimalScale(javaType), RoundingMode.HALF_UP).toPlainString();
         }
         return rawValue;
+    }
+
+    /**
+     * 从候选值中随机选一个并转换为 Java 字面量。
+     */
+    private String randomCandidateLiteral(String javaType, String fallbackLiteral) {
+        List<String> candidates = candidateValues(javaType);
+        if (candidates.isEmpty()) {
+            return fallbackLiteral;
+        }
+        return candidateLiteral(javaType, candidates.get(ThreadLocalRandom.current().nextInt(candidates.size())));
+    }
+
+    /**
+     * 从候选值中读取指定位置的值。
+     * index 为 -1 时返回最后一个候选值，便于边界值展示覆盖候选集合两端。
+     */
+    private String candidateLiteralAt(String javaType, int index) {
+        List<String> candidates = candidateValues(javaType);
+        if (candidates.isEmpty()) {
+            return generateValueExpression(javaType);
+        }
+        int resolvedIndex = index < 0 ? candidates.size() - 1 : Math.min(index, candidates.size() - 1);
+        return candidateLiteral(javaType, candidates.get(resolvedIndex));
+    }
+
+    /**
+     * 读取并清理候选值配置。
+     */
+    private List<String> candidateValues(String javaType) {
+        Optional<TestDataRangeConfig> config = TestDataRangeConfigManager.findByType(javaType);
+        List<String> values = new ArrayList<>();
+        if (config.isEmpty() || config.get().getCandidateValues() == null) {
+            return values;
+        }
+        for (String rawValue : config.get().getCandidateValues().split(",")) {
+            String value = rawValue.trim();
+            if (!value.isBlank()) {
+                values.add(value);
+            }
+        }
+        return values;
+    }
+
+    /**
+     * 把候选值转换为 Java 字面量。
+     */
+    private String candidateLiteral(String javaType, String rawValue) {
+        String type = simpleType(javaType);
+        if ("boolean".equals(type) || "Boolean".equals(type)) {
+            return String.valueOf(Boolean.parseBoolean(rawValue));
+        }
+        if ("char".equals(type) || "Character".equals(type)) {
+            String value = normalizeCharCandidate(rawValue);
+            if (value.isEmpty()) {
+                return "'a'";
+            }
+            return "'" + escapeJavaChar(value.charAt(0)) + "'";
+        }
+        return rawValue;
+    }
+
+    /**
+     * 去除 char 候选值外层单引号。
+     */
+    private String normalizeCharCandidate(String rawValue) {
+        String value = rawValue == null ? "" : rawValue.trim();
+        if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
+            return value.substring(1, value.length() - 1);
+        }
+        return value;
+    }
+
+    /**
+     * 转义 char 字面量中必须转义的字符。
+     */
+    private String escapeJavaChar(char value) {
+        if (value == '\\') {
+            return "\\\\";
+        }
+        if (value == '\'') {
+            return "\\'";
+        }
+        if (value == '\n') {
+            return "\\n";
+        }
+        if (value == '\r') {
+            return "\\r";
+        }
+        if (value == '\t') {
+            return "\\t";
+        }
+        return String.valueOf(value);
     }
 
     /**

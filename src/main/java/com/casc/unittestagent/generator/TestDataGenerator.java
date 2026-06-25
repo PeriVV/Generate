@@ -41,10 +41,20 @@ public class TestDataGenerator {
             List<String> invalidValues = new ArrayList<>();
             if (parameter.isNullable()) {
                 invalidValues.add("null");
-            } else {
+            } else if (supportsBelowMinInvalidValue(parameter.getType())) {
                 invalidValues.add(randomGenerator.belowMinValueExpression(parameter.getType()));
             }
             parameter.setInvalidValues(invalidValues);
         }
+    }
+
+    /**
+     * 判断当前类型是否适合用低于最小值构造非法输入。
+     * boolean、char 等候选值类型没有越界概念，不能伪造一个“低于最小值”的异常值。
+     */
+    private boolean supportsBelowMinInvalidValue(String javaType) {
+        return TestDataRangeConfigManager.findByType(javaType)
+                .map(config -> !config.isCandidateType())
+                .orElse(true);
     }
 }

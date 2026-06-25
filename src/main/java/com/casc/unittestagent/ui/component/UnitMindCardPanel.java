@@ -19,7 +19,7 @@ public class UnitMindCardPanel extends JBPanel<UnitMindCardPanel> {
 
     /**
      * 创建带标题的卡片。
-     *
+     *s
      * @param title 卡片标题
      */
     public UnitMindCardPanel(String title) {

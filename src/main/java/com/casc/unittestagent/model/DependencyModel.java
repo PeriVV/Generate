@@ -17,7 +17,7 @@ public class DependencyModel {
     private String dependencyType;
     /** 被测方法实际调用的依赖方法集合，用于生成 verify 和可选 when 规则。 */
     private List<String> calledMethods = new ArrayList<>();
-    /** 被测方法实际调用的完整依赖表达式，例如 doFilter(request, response)。 */
+    /** 被测方法实际调用的完整依赖表达式，例如 query(request)。 */
     private List<String> callExpressions = new ArrayList<>();
     /** 依赖是否来自方法参数；接口型参数需要生成 @Mock 字段并直接参与方法调用。 */
     private boolean methodParameter;

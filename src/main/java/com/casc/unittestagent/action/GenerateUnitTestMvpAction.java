@@ -54,7 +54,7 @@ public class GenerateUnitTestMvpAction extends AnAction {
         toolWindow.show(() -> ApplicationManager.getApplication().invokeLater(() -> {
             UnitMindToolWindowPanel panel = UnitMindToolWindowRegistry.get(project);
             if (panel != null) {
-                panel.setCurrentContext(editor, finalPsiFile);
+                panel.setCurrentContextAndAnalyze(editor, finalPsiFile);
             }
         }));
     }

@@ -10,27 +10,29 @@ import com.casc.unittestagent.service.UnitTestGenerationService;
 import com.casc.unittestagent.ui.UnitMindSettingsDialog;
 import com.casc.unittestagent.ui.component.UnitMindHeaderPanel;
 import com.casc.unittestagent.ui.component.UnitMindStepperPanel;
-import com.casc.unittestagent.ui.step.ConstraintStepPanel;
 import com.casc.unittestagent.ui.step.MockStrategyStepPanel;
 import com.casc.unittestagent.ui.step.ScenarioStepPanel;
-import com.casc.unittestagent.ui.step.SummaryStepPanel;
+import com.casc.unittestagent.ui.step.StaticAnalysisStepPanel;
 import com.casc.unittestagent.ui.step.TestCodeStepPanel;
 import com.casc.unittestagent.ui.step.WriteFileStepPanel;
 import com.casc.unittestagent.writer.TestFileWriter;
 import com.casc.unittestagent.writer.TestWriteMode;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.util.ui.JBUI;
+import org.jetbrains.annotations.NotNull;
 
 import javax.swing.JButton;
 import javax.swing.JPanel;
-import javax.swing.SwingUtilities;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.FlowLayout;
@@ -44,7 +46,7 @@ import java.util.Arrays;
 public class UnitMindToolWindowPanel extends JPanel {
     /** 步骤名称。 */
     private static final String[] STEPS = {
-            "方法概要", "参数约束", "测试场景", "Mock策略", "测试代码", "写入测试文件"
+            "静态分析结果", "测试场景", "Mock策略", "测试代码", "写入测试文件"
     };
 
     /** 当前项目。 */
@@ -88,6 +90,10 @@ public class UnitMindToolWindowPanel extends JPanel {
     private String lastError = "";
     /** 当前测试代码步骤面板。 */
     private TestCodeStepPanel testCodeStepPanel;
+    /** 分析任务序号，用于忽略过期后台任务结果。 */
+    private int analysisSequence;
+    /** 是否正在调用大模型生成候选 Mock 策略。 */
+    private boolean mockStrategyLlmRunning;
 
     /**
      * 创建 UnitMind 工具窗口主面板。
@@ -126,6 +132,7 @@ public class UnitMindToolWindowPanel extends JPanel {
      * @param psiFile 当前 PSI 文件
      */
     public void setCurrentContext(Editor editor, PsiFile psiFile) {
+        analysisSequence++;
         this.currentEditor = editor;
         this.currentPsiFile = psiFile;
         this.generationResult = null;
@@ -133,9 +140,22 @@ public class UnitMindToolWindowPanel extends JPanel {
         this.editedCode = "";
         this.lastError = "";
         this.generationStatus = GenerationStatus.IDLE;
+        this.mockStrategyLlmRunning = false;
         Arrays.fill(stepStatuses, StepStatus.NOT_STARTED);
         currentStepIndex = 0;
         rebuildSteps();
+    }
+
+    /**
+     * 设置当前编辑器上下文并立即开始分析。
+     * 右键菜单入口使用该方法，避免用户打开 UnitMind 后还需要再点击“重新分析”。
+     *
+     * @param editor 当前编辑器
+     * @param psiFile 当前 PSI 文件
+     */
+    public void setCurrentContextAndAnalyze(Editor editor, PsiFile psiFile) {
+        setCurrentContext(editor, psiFile);
+        analyzeCurrentMethod();
     }
 
     /**
@@ -172,6 +192,9 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 同步分析前后都会设置状态，避免 UI 长期停留在“进行中”。
      */
     private void analyzeCurrentMethod() {
+        if (generationStatus == GenerationStatus.RUNNING) {
+            return;
+        }
         if (currentEditor == null || !(currentPsiFile instanceof PsiJavaFile)) {
             detectCurrentEditorContext();
         }
@@ -184,41 +207,190 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
 
         stepStatuses[0] = StepStatus.RUNNING;
-        stepStatuses[1] = StepStatus.RUNNING;
+        stepStatuses[1] = StepStatus.NOT_STARTED;
+        stepStatuses[2] = StepStatus.NOT_STARTED;
+        stepStatuses[3] = StepStatus.NOT_STARTED;
+        stepStatuses[4] = StepStatus.NOT_STARTED;
+        generationResult = null;
+        generatedCode = "";
+        editedCode = "";
+        lastError = "";
+        mockStrategyLlmRunning = false;
         generationStatus = GenerationStatus.RUNNING;
         rebuildSteps();
 
-        try {
-            generationResult = generationService.generate(project, currentPsiFile, currentEditor);
-            GeneratedTestFile file = generationResult.getGeneratedTestFile();
-            generatedCode = file == null ? "" : file.getContent();
-            editedCode = generatedCode;
-            boolean hasWarnings = generationResult != null && !generationResult.getWarnings().isEmpty();
-            boolean failed = generationResult == null || generationResult.getMethodModel() == null || file == null
-                    || generatedCode == null || generatedCode.trim().isEmpty();
-            if (failed) {
-                lastError = generatedCode == null || generatedCode.trim().isEmpty()
-                        ? "测试代码生成失败：生成结果为空。请检查测试代码生成器是否返回了有效代码。"
-                        : warningText();
-                setSteps(StepStatus.FAILED);
-                generationStatus = GenerationStatus.FAILED;
-                currentStepIndex = 4;
-            } else {
-                stepStatuses[0] = StepStatus.SUCCESS;
-                stepStatuses[1] = hasWarnings ? StepStatus.WARNING : StepStatus.SUCCESS;
-                stepStatuses[2] = hasWarnings ? StepStatus.WARNING : StepStatus.SUCCESS;
-                stepStatuses[3] = StepStatus.SUCCESS;
-                stepStatuses[4] = StepStatus.SUCCESS;
-                stepStatuses[5] = StepStatus.NOT_STARTED;
-                generationStatus = GenerationStatus.SUCCESS;
-                lastError = "";
-                currentStepIndex = 0;
+        int requestId = ++analysisSequence;
+        Editor editor = currentEditor;
+        PsiFile psiFile = currentPsiFile;
+        new Task.Backgroundable(project, "UnitMind 正在分析方法", false) {
+            private GenerationResult result;
+            private String error;
+
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                try {
+                    result = generationService.analyzeMethod(project, psiFile, editor);
+                } catch (Exception ex) {
+                    error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                }
             }
-        } catch (Exception ex) {
-            lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+
+            @Override
+            public void onSuccess() {
+                if (requestId != analysisSequence) {
+                    return;
+                }
+                if (error != null) {
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        lastError = error;
+                        setSteps(StepStatus.FAILED);
+                        generationStatus = GenerationStatus.FAILED;
+                        currentStepIndex = 0;
+                        rebuildSteps();
+                    });
+                    return;
+                }
+                ApplicationManager.getApplication().invokeLater(() -> applyAnalysisResult(result));
+            }
+        }.queue();
+    }
+
+    /**
+     * 应用静态分析结果，只更新方法概要和参数约束步骤。
+     */
+    private void applyAnalysisResult(GenerationResult result) {
+        generationResult = result;
+        generatedCode = "";
+        editedCode = "";
+        boolean failed = generationResult == null || generationResult.getMethodModel() == null;
+        if (failed) {
+            lastError = warningText();
+            stepStatuses[0] = StepStatus.FAILED;
+            stepStatuses[1] = StepStatus.FAILED;
+            stepStatuses[2] = StepStatus.NOT_STARTED;
+            stepStatuses[3] = StepStatus.NOT_STARTED;
+            stepStatuses[4] = StepStatus.NOT_STARTED;
+            generationStatus = GenerationStatus.FAILED;
+        } else {
+            stepStatuses[0] = StepStatus.SUCCESS;
+            stepStatuses[1] = StepStatus.NOT_STARTED;
+            stepStatuses[2] = StepStatus.NOT_STARTED;
+            stepStatuses[3] = StepStatus.NOT_STARTED;
+            stepStatuses[4] = StepStatus.NOT_STARTED;
+            generationStatus = GenerationStatus.IDLE;
+            lastError = "";
+            currentStepIndex = 0;
+        }
+        rebuildSteps();
+    }
+
+    /**
+     * 按需规划测试场景，不调用大模型。
+     */
+    private void planScenariosIfNeeded() {
+        if (generationResult == null || generationResult.getMethodModel() == null) {
+            return;
+        }
+        if (!generationResult.getScenarios().isEmpty()) {
+            return;
+        }
+        generationResult = generationService.planScenarios(generationResult);
+        stepStatuses[1] = StepStatus.SUCCESS;
+        rebuildSteps();
+    }
+
+    /**
+     * 按需规划 Mock 策略，不调用大模型。
+     */
+    private void planMockStrategyIfNeeded() {
+        if (generationResult == null || generationResult.getMethodModel() == null) {
+            return;
+        }
+        planScenariosIfNeeded();
+        if (generationResult.getMockStrategy() != null) {
+            return;
+        }
+        generationResult = generationService.planMockStrategy(generationResult);
+        stepStatuses[2] = StepStatus.SUCCESS;
+        rebuildSteps();
+    }
+
+    /**
+     * 按需启动测试代码生成。只有该阶段允许调用大模型。
+     */
+    private void generateTestCodeIfNeeded() {
+        if (generationResult == null || generationResult.getMethodModel() == null) {
+            return;
+        }
+        planMockStrategyIfNeeded();
+        if (generationResult.getGeneratedTestFile() != null || generationStatus == GenerationStatus.RUNNING) {
+            return;
+        }
+
+        stepStatuses[3] = StepStatus.RUNNING;
+        generationStatus = GenerationStatus.RUNNING;
+        rebuildSteps();
+
+        int requestId = analysisSequence;
+        GenerationResult currentResult = generationResult;
+        new Task.Backgroundable(project, "UnitMind 正在生成测试代码", false) {
+            private GenerationResult result;
+            private String error;
+
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                try {
+                    result = generationService.generateTestCode(project, currentPsiFile, currentResult);
+                } catch (Exception ex) {
+                    error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                }
+            }
+
+            @Override
+            public void onSuccess() {
+                if (requestId != analysisSequence) {
+                    return;
+                }
+                if (error != null) {
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        lastError = error;
+                        stepStatuses[3] = StepStatus.FAILED;
+                        generationStatus = GenerationStatus.FAILED;
+                        rebuildSteps();
+                    });
+                    return;
+                }
+                ApplicationManager.getApplication().invokeLater(() -> applyGenerationResult(result));
+            }
+        }.queue();
+    }
+
+    /**
+     * 应用后台生成结果并刷新步骤状态。
+     */
+    private void applyGenerationResult(GenerationResult result) {
+        generationResult = result;
+        GeneratedTestFile file = generationResult == null ? null : generationResult.getGeneratedTestFile();
+        generatedCode = file == null ? "" : file.getContent();
+        editedCode = generatedCode;
+        boolean hasWarnings = generationResult != null && !generationResult.getWarnings().isEmpty();
+        boolean failed = generationResult == null || generationResult.getMethodModel() == null || file == null
+                || generatedCode == null || generatedCode.trim().isEmpty();
+        if (failed) {
+            lastError = generatedCode == null || generatedCode.trim().isEmpty()
+                    ? "测试代码生成失败：生成结果为空。请检查测试代码生成器是否返回了有效代码。"
+                    : warningText();
             setSteps(StepStatus.FAILED);
             generationStatus = GenerationStatus.FAILED;
-            currentStepIndex = 0;
+            currentStepIndex = 3;
+        } else {
+            stepStatuses[0] = StepStatus.SUCCESS;
+            stepStatuses[1] = StepStatus.SUCCESS;
+            stepStatuses[2] = StepStatus.SUCCESS;
+            stepStatuses[3] = StepStatus.SUCCESS;
+            stepStatuses[4] = StepStatus.NOT_STARTED;
+            generationStatus = GenerationStatus.SUCCESS;
+            lastError = "";
         }
         rebuildSteps();
     }
@@ -240,13 +412,17 @@ public class UnitMindToolWindowPanel extends JPanel {
         updateHeader();
         stepperPanel.update(currentStepIndex, stepStatuses);
         contentPanel.removeAll();
-        contentPanel.add(new SummaryStepPanel(generationResult, sourcePath()), STEPS[0]);
-        contentPanel.add(new ConstraintStepPanel(generationResult), STEPS[1]);
-        contentPanel.add(new ScenarioStepPanel(generationResult, this::rebuildSteps), STEPS[2]);
-        contentPanel.add(new MockStrategyStepPanel(generationResult), STEPS[3]);
+        contentPanel.add(new StaticAnalysisStepPanel(generationResult, sourcePath()), STEPS[0]);
+        contentPanel.add(new ScenarioStepPanel(generationResult, this::rebuildSteps), STEPS[1]);
+        contentPanel.add(new MockStrategyStepPanel(
+                generationResult,
+                mockStrategyLlmRunning,
+                this::generateLlmMockStrategy,
+                this::useStaticMockStrategy,
+                this::useLlmMockStrategy), STEPS[2]);
         testCodeStepPanel = new TestCodeStepPanel(project, generationStatus, currentCode(), lastError, generationNote(), this::regenerateTestCode);
-        contentPanel.add(testCodeStepPanel, STEPS[4]);
-        contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[5]);
+        contentPanel.add(testCodeStepPanel, STEPS[3]);
+        contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[4]);
         showCurrentStep();
         revalidate();
         repaint();
@@ -272,6 +448,13 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
         currentStepIndex = index;
         showCurrentStep();
+        if (index == 1) {
+            planScenariosIfNeeded();
+        } else if (index == 2) {
+            planMockStrategyIfNeeded();
+        } else if (index >= 3) {
+            generateTestCodeIfNeeded();
+        }
     }
 
     /**
@@ -282,11 +465,94 @@ public class UnitMindToolWindowPanel extends JPanel {
         stepperPanel.update(currentStepIndex, stepStatuses);
         previousButton.setEnabled(currentStepIndex > 0);
         nextButton.setEnabled(currentStepIndex < STEPS.length - 1);
+        analyzeButton.setEnabled(generationStatus != GenerationStatus.RUNNING);
         writeButton.setEnabled(generationResult != null
                 && generationResult.getGeneratedTestFile() != null
                 && generationStatus == GenerationStatus.SUCCESS
                 && currentCode() != null
                 && !currentCode().trim().isEmpty());
+    }
+
+    /**
+     * 手动调用大模型生成候选 Mock 策略，不覆盖静态策略。
+     */
+    private void generateLlmMockStrategy() {
+        if (generationResult == null || generationResult.getMethodModel() == null || mockStrategyLlmRunning) {
+            return;
+        }
+        planMockStrategyIfNeeded();
+        mockStrategyLlmRunning = true;
+        rebuildSteps();
+        int requestId = analysisSequence;
+        GenerationResult currentResult = generationResult;
+        new Task.Backgroundable(project, "UnitMind 正在生成大模型 Mock 策略", false) {
+            private GenerationResult result;
+            private String error;
+
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                try {
+                    result = generationService.generateLlmMockStrategy(currentResult);
+                } catch (Exception ex) {
+                    error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                }
+            }
+
+            @Override
+            public void onSuccess() {
+                if (requestId != analysisSequence) {
+                    return;
+                }
+                mockStrategyLlmRunning = false;
+                if (error != null) {
+                    lastError = error;
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        Messages.showErrorDialog(project, error, "UnitMind 大模型 Mock 策略生成失败");
+                        rebuildSteps();
+                    });
+                    return;
+                }
+                generationResult = result;
+                currentStepIndex = 2;
+                ApplicationManager.getApplication().invokeLater(() -> rebuildSteps());
+            }
+        }.queue();
+    }
+
+    /**
+     * 选择静态 Mock 策略用于后续测试代码生成。
+     */
+    private void useStaticMockStrategy() {
+        if (generationResult == null) {
+            return;
+        }
+        generationResult.setUseLlmMockStrategy(false);
+        resetGeneratedTestCode();
+        rebuildSteps();
+    }
+
+    /**
+     * 选择大模型候选 Mock 策略用于后续测试代码生成。
+     */
+    private void useLlmMockStrategy() {
+        if (generationResult == null || generationResult.getLlmMockStrategy() == null) {
+            return;
+        }
+        generationResult.setUseLlmMockStrategy(true);
+        resetGeneratedTestCode();
+        rebuildSteps();
+    }
+
+    /**
+     * Mock 策略选择变化后清空旧测试代码，避免策略和代码不一致。
+     */
+    private void resetGeneratedTestCode() {
+        generationResult.setGeneratedTestFile(null);
+        generationStatus = GenerationStatus.IDLE;
+        generatedCode = "";
+        editedCode = "";
+        stepStatuses[3] = StepStatus.NOT_STARTED;
+        stepStatuses[4] = StepStatus.NOT_STARTED;
     }
 
     /**
@@ -316,14 +582,18 @@ public class UnitMindToolWindowPanel extends JPanel {
         try {
             testFileWriter.write(project, currentPsiFile, generationResult.getGeneratedTestFile(), code, mode,
                     generationResult.getMethodModel().getMethodName());
-            stepStatuses[5] = StepStatus.SUCCESS;
-            Messages.showInfoMessage(project, "测试文件写入完成。", "UnitMind");
-            rebuildSteps();
+            stepStatuses[4] = StepStatus.SUCCESS;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                Messages.showInfoMessage(project, "测试文件写入完成。", "UnitMind");
+                rebuildSteps();
+            });
         } catch (Exception ex) {
-            stepStatuses[5] = StepStatus.FAILED;
+            stepStatuses[4] = StepStatus.FAILED;
             lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
-            rebuildSteps();
+            ApplicationManager.getApplication().invokeLater(() -> {
+                Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
+                rebuildSteps();
+            });
         }
     }
 
@@ -337,29 +607,29 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
         editedCode = currentCode();
         generationStatus = GenerationStatus.RUNNING;
-        stepStatuses[4] = StepStatus.RUNNING;
-        currentStepIndex = 4;
+        stepStatuses[3] = StepStatus.RUNNING;
+        currentStepIndex = 3;
         rebuildSteps();
         String currentCode = editedCode;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
                 GenerationResult regenerated = generationService.regenerateWithLlmFeedback(generationResult, currentCode, feedback);
-                SwingUtilities.invokeLater(() -> {
+                ApplicationManager.getApplication().invokeLater(() -> {
                     generationResult = regenerated;
                     GeneratedTestFile file = generationResult.getGeneratedTestFile();
                     generatedCode = file == null ? "" : file.getContent();
                     editedCode = generatedCode;
                     generationStatus = GenerationStatus.SUCCESS;
+                    stepStatuses[2] = StepStatus.SUCCESS;
                     stepStatuses[3] = StepStatus.SUCCESS;
-                    stepStatuses[4] = StepStatus.SUCCESS;
                     lastError = "";
                     rebuildSteps();
                 });
             } catch (Exception ex) {
                 String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                SwingUtilities.invokeLater(() -> {
+                ApplicationManager.getApplication().invokeLater(() -> {
                     generationStatus = GenerationStatus.SUCCESS;
-                    stepStatuses[4] = StepStatus.WARNING;
+                    stepStatuses[3] = StepStatus.WARNING;
                     lastError = message;
                     Messages.showErrorDialog(project, message, "UnitMind 大模型重新生成失败");
                     rebuildSteps();
@@ -385,17 +655,20 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 获取源码路径。
      */
     private String sourcePath() {
-        return currentPsiFile == null || currentPsiFile.getVirtualFile() == null ? "" : currentPsiFile.getVirtualFile().getPath();
+        return ReadAction.compute(() -> currentPsiFile == null || currentPsiFile.getVirtualFile() == null
+                ? "" : currentPsiFile.getVirtualFile().getPath());
     }
 
     /**
      * 获取目标测试文件。
      */
     private File targetFile() {
-        if (currentPsiFile == null || generationResult == null || generationResult.getGeneratedTestFile() == null) {
-            return null;
-        }
-        return testFileWriter.resolveTargetFile(currentPsiFile, generationResult.getGeneratedTestFile());
+        return ReadAction.compute(() -> {
+            if (currentPsiFile == null || generationResult == null || generationResult.getGeneratedTestFile() == null) {
+                return null;
+            }
+            return testFileWriter.resolveTargetFile(currentPsiFile, generationResult.getGeneratedTestFile());
+        });
     }
 
     /**

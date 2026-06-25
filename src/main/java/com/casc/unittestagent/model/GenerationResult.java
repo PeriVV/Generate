@@ -15,6 +15,10 @@ public class GenerationResult {
     private List<TestScenario> scenarios = new ArrayList<>();
     /** 依赖调用对应的 Mock 策略，用于生成和展示 Mockito 相关代码。 */
     private MockStrategy mockStrategy;
+    /** 大模型生成的候选 Mock 策略，不覆盖静态 Mock 策略。 */
+    private MockStrategy llmMockStrategy;
+    /** 测试代码生成时是否使用大模型候选 Mock 策略。 */
+    private boolean useLlmMockStrategy;
     /** 生成完成的测试文件模型，写入磁盘前先在 UI 中展示。 */
     private GeneratedTestFile generatedTestFile;
     /** 生成过程中的可恢复告警，服务层用它把异常信息反馈给用户。 */
@@ -96,6 +100,22 @@ public class GenerationResult {
      */
     public void setMockStrategy(MockStrategy mockStrategy) {
         this.mockStrategy = mockStrategy;
+    }
+
+    public MockStrategy getLlmMockStrategy() {
+        return llmMockStrategy;
+    }
+
+    public void setLlmMockStrategy(MockStrategy llmMockStrategy) {
+        this.llmMockStrategy = llmMockStrategy;
+    }
+
+    public boolean isUseLlmMockStrategy() {
+        return useLlmMockStrategy;
+    }
+
+    public void setUseLlmMockStrategy(boolean useLlmMockStrategy) {
+        this.useLlmMockStrategy = useLlmMockStrategy;
     }
 
     /**

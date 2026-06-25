@@ -1,7 +1,6 @@
 package com.casc.unittestagent.generator;
 
 import com.casc.unittestagent.model.BranchModel;
-import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.TestScenario;
@@ -30,56 +29,6 @@ public class TestScenarioPlanner {
             return scenarios;
         }
 
-        if (looksLikeServletFilter(methodModel)) {
-            scenarios.add(scenario("请求头存在时应继续执行过滤链", "shouldContinueFilterChainWhenHeaderExists", "NORMAL",
-                    "请求头存在时应继续执行过滤链。"));
-            scenarios.add(scenario("请求头为空时也应继续执行过滤链", "shouldContinueFilterChainWhenHeaderMissing", "BOUNDARY",
-                    "请求头为空时也应继续执行过滤链。"));
-            scenarios.add(scenario("过滤链抛出异常时应继续向外抛出异常", "shouldPropagateExceptionWhenFilterChainThrows", "EXCEPTION",
-                    "过滤链抛出异常时应继续向外抛出异常。"));
-            return scenarios;
-        }
-
-        if (looksLikeResolveTemplate(methodModel)) {
-            scenarios.add(scenario("kind 为 MYSQL 且 useSandbox=false 时，应返回 mainJdbcTemplate",
-                    "shouldReturnMainJdbcTemplateWhenMysqlAndSandboxDisabled", "NORMAL",
-                    "覆盖 MYSQL 主库路径，验证不会误用沙箱模板。"));
-            scenarios.add(scenario("kind 为 MYSQL 且 useSandbox=true 时，应返回 sandboxJdbcTemplate",
-                    "shouldReturnSandboxJdbcTemplateWhenMysqlAndSandboxEnabled", "NORMAL",
-                    "覆盖 MYSQL 沙箱路径，验证 useSandbox 会切换到沙箱模板。"));
-            scenarios.add(scenario("kind 为 DM8 时，应返回 DM8 对应 JdbcTemplate",
-                    "shouldReturnDmJdbcTemplateWhenKindIsDm8", "NORMAL",
-                    "覆盖 DM8 分支，验证 switch expression 的专有数据源分支。"));
-            scenarios.add(scenario("kind 为 POSTGRESQL 时，应返回 PostgreSQL 对应 JdbcTemplate",
-                    "shouldReturnPostgresqlJdbcTemplateWhenKindIsPostgresql", "NORMAL",
-                    "覆盖 PostgreSQL 分支，验证大小写归一化后的模板选择。"));
-            scenarios.add(scenario("kind 为 TDENGINE 时，应返回 TDengine 对应 JdbcTemplate",
-                    "shouldReturnTdengineJdbcTemplateWhenKindIsTdengine", "NORMAL",
-                    "覆盖 TDengine 分支，验证专用时序库模板选择。"));
-            scenarios.add(scenario("kind 为不支持类型时，应抛出 IllegalArgumentException",
-                    "shouldThrowIllegalArgumentExceptionWhenKindUnsupported", "EXCEPTION",
-                    "覆盖 default 分支，验证未知数据源类型会被明确拒绝。"));
-            scenarios.add(scenario("运行时数据源已配置但模板不可用时，应抛出异常",
-                    "shouldThrowWhenRuntimeDatasourceTemplateUnavailable", "EXCEPTION",
-                    "覆盖 runtimeRegistry.hasConfig=true 但 getJdbcTemplate 返回 null 的异常路径。"));
-            scenarios.add(scenario("运行时数据源未配置时，应抛出异常",
-                    "shouldThrowWhenRuntimeDatasourceNotConfigured", "EXCEPTION",
-                    "覆盖 runtimeRegistry.hasConfig=false 的异常路径。"));
-            return scenarios;
-        }
-
-        if (looksLikeBackupMethod(methodModel)) {
-            scenarios.add(scenario("正常备份成功", "shouldReturnBackupResultWhenRequestValid", "NORMAL",
-                    "plans 非空、includeAttachments=false，期望返回 BackupResult。"));
-            scenarios.add(scenario("无可备份表时抛出异常", "shouldThrowWhenNoBackupPlans", "EXCEPTION",
-                    "plans.isEmpty()，期望抛出 DataSyncException。"));
-            scenarios.add(scenario("包含附件时复制附件", "shouldCopyAttachmentsWhenIncludeAttachmentsTrue", "NORMAL",
-                    "includeAttachments=true，期望返回包含备份目录的 BackupResult。"));
-            scenarios.add(scenario("SQL 异常时包装为业务异常", "shouldThrowDataSyncExceptionWhenSqlException", "EXCEPTION",
-                    "JdbcHelper.connect 或 connection 操作抛 SQLException，期望抛出 DataSyncException。"));
-            return scenarios;
-        }
-
         if (isOptionalReturn(methodModel) && !methodModel.getDependencies().isEmpty()) {
             scenarios.add(scenario("参数合法时，应返回数据", "shouldReturnConnectionWhenIdAndOwnerIdValid", "NORMAL",
                     "使用合法参数，验证返回 Optional 中存在数据。"));
@@ -96,7 +45,7 @@ public class TestScenarioPlanner {
                     break;
                 }
             }
-            return scenarios;
+            return completeScenarioSet(scenarios, methodModel);
         }
 
         scenarios.add(scenario("有效输入时，应正常返回", "shouldReturnNormallyWhenInputValid", "NORMAL",
@@ -109,8 +58,10 @@ public class TestScenarioPlanner {
             TestScenario exceptionScenario = scenario("条件命中时，应抛出异常",
                     "shouldThrowWhenConditionMatched",
                     "EXCEPTION",
-                    "非法输入应触发 " + branch.getExceptionType() + "。");
+                    "非法输入应触发 " + branch.getExceptionType() + "；进入该分支前必须先满足前置路径条件："
+                            + preconditionText(branch.getPreconditions()) + "。");
             exceptionScenario.getCoveredBranches().add(branch.getCondition());
+            exceptionScenario.getInputExpressions().addAll(branch.getPreconditions());
             scenarios.add(exceptionScenario);
         }
 
@@ -121,7 +72,93 @@ public class TestScenarioPlanner {
                     "边界输入应被被测方法正确处理。"));
         }
 
+        return completeScenarioSet(scenarios, methodModel);
+    }
+
+    /**
+     * 保证场景页总是覆盖正常、异常、边界三个维度；无法静态生成时给出原因说明。
+     */
+    private List<TestScenario> completeScenarioSet(List<TestScenario> scenarios, MethodModel methodModel) {
+        if (!hasScenarioType(scenarios, "NORMAL")) {
+            scenarios.add(scenario("有效输入时，应正常返回", "shouldReturnNormallyWhenInputValid", "NORMAL",
+                    "有效输入应使被测方法按正常路径执行。"));
+        }
+        if (!hasScenarioType(scenarios, "EXCEPTION")) {
+            scenarios.add(scenario("未生成异常场景", "exceptionScenarioNotGenerated", "EXCEPTION_REASON",
+                    exceptionMissingReason(methodModel)));
+        }
+        if (!hasScenarioType(scenarios, "BOUNDARY")) {
+            TestScenario boundary = boundaryScenario(methodModel);
+            scenarios.add(boundary == null
+                    ? scenario("未生成边界场景", "boundaryScenarioNotGenerated", "BOUNDARY_REASON", boundaryMissingReason(methodModel))
+                    : boundary);
+        }
         return scenarios;
+    }
+
+    /**
+     * 判断是否已有指定类型的可生成场景。
+     */
+    private boolean hasScenarioType(List<TestScenario> scenarios, String type) {
+        for (TestScenario scenario : scenarios) {
+            if (type.equals(scenario.getType())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 根据参数候选边界值生成边界场景。
+     */
+    private TestScenario boundaryScenario(MethodModel methodModel) {
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            if (parameter.isNullable()) {
+                TestScenario scenario = scenario(parameter.getName() + " 为空时，应按源码逻辑处理",
+                        "shouldHandleNull" + capitalize(parameter.getName()) + "AccordingToSourceLogic",
+                        "BOUNDARY",
+                        "覆盖 " + parameter.getName() + " 为 null 的边界输入。");
+                scenario.getCoveredBranches().add(parameter.getName() + " == null");
+                return scenario;
+            }
+            if (parameter.getBoundaryValues() != null && !parameter.getBoundaryValues().isEmpty()) {
+                TestScenario scenario = scenario(parameter.getName() + " 使用边界值时，应按源码逻辑处理",
+                        "shouldHandleBoundary" + capitalize(parameter.getName()) + "AccordingToSourceLogic",
+                        "BOUNDARY",
+                        "覆盖 " + parameter.getName() + " 的边界输入：" + String.join(", ", parameter.getBoundaryValues()) + "。");
+                scenario.getCoveredBranches().add(parameter.getName() + " boundary value");
+                return scenario;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 解释为什么没有静态异常场景。
+     */
+    private String exceptionMissingReason(MethodModel methodModel) {
+        if (methodModel.getBranches().isEmpty()) {
+            return "静态分析未发现 throw 分支、显式异常保护条件或会包装异常的依赖调用，因此不生成异常场景。返回类型为 "
+                    + nullToText(methodModel.getReturnType()) + " 本身不是判断异常场景的依据。";
+        }
+        return "静态分析发现了控制流分支，但未发现 action=throw 的异常分支；这些分支更适合作为正常或边界路径覆盖。";
+    }
+
+    /**
+     * 解释为什么没有静态边界场景。
+     */
+    private String boundaryMissingReason(MethodModel methodModel) {
+        if (methodModel.getParameters().isEmpty()) {
+            return "当前方法没有入参，静态分析无法构造参数边界输入。";
+        }
+        if ("void".equals(methodModel.getReturnType())) {
+            return "当前方法返回 void 且未识别到参数边界值、null 检查或集合空值分支，因此不生成边界场景。";
+        }
+        return "静态分析未识别到可用于构造边界输入的参数约束，例如 null、empty、min/max、集合为空或字符串空白。";
+    }
+
+    private String nullToText(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 
     /**
@@ -157,69 +194,8 @@ public class TestScenarioPlanner {
         return Character.toUpperCase(text.charAt(0)) + text.substring(1);
     }
 
-    /**
-     * 判断方法是否符合 Servlet Filter 的典型调用形态。
-     * Header 读取和过滤链调用同时出现时，通用正常/边界场景不足以表达业务路径。
-     */
-    private boolean looksLikeServletFilter(MethodModel methodModel) {
-        boolean readsHeader = false;
-        boolean callsFilterChain = false;
-        for (DependencyModel dependency : methodModel.getDependencies()) {
-            for (String callExpression : dependency.getCallExpressions()) {
-                if (callExpression.startsWith("getHeader(")) {
-                    readsHeader = true;
-                }
-                if (callExpression.startsWith("doFilter(")) {
-                    callsFilterChain = true;
-                }
-            }
-        }
-        return readsHeader && callsFilterChain;
-    }
-
-    /**
-     * 判断方法是否为动态数据源模板解析方法。
-     * 该方法的核心路径由 kind 与 useSandbox 联合决定，通用分支规则无法表达所有数据库类型。
-     */
-    private boolean looksLikeResolveTemplate(MethodModel methodModel) {
-        if (!"resolveTemplate".equals(methodModel.getMethodName())) {
-            return false;
-        }
-        boolean hasKind = false;
-        boolean hasSandbox = false;
-        for (ParameterModel parameter : methodModel.getParameters()) {
-            if ("kind".equals(parameter.getName()) && "String".equals(parameter.getType())) {
-                hasKind = true;
-            }
-            if ("useSandbox".equals(parameter.getName())
-                    && ("boolean".equals(parameter.getType()) || "Boolean".equals(parameter.getType()))) {
-                hasSandbox = true;
-            }
-        }
-        return hasKind && hasSandbox;
-    }
-
-    /**
-     * 判断是否为备份服务的核心 backup 方法。
-     * 该方法包含静态数据库连接、表映射解析、附件复制和事务提交回滚，通用场景不足以表达主要路径。
-     */
-    private boolean looksLikeBackupMethod(MethodModel methodModel) {
-        if (!"backup".equals(methodModel.getMethodName())) {
-            return false;
-        }
-        boolean hasBackupRequest = false;
-        for (ParameterModel parameter : methodModel.getParameters()) {
-            if ("BackupRequest".equals(parameter.getType())) {
-                hasBackupRequest = true;
-                break;
-            }
-        }
-        String body = methodModel.getMethodBodyText() == null ? "" : methodModel.getMethodBodyText();
-        return hasBackupRequest
-                && body.contains("JdbcHelper.connect")
-                && body.contains("TableProfileResolver.resolve")
-                && body.contains("connection.commit")
-                && body.contains("connection.rollback");
+    private String preconditionText(List<String> preconditions) {
+        return preconditions == null || preconditions.isEmpty() ? "无额外前置条件" : String.join("; ", preconditions);
     }
 
     /**

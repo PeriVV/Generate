@@ -35,6 +35,30 @@ public class LlmResponseParser {
         return response;
     }
 
+    public LlmGenerationResponse parseMockStrategyOnly(String rawText) {
+        String jsonText = extractJson(rawText);
+        if (jsonText == null || jsonText.isBlank()) {
+            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
+        }
+        JSONObject root;
+        try {
+            root = new JSONObject(jsonText);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。", ex);
+        }
+
+        LlmGenerationResponse response = new LlmGenerationResponse();
+        response.setRawResponse(rawText);
+        response.setWarnings(warnings(root.optJSONArray("warnings")));
+        response.setMockStrategy(mockStrategy(root.optJSONArray("mockStrategies")));
+        if (response.getMockStrategy() == null
+                || response.getMockStrategy().getStrategyItems() == null
+                || response.getMockStrategy().getStrategyItems().isEmpty()) {
+            throw new IllegalArgumentException("大模型未返回可展示的 Mock 策略。");
+        }
+        return response;
+    }
+
     private MockStrategy mockStrategy(JSONArray array) {
         MockStrategy strategy = new MockStrategy();
         List<MockStrategyItem> items = new ArrayList<>();
@@ -58,13 +82,21 @@ public class LlmResponseParser {
                     object.optString("source", ""),
                     mockitoStrategy,
                     object.optString("note", "")));
-            if (enabled && "mock".equalsIgnoreCase(mockitoStrategy) && !target.isBlank()) {
+            if (enabled && isFieldMock(object.optString("dependencyType", ""), mockitoStrategy) && !target.isBlank()) {
                 mockFields.add(target);
             }
         }
         strategy.setStrategyItems(items);
         strategy.setMockFields(mockFields);
         return strategy;
+    }
+
+    private boolean isFieldMock(String dependencyType, String mockitoStrategy) {
+        if (!"mock".equalsIgnoreCase(mockitoStrategy)) {
+            return false;
+        }
+        String type = dependencyType == null ? "" : dependencyType.toLowerCase();
+        return !type.contains("参数") && !type.contains("dto") && !type.contains("数据对象") && !type.contains("局部");
     }
 
     private List<String> warnings(JSONArray array) {

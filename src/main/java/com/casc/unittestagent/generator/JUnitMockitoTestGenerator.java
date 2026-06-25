@@ -5,6 +5,7 @@ import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.GeneratedTestFile;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.MockStrategy;
+import com.casc.unittestagent.model.MockStrategyItem;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.util.StringUtils;
@@ -47,9 +48,7 @@ public class JUnitMockitoTestGenerator {
         file.setFileName(testClassName + ".java");
         String content;
         try {
-            content = looksLikeBackupMethod(methodModel)
-                    ? backupDraftContent(methodModel)
-                    : buildContent(methodModel, scenarios == null ? new ArrayList<>() : scenarios, mockStrategy);
+            content = buildContent(methodModel, scenarios == null ? new ArrayList<>() : scenarios, mockStrategy);
         } catch (Exception ex) {
             LOG.warn("UnitMind: generate test code failed", ex);
             content = fallbackContent(methodModel);
@@ -82,8 +81,10 @@ public class JUnitMockitoTestGenerator {
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
 
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            code.append("    @Mock\n");
-            code.append("    private ").append(dependency.getFieldType()).append(" ").append(dependency.getFieldName()).append(";\n\n");
+            if (shouldGenerateFieldMock(dependency)) {
+                code.append("    @Mock\n");
+                code.append("    private ").append(dependency.getFieldType()).append(" ").append(dependency.getFieldName()).append(";\n\n");
+            }
         }
 
         String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
@@ -95,62 +96,46 @@ public class JUnitMockitoTestGenerator {
             appendTestMethod(code, methodModel, scenario, subjectName, mockStrategy);
         }
 
-        if (looksLikeResolveTemplate(methodModel)) {
-            appendResolveTemplateInvoker(code, methodModel, subjectName);
+        if (isPrivateMethod(methodModel)) {
+            appendPrivateMethodInvoker(code, methodModel, subjectName);
         }
 
         code.append("}\n");
         return code.toString();
     }
 
-    /**
-     * 为 BackupService#backup 生成可编辑草稿。
-     * 该方法静态依赖和内部私有流程较多，MVP 阶段优先给出稳定草稿和 TODO，避免生成误导性的复杂 Mock 代码。
-     */
-    private String backupDraftContent(MethodModel methodModel) {
-        StringBuilder code = new StringBuilder();
-        if (methodModel.getPackageName() != null && !methodModel.getPackageName().isBlank()) {
-            code.append("package ").append(methodModel.getPackageName()).append(";\n\n");
+    private boolean shouldGenerateFieldMock(DependencyModel dependency) {
+        if (dependency == null) {
+            return false;
         }
-        Set<String> imports = new LinkedHashSet<>();
-        String requestImport = importForType(methodModel, "BackupRequest");
-        String resultImport = importForType(methodModel, methodModel.getReturnType());
-        String exceptionImport = importForType(methodModel, "DataSyncException");
-        if (requestImport != null) {
-            imports.add(requestImport);
-        }
-        if (resultImport != null) {
-            imports.add(resultImport);
-        }
-        if (exceptionImport != null) {
-            imports.add(exceptionImport);
-        }
-        imports.add("org.junit.jupiter.api.Test");
-        for (String importName : imports) {
-            code.append("import ").append(importName).append(";\n");
-        }
-        code.append("\nimport static org.junit.jupiter.api.Assertions.*;\n\n");
-        code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
-        code.append("    @Test\n");
-        code.append("    void shouldBackupWhenRequestValid() {\n");
-        code.append("        ").append(methodModel.getClassName()).append(" backupService = new ").append(methodModel.getClassName()).append("();\n\n");
-        code.append("        // TODO: 根据业务补充 BackupRequest 的 dbConfig、backupMode、includeAttachments 等字段。\n");
-        code.append("        // TODO: BackupRequest 无法确认存在无参构造，请根据构造函数补充。\n");
-        code.append("        BackupRequest request = null;\n\n");
-        code.append("        // TODO: JdbcHelper.connect 是静态方法，完整单测需要 mockStatic 或重构为可注入依赖。\n");
-        code.append("        BackupResult result = backupService.backup(request);\n\n");
-        code.append("        assertNotNull(result);\n");
-        code.append("    }\n\n");
-        code.append("    @Test\n");
-        code.append("    void shouldThrowDataSyncExceptionWhenBackupFailed() {\n");
-        code.append("        ").append(methodModel.getClassName()).append(" backupService = new ").append(methodModel.getClassName()).append("();\n\n");
-        code.append("        // TODO: 构造会触发异常路径的 BackupRequest。\n");
-        code.append("        // TODO: BackupRequest 无法确认存在无参构造，请根据构造函数补充。\n");
-        code.append("        BackupRequest request = null;\n\n");
-        code.append("        assertThrows(DataSyncException.class, () -> backupService.backup(request));\n");
-        code.append("    }\n");
-        code.append("}\n");
-        return code.toString();
+        return !looksLikeDtoType(dependency.getFieldType()) && !looksLikePathType(dependency.getFieldType());
+    }
+
+    private boolean looksLikeDtoType(String type) {
+        String simple = simpleType(type);
+        return simple.endsWith("Request")
+                || simple.endsWith("Response")
+                || simple.endsWith("DTO")
+                || simple.endsWith("VO")
+                || simple.endsWith("BO")
+                || simple.endsWith("PO")
+                || simple.endsWith("Entity")
+                || simple.endsWith("Model")
+                || simple.endsWith("Command")
+                || simple.endsWith("Query")
+                || simple.endsWith("Param")
+                || simple.endsWith("Profile")
+                || simple.endsWith("Form")
+                || simple.endsWith("Result");
+    }
+
+    private boolean looksLikePathType(String type) {
+        String simple = simpleType(type);
+        return "Path".equals(simple)
+                || "File".equals(simple)
+                || "Directory".equalsIgnoreCase(simple)
+                || "PathMatcher".equals(simple)
+                || "FileSystem".equals(simple);
     }
 
     /**
@@ -180,7 +165,11 @@ public class JUnitMockitoTestGenerator {
         code.append("\nimport static org.junit.jupiter.api.Assertions.*;\n\n");
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
         code.append("    @Test\n");
-        code.append("    void ").append(fallbackMethodName(methodModel)).append("() {\n");
+        code.append("    void ").append(fallbackMethodName(methodModel)).append("()");
+        if (isPrivateMethod(methodModel)) {
+            code.append(" throws Exception");
+        }
+        code.append(" {\n");
         code.append("        // TODO: UnitMind 暂未能完整推断该方法的依赖和断言，请根据业务补充测试数据。\n");
         String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
         code.append("        // TODO: ").append(methodModel.getClassName()).append(" 可能需要依赖注入，请根据构造函数或字段依赖补充初始化逻辑。\n");
@@ -197,7 +186,7 @@ public class JUnitMockitoTestGenerator {
         if (!methodModel.getParameters().isEmpty()) {
             code.append("\n");
         }
-        String invocation = subjectName + "." + methodModel.getMethodName() + "(" + fallbackArguments(methodModel) + ")";
+        String invocation = invocationExpression(methodModel, subjectName, fallbackArguments(methodModel));
         if ("void".equals(methodModel.getReturnType())) {
             code.append("        ").append(invocation).append(";\n");
         } else {
@@ -205,21 +194,17 @@ public class JUnitMockitoTestGenerator {
             code.append("        assertNotNull(result);\n");
         }
         code.append("    }\n");
+        if (isPrivateMethod(methodModel)) {
+            appendPrivateMethodInvoker(code, methodModel, subjectName);
+        }
         code.append("}\n");
         return code.toString();
     }
 
-    /**
-     * 生成兜底测试方法名。
-     * 方法名保持英文，避免中文进入 Java 标识符。
-     */
     private String fallbackMethodName(MethodModel methodModel) {
         return "should" + capitalize(methodModel.getMethodName()) + "WhenInputValid";
     }
 
-    /**
-     * 拼接兜底调用参数。
-     */
     private String fallbackArguments(MethodModel methodModel) {
         List<String> args = new ArrayList<>();
         for (ParameterModel parameter : methodModel.getParameters()) {
@@ -228,9 +213,6 @@ public class JUnitMockitoTestGenerator {
         return String.join(", ", args);
     }
 
-    /**
-     * 首字母大写。
-     */
     private String capitalize(String text) {
         if (text == null || text.isBlank()) {
             return "Execute";
@@ -250,18 +232,6 @@ public class JUnitMockitoTestGenerator {
         }
         code.append(" {\n");
 
-        if (looksLikeServletFilter(methodModel)) {
-            appendServletFilterTestMethod(code, methodModel, scenario, subjectName);
-            code.append("    }\n");
-            return;
-        }
-
-        if (looksLikeResolveTemplate(methodModel)) {
-            appendResolveTemplateTestBody(code, methodModel, scenario);
-            code.append("    }\n");
-            return;
-        }
-
         Map<String, String> values = valuesForScenario(methodModel, scenario);
         appendInputVariables(code, methodModel, values);
 
@@ -272,7 +242,7 @@ public class JUnitMockitoTestGenerator {
         }
 
         List<String> args = argumentsFor(methodModel, values);
-        String invocation = subjectName + "." + methodModel.getMethodName() + "(" + String.join(", ", args) + ")";
+        String invocation = invocationExpression(methodModel, subjectName, String.join(", ", args));
 
         if ("EXCEPTION".equals(scenario.getType())) {
             String exceptionType = exceptionTypeFor(methodModel, scenario);
@@ -311,10 +281,29 @@ public class JUnitMockitoTestGenerator {
                 applyCondition(values, methodModel, branch.getSafeCondition(), false);
             }
         } else if ("EXCEPTION".equals(scenario.getType()) && !scenario.getCoveredBranches().isEmpty()) {
+            BranchModel targetBranch = branchForScenario(methodModel, scenario);
+            if (targetBranch != null && targetBranch.getPreconditions() != null) {
+                for (String precondition : targetBranch.getPreconditions()) {
+                    applyCondition(values, methodModel, precondition, false);
+                }
+            }
             applyCondition(values, methodModel, scenario.getCoveredBranches().get(0), true);
         }
 
         return values;
+    }
+
+    private BranchModel branchForScenario(MethodModel methodModel, TestScenario scenario) {
+        if (scenario.getCoveredBranches().isEmpty()) {
+            return null;
+        }
+        String condition = scenario.getCoveredBranches().get(0);
+        for (BranchModel branch : methodModel.getBranches()) {
+            if (condition.equals(branch.getCondition())) {
+                return branch;
+            }
+        }
+        return null;
     }
 
     /**
@@ -420,7 +409,7 @@ public class JUnitMockitoTestGenerator {
             }
         }
 
-        String invocation = subjectName + "." + methodModel.getMethodName() + "(" + String.join(", ", argumentsFor(methodModel, values)) + ")";
+        String invocation = invocationExpression(methodModel, subjectName, String.join(", ", argumentsFor(methodModel, values)));
         code.append("        ").append(methodModel.getReturnType()).append(" result = ").append(invocation).append(";\n\n");
         if ("NORMAL".equals(scenario.getType())) {
             code.append("        assertTrue(result.isPresent());\n");
@@ -584,98 +573,33 @@ public class JUnitMockitoTestGenerator {
     }
 
     /**
-     * 为 Servlet Filter 场景追加专用测试代码。
-     * Header 读取和过滤链调用是该类方法的核心协作点，因此使用精确 when 和 verify。
+     * 为 private 被测方法追加通用反射调用辅助方法。
+     * 用户直接右键 private 方法时不能生成 subject.privateMethod(...)，否则测试代码无法编译。
      */
-    private void appendServletFilterTestMethod(StringBuilder code, MethodModel methodModel, TestScenario scenario, String subjectName) {
-        DependencyModel request = dependencyWithCall(methodModel, "getHeader(");
-        DependencyModel filterChain = dependencyWithCall(methodModel, "doFilter(");
-        String headerCall = firstCall(request, "getHeader(");
-        String filterCall = firstCall(filterChain, "doFilter(");
-        Map<String, String> values = valuesForScenario(methodModel, scenario);
-        String invocation = subjectName + "." + methodModel.getMethodName() + "(" + String.join(", ", argumentsFor(methodModel, values)) + ")";
-
-        if (headerCall != null) {
-            String value = "BOUNDARY".equals(scenario.getType()) ? "null" : "\"demo-user\"";
-            code.append("        when(").append(request.getFieldName()).append(".").append(headerCall)
-                    .append(").thenReturn(").append(value).append(");\n");
-        }
-
-        if ("EXCEPTION".equals(scenario.getType()) && filterChain != null && filterCall != null) {
-            code.append("        doThrow(new IOException(\"mock error\")).when(")
-                    .append(filterChain.getFieldName()).append(").").append(filterCall).append(";\n\n");
-            code.append("        assertThrows(IOException.class, () -> {\n");
-            code.append("            ").append(invocation).append(";\n");
-            code.append("        });\n\n");
-        } else {
-            code.append("\n");
-            code.append("        ").append(invocation).append(";\n\n");
-        }
-
-        if (request != null && headerCall != null) {
-            code.append("        verify(").append(request.getFieldName()).append(").").append(headerCall).append(";\n");
-        }
-        if (filterChain != null && filterCall != null) {
-            code.append("        verify(").append(filterChain.getFieldName()).append(").").append(filterCall).append(";\n");
-        }
-    }
-
-    /**
-     * 为 DynamicSqlExecutor#resolveTemplate 追加专用测试主体。
-     * 该方法的核心行为由 switch expression 和运行时数据源注册表共同决定，通用入参规则无法表达具体模板断言。
-     */
-    private void appendResolveTemplateTestBody(StringBuilder code, MethodModel methodModel, TestScenario scenario) {
-        String methodName = scenario.getMethodNameEn();
-        String expectedField = expectedTemplateField(methodModel, methodName);
-        String kind = kindForResolveTemplateScenario(methodName);
-        String sandbox = sandboxForResolveTemplateScenario(methodName);
-
-        code.append("        String kind = ").append(kind).append(";\n");
-        code.append("        boolean useSandbox = ").append(sandbox).append(";\n");
-
-        if (methodName.contains("RuntimeDatasourceTemplateUnavailable")) {
-            code.append("        when(runtimeRegistry.hasConfig(any(), any())).thenReturn(true);\n");
-            code.append("        when(runtimeRegistry.getJdbcTemplate(any(), any())).thenReturn(null);\n\n");
-            code.append("        assertThrows(IllegalStateException.class, () -> invokeResolveTemplate(kind, useSandbox));\n");
-            return;
-        }
-
-        if (methodName.contains("RuntimeDatasourceNotConfigured")) {
-            code.append("        when(runtimeRegistry.hasConfig(any(), any())).thenReturn(false);\n");
-            code.append("        when(runtimeRegistry.getJdbcTemplate(any(), any())).thenReturn(null);\n\n");
-            code.append("        assertThrows(IllegalStateException.class, () -> invokeResolveTemplate(kind, useSandbox));\n");
-            return;
-        }
-
-        if (methodName.contains("KindUnsupported")) {
-            code.append("\n");
-            code.append("        assertThrows(IllegalArgumentException.class, () -> invokeResolveTemplate(kind, useSandbox));\n");
-            return;
-        }
-
+    private void appendPrivateMethodInvoker(StringBuilder code, MethodModel methodModel, String subjectName) {
+        String helperName = privateInvokerName(methodModel);
         code.append("\n");
-        code.append("        ").append(methodModel.getReturnType()).append(" result = invokeResolveTemplate(kind, useSandbox);\n\n");
-        code.append("        assertSame(").append(expectedField).append(", result);\n");
-    }
-
-    /**
-     * 追加 resolveTemplate 的反射调用辅助方法。
-     * 目标项目中该方法通常是 private，测试草稿使用反射避免因为访问级别导致生成代码不可编译。
-     */
-    private void appendResolveTemplateInvoker(StringBuilder code, MethodModel methodModel, String subjectName) {
-        code.append("\n");
-        code.append("    private ").append(methodModel.getReturnType()).append(" invokeResolveTemplate(String kind, boolean useSandbox) throws Exception {\n");
-        code.append("        java.lang.reflect.Method method = ").append(methodModel.getClassName())
-                .append(".class.getDeclaredMethod(\"").append(methodModel.getMethodName())
-                .append("\", String.class, boolean.class);\n");
+        code.append("    private ").append(methodModel.getReturnType()).append(" ").append(helperName).append("(")
+                .append(parameterDeclarations(methodModel)).append(") throws Exception {\n");
+        code.append("        Method method = ").append(methodModel.getClassName()).append(".class.getDeclaredMethod(\"")
+                .append(methodModel.getMethodName()).append("\"");
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            code.append(", ").append(classLiteralFor(parameter.getType()));
+        }
+        code.append(");\n");
         code.append("        method.setAccessible(true);\n");
         code.append("        try {\n");
-        code.append("            return (").append(methodModel.getReturnType()).append(") method.invoke(")
-                .append(subjectName).append(", kind, useSandbox);\n");
-        code.append("        } catch (java.lang.reflect.InvocationTargetException ex) {\n");
+        if ("void".equals(methodModel.getReturnType())) {
+            code.append("            method.invoke(").append(subjectName).append(invocationArguments(methodModel)).append(");\n");
+            code.append("            return;\n");
+        } else {
+            code.append("            return (").append(methodModel.getReturnType()).append(") method.invoke(")
+                    .append(subjectName).append(invocationArguments(methodModel)).append(");\n");
+        }
+        code.append("        } catch (InvocationTargetException ex) {\n");
         code.append("            Throwable cause = ex.getCause();\n");
-        code.append("            if (cause instanceof RuntimeException) {\n");
-        code.append("                throw (RuntimeException) cause;\n");
+        code.append("            if (cause instanceof Exception) {\n");
+        code.append("                throw (Exception) cause;\n");
         code.append("            }\n");
         code.append("            if (cause instanceof Error) {\n");
         code.append("                throw (Error) cause;\n");
@@ -685,73 +609,67 @@ public class JUnitMockitoTestGenerator {
         code.append("    }\n");
     }
 
-    /**
-     * 根据 resolveTemplate 场景选择期望返回的 JdbcTemplate 字段。
-     * 优先使用模型中实际识别到的字段名，避免目标类字段命名略有差异时直接写死。
-     */
-    private String expectedTemplateField(MethodModel methodModel, String methodName) {
-        if (methodName.contains("SandboxJdbcTemplateWhenMysql")) {
-            return dependencyField(methodModel, "sandboxJdbcTemplate");
+    private String invocationExpression(MethodModel methodModel, String subjectName, String arguments) {
+        if (isPrivateMethod(methodModel)) {
+            return privateInvokerName(methodModel) + "(" + arguments + ")";
         }
-        if (methodName.contains("DmJdbcTemplate")) {
-            return dependencyField(methodModel, "dmJdbcTemplate");
-        }
-        if (methodName.contains("PostgresqlJdbcTemplate")) {
-            return dependencyField(methodModel, "postgresJdbcTemplate");
-        }
-        if (methodName.contains("TdengineJdbcTemplate")) {
-            return dependencyField(methodModel, "tdengineJdbcTemplate");
-        }
-        return dependencyField(methodModel, "mainJdbcTemplate");
+        return subjectName + "." + methodModel.getMethodName() + "(" + arguments + ")";
     }
 
-    /**
-     * 为 resolveTemplate 场景选择 kind 输入。
-     * 固定字面量能让预览代码直接对应 switch case，便于用户核对覆盖路径。
-     */
-    private String kindForResolveTemplateScenario(String methodName) {
-        if (methodName.contains("DmJdbcTemplate")) {
-            return "\"DM8\"";
-        }
-        if (methodName.contains("PostgresqlJdbcTemplate")) {
-            return "\"POSTGRESQL\"";
-        }
-        if (methodName.contains("TdengineJdbcTemplate")) {
-            return "\"TDENGINE\"";
-        }
-        if (methodName.contains("KindUnsupported")) {
-            return "\"ORACLE\"";
-        }
-        if (methodName.contains("RuntimeDatasource")) {
-            return "\"MYSQL:tenant_001\"";
-        }
-        return "\"MYSQL\"";
+    private boolean isPrivateMethod(MethodModel methodModel) {
+        return methodModel != null && "private".equals(methodModel.getAccessModifier());
     }
 
-    /**
-     * 为 resolveTemplate 场景选择 useSandbox 输入。
-     * 只有 MYSQL 沙箱场景需要 true，其余专用数据源场景默认验证主模板分支。
-     */
-    private String sandboxForResolveTemplateScenario(String methodName) {
-        return methodName.contains("SandboxJdbcTemplateWhenMysql") ? "true" : "false";
+    private String privateInvokerName(MethodModel methodModel) {
+        return "invoke" + capitalize(methodModel.getMethodName());
     }
 
-    /**
-     * 查找依赖字段名。
-     * 如果解析阶段没有识别到该字段，退回默认名称，使预览中仍能呈现用户需要补充的断言目标。
-     */
-    private String dependencyField(MethodModel methodModel, String defaultName) {
-        for (DependencyModel dependency : methodModel.getDependencies()) {
-            if (defaultName.equals(dependency.getFieldName())) {
-                return dependency.getFieldName();
-            }
+    private String parameterDeclarations(MethodModel methodModel) {
+        List<String> declarations = new ArrayList<>();
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            declarations.add(parameter.getType() + " " + parameter.getName());
         }
-        return defaultName;
+        return String.join(", ", declarations);
+    }
+
+    private String invocationArguments(MethodModel methodModel) {
+        if (methodModel.getParameters().isEmpty()) {
+            return "";
+        }
+        List<String> arguments = new ArrayList<>();
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            arguments.add(parameter.getName());
+        }
+        return ", " + String.join(", ", arguments);
+    }
+
+    private String classLiteralFor(String type) {
+        String simple = simpleType(type);
+        switch (simple) {
+            case "byte":
+                return "byte.class";
+            case "short":
+                return "short.class";
+            case "int":
+                return "int.class";
+            case "long":
+                return "long.class";
+            case "float":
+                return "float.class";
+            case "double":
+                return "double.class";
+            case "boolean":
+                return "boolean.class";
+            case "char":
+                return "char.class";
+            default:
+                return simple + ".class";
+        }
     }
 
     /**
      * 汇总测试类需要的 import。
-     * Servlet 相关类型优先复用被测源码 import，无法找到时按 jakarta.servlet 作为默认兜底。
+     * 只复用被测源码已经出现的 import，避免为某类框架或业务类型写死兜底包名。
      */
     private List<String> importsFor(MethodModel methodModel, List<TestScenario> scenarios) {
         Set<String> imports = new LinkedHashSet<>();
@@ -776,15 +694,16 @@ public class JUnitMockitoTestGenerator {
         imports.add("org.mockito.InjectMocks");
         imports.add("org.mockito.Mock");
         imports.add("org.mockito.junit.jupiter.MockitoExtension");
+        if (isPrivateMethod(methodModel)) {
+            imports.add("java.lang.reflect.InvocationTargetException");
+            imports.add("java.lang.reflect.Method");
+        }
         if (isOptionalReturn(methodModel)) {
             String valueTypeImport = importForType(methodModel, optionalValueType(methodModel));
             if (valueTypeImport != null) {
                 imports.add(valueTypeImport);
             }
             imports.add("java.util.Optional");
-        }
-        if (requiresIOException(methodModel, scenarios)) {
-            imports.add("java.io.IOException");
         }
         if (usesList(methodModel)) {
             imports.add("java.util.List");
@@ -794,7 +713,6 @@ public class JUnitMockitoTestGenerator {
 
     /**
      * 根据简单类型查找源码中的 import。
-     * 如果源码没有显式 import，但类型是常见 Servlet 类型，则使用 jakarta.servlet 默认包名。
      */
     private String importForType(MethodModel methodModel, String type) {
         String simpleType = simpleType(type);
@@ -802,107 +720,17 @@ public class JUnitMockitoTestGenerator {
             if (importName.endsWith("." + simpleType)) {
                 return importName;
             }
-            if (importName.endsWith(".*") && servletWildcardMatches(importName, simpleType)) {
-                return importName.substring(0, importName.length() - 2) + "." + simpleType;
-            }
-        }
-        if ("HttpServletRequest".equals(simpleType) || "HttpServletResponse".equals(simpleType)) {
-            return "jakarta.servlet.http." + simpleType;
-        }
-        if ("FilterChain".equals(simpleType) || "ServletRequest".equals(simpleType) || "ServletResponse".equals(simpleType)) {
-            return "jakarta.servlet." + simpleType;
         }
         return null;
-    }
-
-    /**
-     * 判断 Servlet 通配 import 是否覆盖目标类型。
-     * 该逻辑用于沿用源码中的 javax 或 jakarta 选择，不强行切换 Servlet API 版本。
-     */
-    private boolean servletWildcardMatches(String importName, String simpleType) {
-        if (("HttpServletRequest".equals(simpleType) || "HttpServletResponse".equals(simpleType))
-                && (importName.equals("jakarta.servlet.http.*") || importName.equals("javax.servlet.http.*"))) {
-            return true;
-        }
-        return ("FilterChain".equals(simpleType) || "ServletRequest".equals(simpleType) || "ServletResponse".equals(simpleType))
-                && (importName.equals("jakarta.servlet.*") || importName.equals("javax.servlet.*"));
     }
 
     /**
      * 判断是否需要生成 throws Exception。
-     * 被测方法声明异常或 Servlet Filter 专用场景都需要让测试方法透传受检异常。
+     * 被测方法声明异常或 private 反射调用需要让测试方法透传受检异常。
      */
     private boolean requiresThrowsException(MethodModel methodModel) {
-        return !methodModel.getThrownExceptions().isEmpty() || looksLikeServletFilter(methodModel) || looksLikeResolveTemplate(methodModel);
-    }
-
-    /**
-     * 判断是否需要导入 IOException。
-     * 过滤链异常场景会显式构造 IOException，因此必须补充 import。
-     */
-    private boolean requiresIOException(MethodModel methodModel, List<TestScenario> scenarios) {
-        if (!looksLikeServletFilter(methodModel)) {
-            return false;
-        }
-        for (TestScenario scenario : scenarios) {
-            if ("EXCEPTION".equals(scenario.getType())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 判断当前方法是否是 Servlet Filter 风格方法。
-     * 只要同时读取 Header 并调用过滤链，就启用专用生成路径。
-     */
-    private boolean looksLikeServletFilter(MethodModel methodModel) {
-        return dependencyWithCall(methodModel, "getHeader(") != null
-                && dependencyWithCall(methodModel, "doFilter(") != null;
-    }
-
-    /**
-     * 判断当前方法是否为动态数据源模板解析方法。
-     * 该方法需要覆盖 switch expression 和运行时数据源分支，不能走通用弱断言路径。
-     */
-    private boolean looksLikeResolveTemplate(MethodModel methodModel) {
-        return methodModel != null && "resolveTemplate".equals(methodModel.getMethodName());
-    }
-
-    /**
-     * 判断当前方法是否为备份服务核心 backup 方法。
-     * 该方法包含静态数据库连接和事务流程，优先生成可编辑草稿而不是误导性的复杂 Mock 代码。
-     */
-    private boolean looksLikeBackupMethod(MethodModel methodModel) {
-        if (methodModel == null || !"backup".equals(methodModel.getMethodName())) {
-            return false;
-        }
-        boolean hasBackupRequest = false;
-        for (ParameterModel parameter : methodModel.getParameters()) {
-            if ("BackupRequest".equals(simpleType(parameter.getType()))) {
-                hasBackupRequest = true;
-                break;
-            }
-        }
-        String body = methodModel.getMethodBodyText() == null ? "" : methodModel.getMethodBodyText();
-        return hasBackupRequest
-                && body.contains("JdbcHelper.connect")
-                && body.contains("TableProfileResolver.resolve")
-                && body.contains("connection.commit")
-                && body.contains("connection.rollback");
-    }
-
-    /**
-     * 查找包含指定调用表达式前缀的依赖。
-     * Servlet 场景需要分别定位 request 和 filterChain 变量。
-     */
-    private DependencyModel dependencyWithCall(MethodModel methodModel, String callPrefix) {
-        for (DependencyModel dependency : methodModel.getDependencies()) {
-            if (firstCall(dependency, callPrefix) != null) {
-                return dependency;
-            }
-        }
-        return null;
+        return !methodModel.getThrownExceptions().isEmpty()
+                || isPrivateMethod(methodModel);
     }
 
     /**
@@ -936,22 +764,6 @@ public class JUnitMockitoTestGenerator {
             return "Object";
         }
         return returnType.substring("Optional<".length(), returnType.length() - 1).trim();
-    }
-
-    /**
-     * 查找依赖中的第一个匹配调用表达式。
-     * 调用表达式保留实参，后续可以直接拼接到 when 或 verify。
-     */
-    private String firstCall(DependencyModel dependency, String callPrefix) {
-        if (dependency == null) {
-            return null;
-        }
-        for (String callExpression : dependency.getCallExpressions()) {
-            if (callExpression.startsWith(callPrefix)) {
-                return callExpression;
-            }
-        }
-        return null;
     }
 
     /**
