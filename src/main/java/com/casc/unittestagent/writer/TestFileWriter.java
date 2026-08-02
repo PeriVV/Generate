@@ -1,7 +1,9 @@
 package com.casc.unittestagent.writer;
 
 import com.casc.unittestagent.model.GeneratedTestFile;
+import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.ui.TestWriteModeDialog;
+import com.casc.unittestagent.util.CodeFingerprint;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -33,7 +35,7 @@ public class TestFileWriter {
      * @throws RuntimeException 当底层文件写入失败时抛出
      */
     public void write(Project project, PsiFile sourceFile, GeneratedTestFile generatedTestFile) {
-        write(project, sourceFile, generatedTestFile, null, null, null);
+        throw new IllegalStateException("写入前必须先调用 prepare，并使用通过编译校验的 ValidationResult 执行 commit。");
     }
 
     /**
@@ -53,6 +55,18 @@ public class TestFileWriter {
                       String editedContent,
                       TestWriteMode requestedMode,
                       String testedMethodName) {
+        throw new IllegalStateException("写入前必须先调用 prepare，并使用通过编译校验的 ValidationResult 执行 commit。");
+    }
+
+    /**
+     * 计算本次真正准备落盘的最终内容，追加模式会在此阶段完成合并。
+     */
+    public PreparedWrite prepare(Project project,
+                                 PsiFile sourceFile,
+                                 GeneratedTestFile generatedTestFile,
+                                 String editedContent,
+                                 TestWriteMode requestedMode,
+                                 String testedMethodName) {
         if (sourceFile == null || sourceFile.getVirtualFile() == null) {
             throw new IllegalStateException("源文件不可用。");
         }
@@ -70,12 +84,33 @@ public class TestFileWriter {
         }
         WriteDecision decision = decideWriteMode(project, targetFile, content, requestedMode, testedMethodName);
         if (decision.mode == TestWriteMode.CANCEL) {
+            return PreparedWrite.cancelled(targetFile);
+        }
+        try {
+            String finalContent = contentForWrite(targetFile, content, decision, testedMethodName);
+            return new PreparedWrite(targetFile, finalContent, decision.mode, false);
+        } catch (IOException ex) {
+            throw new IllegalStateException("准备最终测试文件失败：" + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 写入已经完成最终内容编译校验的文件。
+     */
+    public void commit(Project project,
+                       PreparedWrite preparedWrite,
+                       ValidationResult validationResult,
+                       boolean force) {
+        if (preparedWrite == null || preparedWrite.cancelled) {
             return;
         }
-
+        String finalHash = CodeFingerprint.sha256(preparedWrite.content);
+        if (!force && (validationResult == null || !validationResult.isPassedFor(finalHash))) {
+            throw new IllegalStateException("最终测试文件尚未通过编译校验，已阻止写入。");
+        }
         WriteCommandAction.runWriteCommandAction(project, () -> {
             try {
-                writeText(targetFile, contentForWrite(targetFile, content, decision, testedMethodName));
+                writeText(preparedWrite.targetFile, preparedWrite.content);
             } catch (IOException ex) {
                 throw new RuntimeException(ex);
             }
@@ -203,6 +238,43 @@ public class TestFileWriter {
         private WriteDecision(TestWriteMode mode, boolean replaceExistingRegion) {
             this.mode = mode;
             this.replaceExistingRegion = replaceExistingRegion;
+        }
+    }
+
+    /**
+     * 写入模式决策后形成的最终文件快照。
+     */
+    public static class PreparedWrite {
+        private final File targetFile;
+        private final String content;
+        private final TestWriteMode mode;
+        private final boolean cancelled;
+
+        private PreparedWrite(File targetFile, String content, TestWriteMode mode, boolean cancelled) {
+            this.targetFile = targetFile;
+            this.content = content == null ? "" : content;
+            this.mode = mode;
+            this.cancelled = cancelled;
+        }
+
+        private static PreparedWrite cancelled(File targetFile) {
+            return new PreparedWrite(targetFile, "", TestWriteMode.CANCEL, true);
+        }
+
+        public File getTargetFile() {
+            return targetFile;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public TestWriteMode getMode() {
+            return mode;
+        }
+
+        public boolean isCancelled() {
+            return cancelled;
         }
     }
 }

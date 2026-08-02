@@ -14,4 +14,22 @@ public interface LlmClient {
      * @throws Exception 当具体客户端实现请求失败时抛出
      */
     LlmGenerationResponse generateUnitTest(LlmGenerationRequest request) throws Exception;
+
+    /**
+     * 根据真实编译诊断修复完整测试类。
+     */
+    default LlmGenerationResponse repairUnitTest(LlmGenerationRequest request) throws Exception {
+        return generateUnitTest(request);
+    }
+
+    /**
+     * 仅生成 Mock 策略候选。
+     */
+    default LlmGenerationResponse generateMockStrategy(LlmGenerationRequest request) throws Exception {
+        throw new UnsupportedOperationException("当前大模型客户端不支持单独生成 Mock 策略。");
+    }
+
+    default int promptLength(LlmGenerationRequest request) {
+        return -1;
+    }
 }

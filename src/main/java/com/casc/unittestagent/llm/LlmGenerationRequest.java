@@ -6,6 +6,8 @@ import com.casc.unittestagent.model.ConstraintModel;
 import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.MethodUsageModel;
 import com.casc.unittestagent.model.ParameterModel;
+import com.casc.unittestagent.model.CompileDiagnostic;
+import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.TestScenario;
 
 import java.util.ArrayList;
@@ -33,6 +35,9 @@ public class LlmGenerationRequest {
     private List<DependencyModel> dependencies = new ArrayList<>();
     private List<MethodUsageModel> usages = new ArrayList<>();
     private List<CallContextModel> callContexts = new ArrayList<>();
+    private ProjectSymbolSnapshot symbolSnapshot;
+    private List<CompileDiagnostic> compilerDiagnostics = new ArrayList<>();
+    private int repairAttempt;
     private String existingTestCodeSummary;
     private String userInstruction;
     private String testFramework = "JUnit5";
@@ -180,6 +185,30 @@ public class LlmGenerationRequest {
 
     public void setCallContexts(List<CallContextModel> callContexts) {
         this.callContexts = callContexts;
+    }
+
+    public ProjectSymbolSnapshot getSymbolSnapshot() {
+        return symbolSnapshot;
+    }
+
+    public void setSymbolSnapshot(ProjectSymbolSnapshot symbolSnapshot) {
+        this.symbolSnapshot = symbolSnapshot;
+    }
+
+    public List<CompileDiagnostic> getCompilerDiagnostics() {
+        return compilerDiagnostics;
+    }
+
+    public void setCompilerDiagnostics(List<CompileDiagnostic> compilerDiagnostics) {
+        this.compilerDiagnostics = compilerDiagnostics == null ? new ArrayList<>() : compilerDiagnostics;
+    }
+
+    public int getRepairAttempt() {
+        return repairAttempt;
+    }
+
+    public void setRepairAttempt(int repairAttempt) {
+        this.repairAttempt = repairAttempt;
     }
 
     public String getExistingTestCodeSummary() {

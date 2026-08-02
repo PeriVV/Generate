@@ -33,6 +33,13 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         return responseParser.parse(executeChat(systemPrompt, userPrompt));
     }
 
+    @Override
+    public LlmGenerationResponse repairUnitTest(LlmGenerationRequest request) throws Exception {
+        validateConfig();
+        return responseParser.parse(executeChat(promptBuilder.repairSystemPrompt(), promptBuilder.repairPrompt(request)));
+    }
+
+    @Override
     public LlmGenerationResponse generateMockStrategy(LlmGenerationRequest request) throws Exception {
         validateConfig();
         String systemPrompt = promptBuilder.mockStrategySystemPrompt();
@@ -62,6 +69,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
     }
 
+    @Override
     public int promptLength(LlmGenerationRequest request) {
         return promptBuilder.systemPrompt().length() + promptBuilder.userPrompt(request).length();
     }

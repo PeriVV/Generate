@@ -6,6 +6,8 @@ import com.casc.unittestagent.model.GenerationStatus;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.StepStatus;
+import com.casc.unittestagent.model.ValidationResult;
+import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.service.UnitTestGenerationService;
 import com.casc.unittestagent.ui.UnitMindSettingsDialog;
 import com.casc.unittestagent.ui.component.UnitMindHeaderPanel;
@@ -17,6 +19,7 @@ import com.casc.unittestagent.ui.step.TestCodeStepPanel;
 import com.casc.unittestagent.ui.step.WriteFileStepPanel;
 import com.casc.unittestagent.writer.TestFileWriter;
 import com.casc.unittestagent.writer.TestWriteMode;
+import com.casc.unittestagent.util.CodeFingerprint;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Editor;
@@ -166,7 +169,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         previousButton.addActionListener(event -> switchStep(currentStepIndex - 1));
         nextButton.addActionListener(event -> switchStep(currentStepIndex + 1));
         analyzeButton.addActionListener(event -> analyzeCurrentMethod());
-        writeButton.addActionListener(event -> writeTestFile(null));
+        writeButton.addActionListener(event -> writeTestFile(null, false));
         panel.add(previousButton);
         panel.add(nextButton);
         panel.add(analyzeButton);
@@ -373,7 +376,6 @@ public class UnitMindToolWindowPanel extends JPanel {
         GeneratedTestFile file = generationResult == null ? null : generationResult.getGeneratedTestFile();
         generatedCode = file == null ? "" : file.getContent();
         editedCode = generatedCode;
-        boolean hasWarnings = generationResult != null && !generationResult.getWarnings().isEmpty();
         boolean failed = generationResult == null || generationResult.getMethodModel() == null || file == null
                 || generatedCode == null || generatedCode.trim().isEmpty();
         if (failed) {
@@ -387,7 +389,9 @@ public class UnitMindToolWindowPanel extends JPanel {
             stepStatuses[0] = StepStatus.SUCCESS;
             stepStatuses[1] = StepStatus.SUCCESS;
             stepStatuses[2] = StepStatus.SUCCESS;
-            stepStatuses[3] = StepStatus.SUCCESS;
+            ValidationResult validation = generationResult.getValidationResult();
+            stepStatuses[3] = validation != null && validation.getStatus() == ValidationStatus.PASSED
+                    ? StepStatus.SUCCESS : StepStatus.WARNING;
             stepStatuses[4] = StepStatus.NOT_STARTED;
             generationStatus = GenerationStatus.SUCCESS;
             lastError = "";
@@ -420,7 +424,17 @@ public class UnitMindToolWindowPanel extends JPanel {
                 this::generateLlmMockStrategy,
                 this::useStaticMockStrategy,
                 this::useLlmMockStrategy), STEPS[2]);
-        testCodeStepPanel = new TestCodeStepPanel(project, generationStatus, currentCode(), lastError, generationNote(), this::regenerateTestCode);
+        testCodeStepPanel = new TestCodeStepPanel(
+                project,
+                generationStatus,
+                generatedCode,
+                currentCode(),
+                lastError,
+                generationNote(),
+                generationResult == null ? null : generationResult.getValidationResult(),
+                this::regenerateTestCode,
+                this::validateCurrentCode,
+                this::markValidationStale);
         contentPanel.add(testCodeStepPanel, STEPS[3]);
         contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[4]);
         showCurrentStep();
@@ -566,7 +580,7 @@ public class UnitMindToolWindowPanel extends JPanel {
     /**
      * 写入测试文件。
      */
-    private void writeTestFile(TestWriteMode mode) {
+    private void writeTestFile(TestWriteMode mode, boolean force) {
         if (mode == TestWriteMode.CANCEL) {
             return;
         }
@@ -579,22 +593,169 @@ public class UnitMindToolWindowPanel extends JPanel {
             Messages.showWarningDialog(project, "测试代码为空，不能写入测试文件。", "UnitMind");
             return;
         }
+        TestFileWriter.PreparedWrite preparedWrite;
         try {
-            testFileWriter.write(project, currentPsiFile, generationResult.getGeneratedTestFile(), code, mode,
+            preparedWrite = testFileWriter.prepare(
+                    project,
+                    currentPsiFile,
+                    generationResult.getGeneratedTestFile(),
+                    code,
+                    mode,
                     generationResult.getMethodModel().getMethodName());
-            stepStatuses[4] = StepStatus.SUCCESS;
-            ApplicationManager.getApplication().invokeLater(() -> {
-                Messages.showInfoMessage(project, "测试文件写入完成。", "UnitMind");
-                rebuildSteps();
-            });
         } catch (Exception ex) {
             stepStatuses[4] = StepStatus.FAILED;
             lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            ApplicationManager.getApplication().invokeLater(() -> {
-                Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
-                rebuildSteps();
-            });
+            Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
+            rebuildSteps();
+            return;
         }
+        if (preparedWrite.isCancelled()) {
+            return;
+        }
+
+        generationResult.setValidationResult(ValidationResult.status(ValidationStatus.RUNNING));
+        stepStatuses[4] = StepStatus.RUNNING;
+        rebuildSteps();
+        GenerationResult currentResult = generationResult;
+        new Task.Backgroundable(project, "UnitMind 正在校验最终测试文件", false) {
+            private ValidationResult validation;
+            private String error;
+
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                try {
+                    validation = generationService.validateCode(
+                            project,
+                            currentPsiFile,
+                            currentResult.getGeneratedTestFile(),
+                            preparedWrite.getContent());
+                } catch (Exception ex) {
+                    error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                }
+            }
+
+            @Override
+            public void onSuccess() {
+                if (error != null) {
+                    stepStatuses[4] = StepStatus.FAILED;
+                    lastError = error;
+                    Messages.showErrorDialog(project, error, "UnitMind 最终文件校验失败");
+                    rebuildSteps();
+                    return;
+                }
+                currentResult.setValidationResult(validation);
+                boolean passed = validation.getStatus() == ValidationStatus.PASSED
+                        && validation.isPassedFor(CodeFingerprint.sha256(preparedWrite.getContent()));
+                if (!passed && !force) {
+                    stepStatuses[4] = StepStatus.WARNING;
+                    lastError = validationSummary(validation);
+                    Messages.showErrorDialog(project,
+                            lastError + "\n\n正常写入已阻止。如确需保留草稿，请使用“强制写入草稿”。",
+                            "UnitMind 编译未通过");
+                    rebuildSteps();
+                    return;
+                }
+                if (!passed) {
+                    int answer = Messages.showYesNoDialog(
+                            project,
+                            validationSummary(validation) + "\n\n该文件可能无法编译，确定仍要写入草稿吗？",
+                            "强制写入未验证草稿",
+                            "仍然写入草稿",
+                            "取消",
+                            Messages.getWarningIcon());
+                    if (answer != Messages.YES) {
+                        stepStatuses[4] = StepStatus.WARNING;
+                        rebuildSteps();
+                        return;
+                    }
+                }
+                try {
+                    testFileWriter.commit(project, preparedWrite, validation, !passed);
+                    stepStatuses[4] = StepStatus.SUCCESS;
+                    lastError = "";
+                    Messages.showInfoMessage(project,
+                            passed ? "测试文件写入完成。" : "未验证草稿已强制写入。",
+                            "UnitMind");
+                } catch (Exception ex) {
+                    stepStatuses[4] = StepStatus.FAILED;
+                    lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                    Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
+                }
+                rebuildSteps();
+            }
+        }.queue();
+    }
+
+    private void markValidationStale(String code) {
+        editedCode = code == null ? "" : code;
+        if (generationResult == null) {
+            return;
+        }
+        ValidationResult stale = ValidationResult.status(ValidationStatus.STALE);
+        stale.setCodeHash(CodeFingerprint.sha256(editedCode));
+        generationResult.setValidationResult(stale);
+        stepStatuses[3] = StepStatus.WARNING;
+    }
+
+    private void validateCurrentCode() {
+        if (generationResult == null || generationResult.getGeneratedTestFile() == null) {
+            return;
+        }
+        editedCode = currentCode();
+        if (editedCode == null || editedCode.isBlank()) {
+            Messages.showWarningDialog(project, "测试代码为空，无法校验。", "UnitMind");
+            return;
+        }
+        String validatingCode = editedCode;
+        String validatingHash = CodeFingerprint.sha256(validatingCode);
+        generationResult.setValidationResult(ValidationResult.status(ValidationStatus.RUNNING));
+        stepStatuses[3] = StepStatus.RUNNING;
+        rebuildSteps();
+        GenerationResult currentResult = generationResult;
+        new Task.Backgroundable(project, "UnitMind 正在重新校验测试代码", false) {
+            private ValidationResult validation;
+
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                validation = generationService.validateCode(
+                        project,
+                        currentPsiFile,
+                        currentResult.getGeneratedTestFile(),
+                        validatingCode);
+            }
+
+            @Override
+            public void onSuccess() {
+                String latestCode = currentCode();
+                if (!validatingHash.equals(CodeFingerprint.sha256(latestCode))) {
+                    markValidationStale(latestCode);
+                } else {
+                    currentResult.setValidationResult(validation);
+                    stepStatuses[3] = validation.getStatus() == ValidationStatus.PASSED
+                            ? StepStatus.SUCCESS : StepStatus.WARNING;
+                }
+                rebuildSteps();
+            }
+        }.queue();
+    }
+
+    private String validationSummary(ValidationResult validation) {
+        if (validation == null) {
+            return "未获得编译校验结果。";
+        }
+        StringBuilder summary = new StringBuilder();
+        summary.append(validation.getStatus() == ValidationStatus.ENVIRONMENT_ERROR
+                ? "编译环境校验失败。" : "测试代码编译未通过。");
+        int count = Math.min(5, validation.getDiagnostics().size());
+        for (int index = 0; index < count; index++) {
+            com.casc.unittestagent.model.CompileDiagnostic diagnostic = validation.getDiagnostics().get(index);
+            summary.append("\n- ");
+            if (diagnostic.getLine() > 0) {
+                summary.append("第 ").append(diagnostic.getLine()).append(" 行：");
+            }
+            summary.append(diagnostic.getCode()).append(" - ").append(diagnostic.getMessage());
+        }
+        return summary.toString();
     }
 
     /**
@@ -613,7 +774,8 @@ public class UnitMindToolWindowPanel extends JPanel {
         String currentCode = editedCode;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
-                GenerationResult regenerated = generationService.regenerateWithLlmFeedback(generationResult, currentCode, feedback);
+                GenerationResult regenerated = generationService.regenerateWithLlmFeedback(
+                        project, currentPsiFile, generationResult, currentCode, feedback);
                 ApplicationManager.getApplication().invokeLater(() -> {
                     generationResult = regenerated;
                     GeneratedTestFile file = generationResult.getGeneratedTestFile();
@@ -621,7 +783,9 @@ public class UnitMindToolWindowPanel extends JPanel {
                     editedCode = generatedCode;
                     generationStatus = GenerationStatus.SUCCESS;
                     stepStatuses[2] = StepStatus.SUCCESS;
-                    stepStatuses[3] = StepStatus.SUCCESS;
+                    stepStatuses[3] = generationResult.getValidationResult() != null
+                            && generationResult.getValidationResult().getStatus() == ValidationStatus.PASSED
+                            ? StepStatus.SUCCESS : StepStatus.WARNING;
                     lastError = "";
                     rebuildSteps();
                 });

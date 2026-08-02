@@ -29,6 +29,10 @@ public class GenerationResult {
     private boolean ruleBasedFallback;
     /** 大模型调用状态或失败原因。 */
     private String llmMessage;
+    /** 当前方法在 IntelliJ 项目索引中的真实符号快照。 */
+    private ProjectSymbolSnapshot symbolSnapshot;
+    /** 当前候选测试代码的项目编译验证结果。 */
+    private ValidationResult validationResult = ValidationResult.status(ValidationStatus.NOT_RUN);
 
     /**
      * 读取源码分析得到的方法模型，是后续所有生成结果的基础上下文。
@@ -188,5 +192,23 @@ public class GenerationResult {
 
     public void setLlmMessage(String llmMessage) {
         this.llmMessage = llmMessage;
+    }
+
+    public ProjectSymbolSnapshot getSymbolSnapshot() {
+        return symbolSnapshot;
+    }
+
+    public void setSymbolSnapshot(ProjectSymbolSnapshot symbolSnapshot) {
+        this.symbolSnapshot = symbolSnapshot;
+    }
+
+    public ValidationResult getValidationResult() {
+        return validationResult;
+    }
+
+    public void setValidationResult(ValidationResult validationResult) {
+        this.validationResult = validationResult == null
+                ? ValidationResult.status(ValidationStatus.NOT_RUN)
+                : validationResult;
     }
 }

@@ -1,6 +1,8 @@
 package com.casc.unittestagent.ui.step;
 
 import com.casc.unittestagent.model.GenerationResult;
+import com.casc.unittestagent.model.ValidationResult;
+import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
 import com.casc.unittestagent.writer.TestWriteMode;
 import com.intellij.ui.components.JBLabel;
@@ -29,12 +31,14 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
      * @param targetFile 目标测试文件
      * @param onWrite 写入动作
      */
-    public WriteFileStepPanel(GenerationResult result, File targetFile, java.util.function.Consumer<TestWriteMode> onWrite) {
+    public WriteFileStepPanel(GenerationResult result,
+                              File targetFile,
+                              java.util.function.BiConsumer<TestWriteMode, Boolean> onWrite) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         boolean exists = targetFile != null && targetFile.exists();
         add(new UnitMindSectionPanel("写入设置", table(model(result, targetFile, exists))), BorderLayout.CENTER);
-        add(bottomPanel(exists, onWrite), BorderLayout.SOUTH);
+        add(bottomPanel(result, exists, onWrite), BorderLayout.SOUTH);
     }
 
     /**
@@ -57,35 +61,65 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         model.addRow(new Object[]{"文件状态", exists ? "已存在" : "不存在"});
         model.addRow(new Object[]{"默认写入模式", exists ? "追加到已有测试类" : "新建测试类"});
         model.addRow(new Object[]{"当前写入模式", exists ? "追加 / 覆盖 / 取消" : "新建 / 取消"});
+        ValidationResult validation = result.getValidationResult();
+        model.addRow(new Object[]{"编译校验", validation == null ? "尚未执行" : validationText(validation)});
         return model;
     }
 
     /**
      * 构建底部写入模式区域。
      */
-    private JPanel bottomPanel(boolean exists, java.util.function.Consumer<TestWriteMode> onWrite) {
+    private JPanel bottomPanel(GenerationResult result,
+                               boolean exists,
+                               java.util.function.BiConsumer<TestWriteMode, Boolean> onWrite) {
         JPanel container = new JPanel(new BorderLayout());
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         JButton create = new JButton("新建测试类");
         JButton append = new JButton("追加到已有测试类");
         JButton overwrite = new JButton("覆盖整个测试类");
+        JButton force = new JButton("强制写入草稿");
         JButton cancel = new JButton("取消写入");
         create.setEnabled(!exists);
         append.setEnabled(exists);
         overwrite.setEnabled(exists);
-        create.addActionListener(event -> onWrite.accept(TestWriteMode.CREATE_NEW));
-        append.addActionListener(event -> onWrite.accept(TestWriteMode.APPEND_TO_EXISTING));
-        overwrite.addActionListener(event -> onWrite.accept(TestWriteMode.OVERWRITE_EXISTING));
-        cancel.addActionListener(event -> onWrite.accept(TestWriteMode.CANCEL));
+        boolean generated = result != null && result.getGeneratedTestFile() != null;
+        ValidationResult validation = result == null ? null : result.getValidationResult();
+        force.setEnabled(generated && (validation == null || validation.getStatus() != ValidationStatus.PASSED));
+        create.addActionListener(event -> onWrite.accept(TestWriteMode.CREATE_NEW, false));
+        append.addActionListener(event -> onWrite.accept(TestWriteMode.APPEND_TO_EXISTING, false));
+        overwrite.addActionListener(event -> onWrite.accept(TestWriteMode.OVERWRITE_EXISTING, false));
+        force.addActionListener(event -> onWrite.accept(exists
+                ? TestWriteMode.APPEND_TO_EXISTING : TestWriteMode.CREATE_NEW, true));
+        cancel.addActionListener(event -> onWrite.accept(TestWriteMode.CANCEL, false));
         buttons.add(create);
         buttons.add(append);
         buttons.add(overwrite);
+        buttons.add(force);
         buttons.add(cancel);
-        JBLabel hint = new JBLabel("追加模式会自动合并 import、@Mock、@InjectMocks 和测试方法，避免覆盖已有测试。");
+        JBLabel hint = new JBLabel("正常写入要求最终文件编译通过；“强制写入草稿”会再次确认。");
         hint.setBorder(JBUI.Borders.emptyTop(6));
         container.add(buttons, BorderLayout.NORTH);
         container.add(hint, BorderLayout.SOUTH);
         return container;
+    }
+
+    private String validationText(ValidationResult validation) {
+        if (validation.getStatus() == ValidationStatus.PASSED) {
+            return "已通过";
+        }
+        if (validation.getStatus() == ValidationStatus.RUNNING) {
+            return "校验中";
+        }
+        if (validation.getStatus() == ValidationStatus.ENVIRONMENT_ERROR) {
+            return "环境错误";
+        }
+        if (validation.getStatus() == ValidationStatus.FAILED) {
+            return "未通过（" + validation.getDiagnostics().size() + " 个错误）";
+        }
+        if (validation.getStatus() == ValidationStatus.STALE) {
+            return "代码已修改，需重新校验";
+        }
+        return "尚未执行";
     }
 
     /**

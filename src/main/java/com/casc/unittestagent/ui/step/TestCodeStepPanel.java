@@ -1,12 +1,17 @@
 package com.casc.unittestagent.ui.step;
 
 import com.casc.unittestagent.model.GenerationStatus;
+import com.casc.unittestagent.model.CompileDiagnostic;
+import com.casc.unittestagent.model.ValidationResult;
+import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.ui.component.UnitMindEmptyStatePanel;
 import com.casc.unittestagent.ui.component.UnitMindErrorPanel;
 import com.casc.unittestagent.ui.component.UnitMindLoadingPanel;
 import com.intellij.ide.highlighter.JavaFileType;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.EditorFactory;
+import com.intellij.openapi.editor.event.DocumentEvent;
+import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.EditorTextField;
 import com.intellij.ui.components.JBLabel;
@@ -42,20 +47,25 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
      *
      * @param project 当前项目
      * @param status 测试代码生成状态
-     * @param code 当前测试代码
+     * @param generatedCode 最近一次生成成功的原始测试代码
+     * @param currentCode 当前编辑器中的测试代码
      * @param error 错误详情
      * @param generationNote 测试代码来源提示
      * @param onRegenerate 带补充要求再次生成动作
      */
     public TestCodeStepPanel(Project project,
                              GenerationStatus status,
-                             String code,
+                             String generatedCode,
+                             String currentCode,
                              String error,
                              String generationNote,
-                             Consumer<String> onRegenerate) {
+                             ValidationResult validationResult,
+                             Consumer<String> onRegenerate,
+                             Runnable onValidate,
+                             Consumer<String> onCodeChanged) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
-        this.generatedCode = code == null ? "" : code;
+        this.generatedCode = generatedCode == null ? "" : generatedCode;
         if (status == GenerationStatus.IDLE) {
             add(new UnitMindEmptyStatePanel("尚未生成测试代码", "请先完成方法分析，或通过上一步修改场景后重新进入本步骤。", null, null), BorderLayout.CENTER);
             return;
@@ -69,13 +79,20 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
             return;
         }
 
+        JPanel statusPanel = new JPanel(new BorderLayout(0, 4));
         if (generationNote != null && !generationNote.isBlank()) {
-            JBLabel note = new JBLabel(generationNote);
-            note.setBorder(JBUI.Borders.emptyBottom(8));
-            add(note, BorderLayout.NORTH);
+            statusPanel.add(new JBLabel(generationNote), BorderLayout.NORTH);
         }
+        JBLabel validationLabel = new JBLabel(validationText(validationResult));
+        statusPanel.add(validationLabel, BorderLayout.CENTER);
+        JTextArea diagnostics = diagnosticArea(validationResult);
+        if (diagnostics != null) {
+            statusPanel.add(diagnostics, BorderLayout.SOUTH);
+        }
+        statusPanel.setBorder(JBUI.Borders.emptyBottom(8));
+        add(statusPanel, BorderLayout.NORTH);
 
-        Document document = EditorFactory.getInstance().createDocument(this.generatedCode);
+        Document document = EditorFactory.getInstance().createDocument(currentCode == null ? "" : currentCode);
         editorTextField = new EditorTextField(document, project, JavaFileType.INSTANCE, false, false);
         editorTextField.setOneLineMode(false);
         editorTextField.addSettingsProvider(editor -> editor.getSettings().setLineNumbersShown(true));
@@ -83,6 +100,15 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         add(scrollPane, BorderLayout.CENTER);
+        document.addDocumentListener(new DocumentListener() {
+            @Override
+            public void documentChanged(DocumentEvent event) {
+                validationLabel.setText("编译校验：代码已修改，状态失效；写入前必须重新校验。");
+                if (onCodeChanged != null) {
+                    onCodeChanged.accept(getCode());
+                }
+            }
+        });
 
         JPanel bottom = new JPanel(new BorderLayout(0, 6));
         JPanel feedbackPanel = new JPanel(new BorderLayout(6, 0));
@@ -97,12 +123,15 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JButton copy = new JButton("复制代码");
         JButton restore = new JButton("恢复生成代码");
         JButton regenerate = new JButton("再次生成");
+        JButton validate = new JButton("重新校验");
         copy.addActionListener(event -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(getCode()), null));
         restore.addActionListener(event -> setCode(generatedCode));
         regenerate.addActionListener(event -> onRegenerate.accept(feedbackArea.getText()));
+        validate.addActionListener(event -> onValidate.run());
         buttons.add(copy);
         buttons.add(restore);
         buttons.add(regenerate);
+        buttons.add(validate);
         bottom.add(buttons, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
     }
@@ -134,5 +163,49 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (editorTextField != null) {
             editorTextField.setText(code == null ? "" : code);
         }
+    }
+
+    private String validationText(ValidationResult result) {
+        if (result == null || result.getStatus() == ValidationStatus.NOT_RUN) {
+            return "编译校验：尚未执行。";
+        }
+        if (result.getStatus() == ValidationStatus.RUNNING) {
+            return "编译校验：正在使用当前项目 classpath 编译...";
+        }
+        if (result.getStatus() == ValidationStatus.PASSED) {
+            return "编译校验：已通过"
+                    + (result.getRepairAttempts() > 0 ? "（自动修复 " + result.getRepairAttempts() + " 轮）" : "")
+                    + "。";
+        }
+        if (result.getStatus() == ValidationStatus.STALE) {
+            return "编译校验：代码已修改，状态失效。";
+        }
+        String kind = result.getStatus() == ValidationStatus.ENVIRONMENT_ERROR ? "环境错误" : "未通过";
+        return "编译校验：" + kind + "，共 " + result.getDiagnostics().size() + " 个错误。";
+    }
+
+    private JTextArea diagnosticArea(ValidationResult result) {
+        if (result == null || result.getDiagnostics().isEmpty()) {
+            return null;
+        }
+        StringBuilder text = new StringBuilder();
+        int count = Math.min(5, result.getDiagnostics().size());
+        for (int index = 0; index < count; index++) {
+            CompileDiagnostic diagnostic = result.getDiagnostics().get(index);
+            if (index > 0) {
+                text.append('\n');
+            }
+            text.append(diagnostic.getLine() > 0 ? "L" + diagnostic.getLine() + " " : "")
+                    .append(diagnostic.getCode()).append(": ").append(diagnostic.getMessage());
+        }
+        if (result.getDiagnostics().size() > count) {
+            text.append("\n其余 ").append(result.getDiagnostics().size() - count).append(" 个错误已省略。");
+        }
+        JTextArea area = new JTextArea(text.toString());
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setRows(Math.min(3, count));
+        return area;
     }
 }

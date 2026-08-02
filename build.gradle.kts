@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0.0"
+version = "1.0.10"
 
 base {
     archivesName.set("UnitMind")
@@ -49,7 +49,20 @@ tasks {
 
     patchPluginXml {
         sinceBuild.set("222")
-        untilBuild.set("253.*")
+        untilBuild.set("262.*")
+    }
+
+    runPluginVerifier {
+        val localIdea262Path = providers.gradleProperty("idea262Path").orNull
+        if (localIdea262Path.isNullOrBlank()) {
+            ideVersions.set(listOf("IC-2022.2.5", "IC-2025.3", "IU-2026.2.0.1"))
+        } else {
+            ideVersions.set(listOf("IC-2022.2.5", "IC-2025.3"))
+            val localIdeaHome = file(localIdea262Path).let {
+                if (it.name.endsWith(".app")) it.resolve("Contents") else it
+            }
+            localPaths.set(listOf(localIdeaHome))
+        }
     }
 
     signPlugin {
@@ -80,6 +93,7 @@ dependencies {
     implementation("org.apache.commons:commons-lang3:3.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation ("org.json:json:20210307")
+    testImplementation("junit:junit:4.13.2")
 }
 java {
     toolchain {

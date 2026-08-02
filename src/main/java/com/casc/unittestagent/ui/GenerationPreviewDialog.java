@@ -8,7 +8,11 @@ import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.TestScenario;
+import com.casc.unittestagent.model.ValidationResult;
+import com.casc.unittestagent.model.ValidationStatus;
+import com.casc.unittestagent.service.UnitTestGenerationService;
 import com.casc.unittestagent.writer.TestFileWriter;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
@@ -425,7 +429,29 @@ public class GenerationPreviewDialog extends DialogWrapper {
      */
     private void writeTestFile() {
         try {
-            new TestFileWriter().write(project, sourceFile, result.getGeneratedTestFile());
+            TestFileWriter writer = new TestFileWriter();
+            TestFileWriter.PreparedWrite prepared = writer.prepare(
+                    project,
+                    sourceFile,
+                    result.getGeneratedTestFile(),
+                    codeArea.getText(),
+                    null,
+                    result.getMethodModel() == null ? "" : result.getMethodModel().getMethodName());
+            if (prepared.isCancelled()) {
+                return;
+            }
+            ValidationResult[] validation = new ValidationResult[1];
+            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                    () -> validation[0] = new UnitTestGenerationService().validateCode(
+                            project, sourceFile, result.getGeneratedTestFile(), prepared.getContent()),
+                    "UnitMind 正在校验最终测试文件",
+                    true,
+                    project);
+            if (validation[0] == null || validation[0].getStatus() != ValidationStatus.PASSED) {
+                Messages.showErrorDialog(project, "最终测试文件未通过编译校验，已阻止写入。", "写入测试文件失败");
+                return;
+            }
+            writer.commit(project, prepared, validation[0], false);
             Messages.showInfoMessage(project, "测试文件写入成功。", "单元测试生成预览");
         } catch (Exception ex) {
             Messages.showErrorDialog(project, ex.getMessage(), "写入测试文件失败");

@@ -14,6 +14,13 @@
          Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
     <description><![CDATA[
+        UnitMind generates compile-validated JUnit 5 and Mockito tests for Java projects.
+        It analyzes the method at the editor caret, builds a PSI-backed snapshot of the project APIs
+        that the method can reach, plans test scenarios and mock behavior, and produces an editable
+        test class. Generated code is compiled against the current IntelliJ module before it can be
+        written normally. Repairable compiler diagnostics can be sent through a bounded two-round
+        model repair loop, while SDK and dependency problems are reported as environment errors.
+        <br/><br/>
         UnitMind 是一个面向 Java 项目的 IntelliJ IDEA 单元测试生成插件。
         <br/><br/>
         它可以静态分析当前光标所在方法，展示方法信息、参数约束、控制流和方法调用，并基于分析结果规划测试场景、Mock 策略，生成可编辑的 JUnit 5 + Mockito 测试代码草稿。

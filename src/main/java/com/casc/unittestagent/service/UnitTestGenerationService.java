@@ -5,11 +5,14 @@ import com.casc.unittestagent.generator.JUnitMockitoTestGenerator;
 import com.casc.unittestagent.generator.MockStrategyPlanner;
 import com.casc.unittestagent.generator.TestDataGenerator;
 import com.casc.unittestagent.generator.TestScenarioPlanner;
+import com.casc.unittestagent.llm.DefaultLlmClientFactory;
+import com.casc.unittestagent.llm.LlmClient;
+import com.casc.unittestagent.llm.LlmClientFactory;
 import com.casc.unittestagent.llm.LlmConfig;
 import com.casc.unittestagent.llm.LlmConfigManager;
 import com.casc.unittestagent.llm.LlmGenerationRequest;
 import com.casc.unittestagent.llm.LlmGenerationResponse;
-import com.casc.unittestagent.llm.OpenAiCompatibleLlmClient;
+import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.GeneratedTestFile;
@@ -19,14 +22,22 @@ import com.casc.unittestagent.model.MethodUsageModel;
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
 import com.casc.unittestagent.model.ParameterModel;
+import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.TestScenario;
+import com.casc.unittestagent.model.ValidationResult;
+import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.parser.JavaSourceAnalyzer;
+import com.casc.unittestagent.parser.ProjectSymbolSnapshotBuilder;
+import com.casc.unittestagent.util.CodeFingerprint;
 import com.casc.unittestagent.util.PsiUtils;
+import com.casc.unittestagent.validation.ProjectCompileVerifier;
+import com.casc.unittestagent.validation.TestCodeValidator;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Computable;
 import com.intellij.psi.PsiCallExpression;
@@ -51,6 +62,7 @@ import com.intellij.psi.util.PsiTreeUtil;
 import com.intellij.psi.search.GlobalSearchScope;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -69,6 +81,8 @@ public class UnitTestGenerationService {
     private static final Logger LOG = Logger.getInstance(UnitTestGenerationService.class);
     /** 发送给大模型的调用点数量上限，避免引用过多导致 Prompt 失控。 */
     private static final int MAX_USAGE_COUNT = 20;
+    /** 编译失败后的自动修复次数上限。 */
+    private static final int MAX_REPAIR_ATTEMPTS = 2;
     /** 源码分析器，负责将 PSI 文本转换为方法模型。 */
     private final JavaSourceAnalyzer javaSourceAnalyzer = new JavaSourceAnalyzer();
     /** 测试数据补全器，负责为方法参数填充候选值。 */
@@ -81,6 +95,24 @@ public class UnitTestGenerationService {
     private final JUnitMockitoTestGenerator testGenerator = new JUnitMockitoTestGenerator();
     /** 生成代码后处理器，负责清理无效代码并提示可编译性风险。 */
     private final GeneratedTestCodePostProcessor generatedCodePostProcessor = new GeneratedTestCodePostProcessor();
+    /** PSI 真实符号快照构建器。 */
+    private final ProjectSymbolSnapshotBuilder symbolSnapshotBuilder;
+    /** 项目编译验证器。 */
+    private final TestCodeValidator testCodeValidator;
+    /** 大模型客户端工厂。 */
+    private final LlmClientFactory llmClientFactory;
+
+    public UnitTestGenerationService() {
+        this(new ProjectSymbolSnapshotBuilder(), new ProjectCompileVerifier(), new DefaultLlmClientFactory());
+    }
+
+    public UnitTestGenerationService(ProjectSymbolSnapshotBuilder symbolSnapshotBuilder,
+                                     TestCodeValidator testCodeValidator,
+                                     LlmClientFactory llmClientFactory) {
+        this.symbolSnapshotBuilder = symbolSnapshotBuilder;
+        this.testCodeValidator = testCodeValidator;
+        this.llmClientFactory = llmClientFactory;
+    }
 
     /**
      * 执行单元测试源码生成。
@@ -109,14 +141,17 @@ public class UnitTestGenerationService {
         GenerationResult result = new GenerationResult();
         try {
             LOG.info("UnitMind: start static method analysis");
-            StaticAnalysisContext staticContext = ApplicationManager.getApplication().runReadAction(
-                    (Computable<StaticAnalysisContext>) () -> buildStaticAnalysisContext(psiFile, editor));
+            Computable<StaticAnalysisContext> analysis =
+                    () -> buildStaticAnalysisContext(project, psiFile, editor);
+            StaticAnalysisContext staticContext = project == null
+                    ? ApplicationManager.getApplication().runReadAction(analysis)
+                    : DumbService.getInstance(project).runReadActionInSmartMode(analysis);
             MethodModel methodModel = staticContext.getMethodModel();
-            LOG.info("UnitMind: method = " + methodModel.getClassName() + "#" + methodModel.getMethodName());
             testDataGenerator.enrich(methodModel);
             result.setMethodModel(methodModel);
+            result.setSymbolSnapshot(staticContext.getSymbolSnapshot());
         } catch (Exception ex) {
-            LOG.warn("UnitMind: static method analysis failed", ex);
+            LOG.warn("UnitMind: static method analysis failed, errorType=" + ex.getClass().getSimpleName());
             result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
         return result;
@@ -148,7 +183,7 @@ public class UnitTestGenerationService {
             LOG.info("UnitMind: scenario count = " + scenarios.size());
             result.setScenarios(scenarios);
         } catch (Exception ex) {
-            LOG.warn("UnitMind: plan scenarios failed", ex);
+            LOG.warn("UnitMind: plan scenarios failed, errorType=" + ex.getClass().getSimpleName());
             result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
         return result;
@@ -174,7 +209,7 @@ public class UnitTestGenerationService {
             LOG.info("UnitMind: mock count = " + mockCount);
             result.setMockStrategy(ruleMockStrategy);
         } catch (Exception ex) {
-            LOG.warn("UnitMind: plan mock strategy failed", ex);
+            LOG.warn("UnitMind: plan mock strategy failed, errorType=" + ex.getClass().getSimpleName());
             result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
         return result;
@@ -199,13 +234,14 @@ public class UnitTestGenerationService {
         }
         MethodModel methodModel = result.getMethodModel();
         LlmGenerationRequest llmRequest = ReadAction.compute(() ->
-                buildLlmRequest(null, methodModel, executableScenarios(result.getScenarios()), methodModel.getMethodBodyText()));
-        OpenAiCompatibleLlmClient llmClient = new OpenAiCompatibleLlmClient(llmConfig);
-        LOG.info("UnitMind LLM: generate mock strategy method=" + methodModel.getClassName() + "#" + methodModel.getMethodName());
-        LOG.info("UnitMind LLM: mock strategy prompt length=" + llmClient.promptLength(llmRequest));
+                buildLlmRequest(null, methodModel, executableScenarios(result.getScenarios()),
+                        methodModel.getMethodBodyText(), result.getSymbolSnapshot()));
+        LlmClient llmClient = llmClientFactory.create(llmConfig);
+        long llmStarted = System.currentTimeMillis();
         LlmGenerationResponse llmResponse = llmClient.generateMockStrategy(llmRequest);
-        LOG.info("UnitMind LLM: mock strategy response length=" + (llmResponse.getRawResponse() == null ? 0 : llmResponse.getRawResponse().length()));
-        LOG.info("UnitMind LLM: mock strategy count=" + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
+        LOG.info("UnitMind LLM: mock strategy completed, durationMs="
+                + (System.currentTimeMillis() - llmStarted) + ", strategyCount="
+                + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
                 ? 0 : llmResponse.getMockStrategy().getStrategyItems().size()));
         result.setLlmMockStrategy(llmResponse.getMockStrategy());
         addWarnings(result, llmResponse.getWarnings());
@@ -239,23 +275,20 @@ public class UnitTestGenerationService {
             GeneratedTestFile generatedTestFile = ruleGeneratedTestFile;
             LlmConfig llmConfig = LlmConfigManager.load();
             LOG.info("UnitMind LLM: enabled=" + llmConfig.isEnabled());
-            LOG.info("UnitMind LLM: apiUrl=" + safeLog(llmConfig.getApiUrl()));
-            LOG.info("UnitMind LLM: model=" + safeLog(llmConfig.getModel()));
-            LOG.info("UnitMind LLM: apiKey=" + llmConfig.maskedApiKey());
-            LOG.info("UnitMind LLM: method=" + methodModel.getClassName() + "#" + methodModel.getMethodName());
             if (llmConfig.isEnabled()) {
                 try {
+                    ensureSymbolSnapshot(project, psiFile, result);
+                    ProjectSymbolSnapshot symbolSnapshot = result.getSymbolSnapshot();
                     LlmGenerationRequest llmRequest = ReadAction.compute(
-                            () -> buildLlmRequest(project, methodModel, scenarios, methodModel.getMethodBodyText()));
+                            () -> buildLlmRequest(project, methodModel, scenarios, methodModel.getMethodBodyText(),
+                                    symbolSnapshot));
                     llmRequest.setUserInstruction("测试代码必须使用当前用户选择的 Mock 策略，不要重新选择字段级 Mock 或局部 mock。\n"
                             + selectedMockStrategySummary(selectedMockStrategy));
-                    OpenAiCompatibleLlmClient llmClient = new OpenAiCompatibleLlmClient(llmConfig);
-                    LOG.info("UnitMind LLM: prompt length=" + llmClient.promptLength(llmRequest));
+                    LlmClient llmClient = llmClientFactory.create(llmConfig);
+                    long generationStarted = System.currentTimeMillis();
                     LlmGenerationResponse llmResponse = llmClient.generateUnitTest(llmRequest);
-                    LOG.info("UnitMind LLM: response length=" + (llmResponse.getRawResponse() == null ? 0 : llmResponse.getRawResponse().length()));
-                    LOG.info("UnitMind LLM: mock strategy count=" + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
-                            ? 0 : llmResponse.getMockStrategy().getStrategyItems().size()));
-                    LOG.info("UnitMind LLM: test code length=" + (llmResponse.getTestCode() == null ? 0 : llmResponse.getTestCode().length()));
+                    LOG.info("UnitMind LLM: generation completed, durationMs="
+                            + (System.currentTimeMillis() - generationStarted));
                     GeneratedTestCodePostProcessor.ProcessedCode processedCode =
                             generatedCodePostProcessor.process(llmResponse.getTestCode(), methodModel);
                     generatedTestFile = copyWithContent(ruleGeneratedTestFile, processedCode.getCode());
@@ -265,7 +298,8 @@ public class UnitTestGenerationService {
                     addWarnings(result, llmResponse.getWarnings());
                     addWarnings(result, processedCode.getWarnings());
                 } catch (Exception llmException) {
-                    LOG.warn("UnitMind LLM: generation failed", llmException);
+                    LOG.warn("UnitMind LLM: generation failed, errorType="
+                            + llmException.getClass().getSimpleName());
                     String message = llmException.getMessage() == null ? llmException.getClass().getSimpleName() : llmException.getMessage();
                     result.getWarnings().add("大模型生成失败：" + message);
                     result.setGeneratedByLlm(false);
@@ -286,18 +320,13 @@ public class UnitTestGenerationService {
                     generatedCodePostProcessor.process(generatedTestFile.getContent(), methodModel);
             generatedTestFile = copyWithContent(generatedTestFile, processedCode.getCode());
             addWarnings(result, processedCode.getWarnings());
-            int codeLength = generatedTestFile == null || generatedTestFile.getContent() == null ? 0 : generatedTestFile.getContent().length();
-            LOG.info("UnitMind: generated code length = " + codeLength);
-            String sourcePath = ReadAction.compute(() ->
-                    psiFile == null || psiFile.getVirtualFile() == null ? "" : psiFile.getVirtualFile().getPath());
-            LOG.info("UnitMind: generated test file path = " + generatedTestPath(sourcePath, generatedTestFile));
-
+            generatedTestFile = validateAndRepair(project, psiFile, result, generatedTestFile, llmConfig);
             result.setMethodModel(methodModel);
             result.setScenarios(result.getScenarios());
             result.setMockStrategy(result.getMockStrategy());
             result.setGeneratedTestFile(generatedTestFile);
         } catch (Exception ex) {
-            LOG.warn("UnitMind: generate test code failed", ex);
+            LOG.warn("UnitMind: generate test code failed, errorType=" + ex.getClass().getSimpleName());
             result.getWarnings().add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
         return result;
@@ -319,6 +348,130 @@ public class UnitTestGenerationService {
                 result.getWarnings().add(warning);
             }
         }
+    }
+
+    /**
+     * 验证候选测试代码；供生成闭环、手工重新校验和写入门禁复用。
+     */
+    public ValidationResult validateCode(Project project,
+                                         PsiFile psiFile,
+                                         GeneratedTestFile generatedFile,
+                                         String code) {
+        ValidationResult validation = testCodeValidator.validate(project, psiFile, generatedFile, code);
+        LOG.info("UnitMind validation: status=" + validation.getStatus()
+                + ", errors=" + validation.getDiagnostics().size()
+                + ", durationMs=" + validation.getDurationMillis());
+        return validation;
+    }
+
+    GeneratedTestFile validateAndRepair(Project project,
+                                        PsiFile psiFile,
+                                        GenerationResult result,
+                                        GeneratedTestFile initialFile,
+                                        LlmConfig llmConfig) {
+        GeneratedTestFile candidate = initialFile;
+        int repairAttempts = 0;
+        Set<String> seenFailures = new HashSet<>();
+        boolean allowRepair = llmConfig != null && llmConfig.isEnabled() && result.isGeneratedByLlm();
+        LlmClient repairClient = allowRepair ? llmClientFactory.create(llmConfig) : null;
+
+        while (true) {
+            ValidationResult validation = validateCode(project, psiFile, candidate, candidate.getContent());
+            validation.setRepairAttempts(repairAttempts);
+            result.setValidationResult(validation);
+            if (validation.getStatus() == ValidationStatus.PASSED) {
+                result.setLlmMessage(repairAttempts == 0
+                        ? result.getLlmMessage()
+                        : "大模型生成完成，并根据编译诊断自动修复 " + repairAttempts + " 轮。");
+                return candidate;
+            }
+            if (!allowRepair
+                    || validation.getStatus() == ValidationStatus.ENVIRONMENT_ERROR
+                    || !validation.hasRepairableErrors()
+                    || repairAttempts >= MAX_REPAIR_ATTEMPTS) {
+                addValidationWarning(result, validation);
+                return candidate;
+            }
+
+            String failureFingerprint = validation.getCodeHash() + "|" + diagnosticFingerprint(validation.getDiagnostics());
+            if (!seenFailures.add(failureFingerprint)) {
+                result.getWarnings().add("编译修复未取得进展，已提前停止重复请求。");
+                addValidationWarning(result, validation);
+                return candidate;
+            }
+
+            try {
+                repairAttempts++;
+                MethodModel methodModel = result.getMethodModel();
+                ProjectSymbolSnapshot snapshot = result.getSymbolSnapshot();
+                LlmGenerationRequest repairRequest = ReadAction.compute(() ->
+                        buildLlmRequest(project, methodModel, executableScenarios(result.getScenarios()),
+                                methodModel.getMethodBodyText(), snapshot));
+                repairRequest.setExistingTestCodeSummary(candidate.getContent());
+                repairRequest.setCompilerDiagnostics(validation.getDiagnostics());
+                repairRequest.setRepairAttempt(repairAttempts);
+                repairRequest.setUserInstruction("只修复编译错误，保持当前用户选择的 Mock 策略。\n"
+                        + selectedMockStrategySummary(selectedMockStrategy(result)));
+                LOG.info("UnitMind validation: repair attempt=" + repairAttempts
+                        + ", diagnosticCount=" + validation.getDiagnostics().size());
+                LlmGenerationResponse repaired = repairClient.repairUnitTest(repairRequest);
+                GeneratedTestCodePostProcessor.ProcessedCode processed =
+                        generatedCodePostProcessor.process(repaired.getTestCode(), methodModel);
+                candidate = copyWithContent(candidate, processed.getCode());
+                addWarnings(result, repaired.getWarnings());
+                addWarnings(result, processed.getWarnings());
+            } catch (Exception ex) {
+                result.getWarnings().add("自动编译修复失败：" + safeMessage(ex));
+                ValidationResult lastValidation = result.getValidationResult();
+                lastValidation.setRepairAttempts(repairAttempts);
+                return candidate;
+            }
+        }
+    }
+
+    private void ensureSymbolSnapshot(Project project, PsiFile psiFile, GenerationResult result) {
+        if (result == null || result.getMethodModel() == null) {
+            return;
+        }
+        if (result.getSymbolSnapshot() != null && result.getSymbolSnapshot().isUsable()) {
+            return;
+        }
+        Computable<ProjectSymbolSnapshot> buildSnapshot =
+                () -> symbolSnapshotBuilder.build(project, psiFile, null, result.getMethodModel());
+        ProjectSymbolSnapshot snapshot = project == null
+                ? ApplicationManager.getApplication().runReadAction(buildSnapshot)
+                : DumbService.getInstance(project).runReadActionInSmartMode(buildSnapshot);
+        result.setSymbolSnapshot(snapshot);
+    }
+
+    private void addValidationWarning(GenerationResult result, ValidationResult validation) {
+        if (validation == null || validation.getStatus() == ValidationStatus.PASSED) {
+            return;
+        }
+        String prefix = validation.getStatus() == ValidationStatus.ENVIRONMENT_ERROR
+                ? "编译环境校验失败：" : "生成代码编译未通过：";
+        String detail = validation.getDiagnostics().isEmpty()
+                ? validation.getStatus().name()
+                : validation.getDiagnostics().get(0).getCode() + " - "
+                + validation.getDiagnostics().get(0).getMessage();
+        String warning = prefix + detail;
+        if (!result.getWarnings().contains(warning)) {
+            result.getWarnings().add(warning);
+        }
+    }
+
+    private String diagnosticFingerprint(List<CompileDiagnostic> diagnostics) {
+        StringBuilder builder = new StringBuilder();
+        for (CompileDiagnostic diagnostic : diagnostics) {
+            builder.append(diagnostic.getCode()).append('|')
+                    .append(diagnostic.getLine()).append('|')
+                    .append(diagnostic.getMessage()).append('\n');
+        }
+        return CodeFingerprint.sha256(builder.toString());
+    }
+
+    private String safeMessage(Exception ex) {
+        return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
     }
 
     private String selectedMockStrategySummary(MockStrategy strategy) {
@@ -358,23 +511,31 @@ public class UnitTestGenerationService {
     /**
      * 读取 PSI 并完成静态方法模型构建。
      */
-    private StaticAnalysisContext buildStaticAnalysisContext(PsiFile psiFile, Editor editor) {
+    private StaticAnalysisContext buildStaticAnalysisContext(Project project, PsiFile psiFile, Editor editor) {
         String sourceText = PsiUtils.getSourceText(psiFile);
         String preferredMethodName = PsiUtils.getCurrentMethodName(psiFile, editor);
 
+        MethodModel methodModel;
         try {
-            MethodModel methodModel = javaSourceAnalyzer.analyze(sourceText, preferredMethodName);
-            return new StaticAnalysisContext(methodModel);
+            methodModel = javaSourceAnalyzer.analyze(sourceText, preferredMethodName);
         } catch (Exception parseException) {
-            String message = parseException.getMessage() == null ? parseException.getClass().getSimpleName() : parseException.getMessage();
-            throw new IllegalStateException("JavaParser 静态分析失败：" + message, parseException);
+            LOG.warn("UnitMind: JavaParser analysis failed, use PSI fallback, errorType="
+                    + parseException.getClass().getSimpleName());
+            methodModel = buildPsiFallbackModel(psiFile, editor, preferredMethodName);
         }
+        enrichUsagesFromPsi(project, psiFile, editor, preferredMethodName, methodModel);
+        ProjectSymbolSnapshot snapshot = symbolSnapshotBuilder.build(project, psiFile, editor, methodModel);
+        return new StaticAnalysisContext(methodModel, snapshot);
     }
 
     /**
      * 基于当前结果和用户补充要求再次调用大模型。
      */
-    public GenerationResult regenerateWithLlmFeedback(GenerationResult result, String currentCode, String feedback) throws Exception {
+    public GenerationResult regenerateWithLlmFeedback(Project project,
+                                                      PsiFile psiFile,
+                                                      GenerationResult result,
+                                                      String currentCode,
+                                                      String feedback) throws Exception {
         if (result == null || result.getMethodModel() == null) {
             throw new IllegalStateException("请先完成方法分析。");
         }
@@ -383,19 +544,18 @@ public class UnitTestGenerationService {
             throw new IllegalStateException("大模型未启用，请先在 UnitMind 设置中启用并测试连接。");
         }
         MethodModel methodModel = result.getMethodModel();
+        ensureSymbolSnapshot(project, psiFile, result);
+        ProjectSymbolSnapshot snapshot = result.getSymbolSnapshot();
         LlmGenerationRequest llmRequest = ReadAction.compute(() ->
-                buildLlmRequest(null, methodModel, result.getScenarios(), methodModel.getMethodBodyText()));
+                buildLlmRequest(project, methodModel, result.getScenarios(), methodModel.getMethodBodyText(), snapshot));
         llmRequest.setExistingTestCodeSummary(currentCode);
         llmRequest.setUserInstruction(feedback);
         try {
-            OpenAiCompatibleLlmClient llmClient = new OpenAiCompatibleLlmClient(llmConfig);
-            LOG.info("UnitMind LLM: regenerate method=" + methodModel.getClassName() + "#" + methodModel.getMethodName());
-            LOG.info("UnitMind LLM: prompt length=" + llmClient.promptLength(llmRequest));
+            LlmClient llmClient = llmClientFactory.create(llmConfig);
+            long regenerationStarted = System.currentTimeMillis();
             LlmGenerationResponse llmResponse = llmClient.generateUnitTest(llmRequest);
-            LOG.info("UnitMind LLM: response length=" + (llmResponse.getRawResponse() == null ? 0 : llmResponse.getRawResponse().length()));
-            LOG.info("UnitMind LLM: mock strategy count=" + (llmResponse.getMockStrategy() == null || llmResponse.getMockStrategy().getStrategyItems() == null
-                    ? 0 : llmResponse.getMockStrategy().getStrategyItems().size()));
-            LOG.info("UnitMind LLM: test code length=" + (llmResponse.getTestCode() == null ? 0 : llmResponse.getTestCode().length()));
+            LOG.info("UnitMind LLM: regeneration completed, durationMs="
+                    + (System.currentTimeMillis() - regenerationStarted));
             if (llmResponse.getMockStrategy() != null
                     && llmResponse.getMockStrategy().getStrategyItems() != null
                     && !llmResponse.getMockStrategy().getStrategyItems().isEmpty()) {
@@ -403,15 +563,16 @@ public class UnitTestGenerationService {
             }
             GeneratedTestCodePostProcessor.ProcessedCode processedCode =
                     generatedCodePostProcessor.process(llmResponse.getTestCode(), methodModel);
-            result.setGeneratedTestFile(copyWithContent(result.getGeneratedTestFile(), processedCode.getCode()));
+            GeneratedTestFile regenerated = copyWithContent(result.getGeneratedTestFile(), processedCode.getCode());
             result.setGeneratedByLlm(true);
             result.setRuleBasedFallback(false);
             result.setLlmMessage("大模型重新生成完成。");
             addWarnings(result, llmResponse.getWarnings());
             addWarnings(result, processedCode.getWarnings());
+            result.setGeneratedTestFile(validateAndRepair(project, psiFile, result, regenerated, llmConfig));
             return result;
         } catch (Exception ex) {
-            LOG.warn("UnitMind LLM: regenerate failed", ex);
+            LOG.warn("UnitMind LLM: regenerate failed, errorType=" + ex.getClass().getSimpleName());
             String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
             result.setLlmMessage("大模型重新生成失败：" + message);
             throw new IllegalStateException("大模型重新生成失败：" + message, ex);
@@ -419,9 +580,20 @@ public class UnitTestGenerationService {
     }
 
     /**
+     * 旧调用入口保留用于二进制兼容；缺少项目上下文时验证器会明确返回环境错误。
+     */
+    public GenerationResult regenerateWithLlmFeedback(GenerationResult result, String currentCode, String feedback) throws Exception {
+        return regenerateWithLlmFeedback(null, null, result, currentCode, feedback);
+    }
+
+    /**
      * 构造发送给大模型的结构化上下文。
      */
-    private LlmGenerationRequest buildLlmRequest(Project project, MethodModel methodModel, List<TestScenario> scenarios, String sourceText) {
+    private LlmGenerationRequest buildLlmRequest(Project project,
+                                                 MethodModel methodModel,
+                                                 List<TestScenario> scenarios,
+                                                 String sourceText,
+                                                 ProjectSymbolSnapshot symbolSnapshot) {
         LlmGenerationRequest request = new LlmGenerationRequest();
         request.setPackageName(methodModel.getPackageName());
         request.setClassName(methodModel.getClassName());
@@ -444,6 +616,7 @@ public class UnitTestGenerationService {
         request.setDependencies(methodModel.getDependencies());
         request.setUsages(methodModel.getUsages());
         request.setCallContexts(methodModel.getCallContexts());
+        request.setSymbolSnapshot(symbolSnapshot);
         request.setScenarios(scenarios);
         request.setExistingTestCodeSummary("");
         request.setTestFramework("JUnit5");
@@ -754,15 +927,17 @@ public class UnitTestGenerationService {
         if (psiClass == null || methodName == null || methodName.isBlank()) {
             return null;
         }
+        String resolvedReturnType = null;
         for (PsiMethod method : psiClass.findMethodsByName(methodName, true)) {
             if (method.getParameterList().getParametersCount() == argumentCount) {
-                return canonicalTypeText(method.getReturnType(), "");
+                String candidate = canonicalTypeText(method.getReturnType(), "");
+                if (resolvedReturnType != null && !resolvedReturnType.equals(candidate)) {
+                    return null;
+                }
+                resolvedReturnType = candidate;
             }
         }
-        for (PsiMethod method : psiClass.findMethodsByName(methodName, true)) {
-            return canonicalTypeText(method.getReturnType(), "");
-        }
-        return null;
+        return resolvedReturnType;
     }
 
     private List<CallContextModel> enrichChainCallContexts(Project project, MethodModel methodModel) {
@@ -1126,34 +1301,6 @@ public class UnitTestGenerationService {
         return file;
     }
 
-    private String safeLog(String value) {
-        return value == null ? "" : value;
-    }
-
-    /**
-     * 推导生成测试文件的目标路径。
-     * 日志使用与写入器一致的路径规则，便于从生成阶段直接定位后续会落盘的位置。
-     */
-    private String generatedTestPath(String sourcePath, GeneratedTestFile generatedTestFile) {
-        if (generatedTestFile == null) {
-            return "";
-        }
-        if (sourcePath == null || sourcePath.isBlank()) {
-            return generatedTestFile.getFileName();
-        }
-        String normalized = sourcePath.replace('\\', '/');
-        int index = normalized.indexOf("/src/main/java/");
-        if (index >= 0) {
-            int lastSlash = normalized.lastIndexOf('/');
-            String root = normalized.substring(0, index);
-            String relativeDir = lastSlash > index ? normalized.substring(index + "/src/main/java/".length(), lastSlash) : "";
-            return root + "/src/test/java/" + relativeDir + "/" + generatedTestFile.getFileName();
-        }
-        int lastSlash = normalized.lastIndexOf('/');
-        String parent = lastSlash >= 0 ? normalized.substring(0, lastSlash) : normalized;
-        return parent + "/generated-test/" + generatedTestFile.getFileName();
-    }
-
     /**
      * 使用 IntelliJ PSI 构造基础方法模型。
      * 该降级路径绕过整类 JavaParser 解析失败问题，优先保留光标所在方法、参数、返回值和字段依赖。
@@ -1507,13 +1654,20 @@ public class UnitTestGenerationService {
     private static final class StaticAnalysisContext {
         /** 当前方法模型。 */
         private final MethodModel methodModel;
+        /** 当前方法的 PSI 真实符号快照。 */
+        private final ProjectSymbolSnapshot symbolSnapshot;
 
-        private StaticAnalysisContext(MethodModel methodModel) {
+        private StaticAnalysisContext(MethodModel methodModel, ProjectSymbolSnapshot symbolSnapshot) {
             this.methodModel = methodModel;
+            this.symbolSnapshot = symbolSnapshot;
         }
 
         private MethodModel getMethodModel() {
             return methodModel;
+        }
+
+        private ProjectSymbolSnapshot getSymbolSnapshot() {
+            return symbolSnapshot;
         }
     }
 }
