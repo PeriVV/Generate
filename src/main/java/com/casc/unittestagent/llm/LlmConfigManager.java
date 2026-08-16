@@ -16,6 +16,7 @@ public final class LlmConfigManager {
     private static final String MODEL = PREFIX + "model";
     private static final String TIMEOUT_SECONDS = PREFIX + "timeoutSeconds";
     private static final String MAX_TOKENS = PREFIX + "maxTokens";
+    private static final String MAX_COMPILE_REPAIR_ROUNDS = PREFIX + "maxCompileRepairRounds";
     private static final String TEMPERATURE = PREFIX + "temperature";
     private static final String FALLBACK = PREFIX + "fallbackToRuleBased";
     private static final String PRIVACY_CONFIRMED = PREFIX + "privacyConfirmed";
@@ -32,7 +33,8 @@ public final class LlmConfigManager {
         config.setApiUrl(properties.getValue(API_URL, ""));
         config.setModel(properties.getValue(MODEL, "gpt-4o-mini"));
         config.setTimeoutSeconds(parseInt(properties.getValue(TIMEOUT_SECONDS), 60));
-        config.setMaxTokens(parseInt(properties.getValue(MAX_TOKENS), 6000));
+        config.setMaxTokens(parseInt(properties.getValue(MAX_TOKENS), 12000));
+        config.setMaxCompileRepairRounds(parseInt(properties.getValue(MAX_COMPILE_REPAIR_ROUNDS), 5));
         config.setTemperature(parseDouble(properties.getValue(TEMPERATURE), 0.2));
         config.setFallbackToRuleBased(properties.getBoolean(FALLBACK, true));
         config.setApiKey(resolveApiKey());
@@ -46,6 +48,8 @@ public final class LlmConfigManager {
         properties.setValue(MODEL, nullToEmpty(config.getModel()));
         properties.setValue(TIMEOUT_SECONDS, Integer.toString(config.getTimeoutSeconds()));
         properties.setValue(MAX_TOKENS, Integer.toString(config.getMaxTokens()));
+        properties.setValue(MAX_COMPILE_REPAIR_ROUNDS,
+                Integer.toString(config.getMaxCompileRepairRounds()));
         properties.setValue(TEMPERATURE, Double.toString(config.getTemperature()));
         properties.setValue(FALLBACK, Boolean.toString(config.isFallbackToRuleBased()));
         if (apiKeyToStore != null && !apiKeyToStore.isBlank()) {

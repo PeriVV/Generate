@@ -77,19 +77,25 @@ public class JUnitMockitoTestGenerator {
         code.append("import static org.junit.jupiter.api.Assertions.*;\n");
         code.append("import static org.mockito.Mockito.*;\n\n");
 
-        code.append("@ExtendWith(MockitoExtension.class)\n");
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
 
+        boolean hasFieldMocks = false;
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            if (shouldGenerateFieldMock(dependency)) {
+            if (shouldGenerateFieldMock(dependency, mockStrategy)) {
+                hasFieldMocks = true;
                 code.append("    @Mock\n");
                 code.append("    private ").append(dependency.getFieldType()).append(" ").append(dependency.getFieldName()).append(";\n\n");
             }
         }
 
         String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
-        code.append("    @InjectMocks\n");
-        code.append("    private ").append(methodModel.getClassName()).append(" ").append(subjectName).append(";\n");
+        if (!methodModel.isStaticMethod()) {
+            code.append("    @InjectMocks\n");
+            code.append("    private ").append(methodModel.getClassName()).append(" ").append(subjectName).append(";\n\n");
+        }
+        if (!methodModel.isStaticMethod() || hasFieldMocks) {
+            appendMockitoInitialization(code);
+        }
 
         for (TestScenario scenario : scenarios) {
             code.append("\n");
@@ -104,11 +110,56 @@ public class JUnitMockitoTestGenerator {
         return code.toString();
     }
 
-    private boolean shouldGenerateFieldMock(DependencyModel dependency) {
+    private boolean shouldGenerateFieldMock(DependencyModel dependency, MockStrategy mockStrategy) {
         if (dependency == null) {
             return false;
         }
+        MockStrategyItem selected = strategyItem(dependency, mockStrategy);
+        if (selected != null) {
+            return selected.isGenerate() && isFieldMockStrategy(selected.getMockitoStrategy());
+        }
+        if (mockStrategy != null && mockStrategy.getMockFields() != null) {
+            for (String field : mockStrategy.getMockFields()) {
+                if (field == null) continue;
+                String value = field.trim();
+                if (value.equals(dependency.getFieldName())
+                        || value.endsWith(" " + dependency.getFieldName())) {
+                    return true;
+                }
+            }
+        }
         return !looksLikeDtoType(dependency.getFieldType()) && !looksLikePathType(dependency.getFieldType());
+    }
+
+    private MockStrategyItem strategyItem(DependencyModel dependency, MockStrategy strategy) {
+        if (dependency == null || strategy == null || strategy.getStrategyItems() == null) return null;
+        String fieldName = dependency.getFieldName() == null ? "" : dependency.getFieldName();
+        for (MockStrategyItem item : strategy.getStrategyItems()) {
+            if (item == null) continue;
+            if (fieldName.equals(item.getSource()) || fieldName.equals(item.getMethodName())
+                    || fieldName.equals(item.getObjectName())
+                    || startsWithReceiver(item.getSource(), fieldName)) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private boolean startsWithReceiver(String expression, String receiver) {
+        return expression != null && receiver != null && !receiver.isBlank()
+                && (expression.startsWith(receiver + ".") || expression.startsWith(receiver + "("));
+    }
+
+    private boolean isFieldMockStrategy(String strategy) {
+        if (strategy == null) return false;
+        String value = strategy.replace(" ", "").toLowerCase();
+        return "mock".equals(value) || "fieldmock".equals(value) || value.contains("字段级mock");
+    }
+
+    private boolean isLocalMockStrategy(String strategy) {
+        if (strategy == null) return false;
+        String value = strategy.replace(" ", "").toLowerCase();
+        return value.contains("localmock") || value.contains("局部mock");
     }
 
     private boolean looksLikeDtoType(String type) {
@@ -144,6 +195,7 @@ public class JUnitMockitoTestGenerator {
      */
     private String fallbackContent(MethodModel methodModel) {
         StringBuilder code = new StringBuilder();
+        String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
         if (methodModel.getPackageName() != null && !methodModel.getPackageName().isBlank()) {
             code.append("package ").append(methodModel.getPackageName()).append(";\n\n");
         }
@@ -159,11 +211,32 @@ public class JUnitMockitoTestGenerator {
             }
         }
         imports.add("org.junit.jupiter.api.Test");
+        if (!methodModel.isStaticMethod()) {
+            imports.add("org.junit.jupiter.api.BeforeEach");
+            imports.add("org.mockito.InjectMocks");
+            imports.add("org.mockito.Mock");
+            imports.add("org.mockito.MockitoAnnotations");
+        }
         for (String importName : imports) {
             code.append("import ").append(importName).append(";\n");
         }
-        code.append("\nimport static org.junit.jupiter.api.Assertions.*;\n\n");
+        code.append("\nimport static org.junit.jupiter.api.Assertions.*;\n");
+        code.append("import static org.mockito.Mockito.*;\n\n");
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
+        if (!methodModel.isStaticMethod()) {
+            for (DependencyModel dependency : methodModel.getDependencies()) {
+                if (dependency.isMethodParameter() || looksLikeDtoType(dependency.getFieldType())
+                        || looksLikePathType(dependency.getFieldType())) continue;
+                code.append("    @Mock\n");
+                code.append("    private ").append(dependency.getFieldType()).append(" ")
+                        .append(dependency.getFieldName()).append(";\n\n");
+            }
+            code.append("    @InjectMocks\n");
+            code.append("    private ").append(methodModel.getClassName()).append(" ")
+                    .append(subjectName).append(";\n\n");
+            appendMockitoInitialization(code);
+            code.append("\n");
+        }
         code.append("    @Test\n");
         code.append("    void ").append(fallbackMethodName(methodModel)).append("()");
         if (isPrivateMethod(methodModel)) {
@@ -171,12 +244,8 @@ public class JUnitMockitoTestGenerator {
         }
         code.append(" {\n");
         code.append("        // TODO: UnitMind 暂未能完整推断该方法的依赖和断言，请根据业务补充测试数据。\n");
-        String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
-        code.append("        // TODO: ").append(methodModel.getClassName()).append(" 可能需要依赖注入，请根据构造函数或字段依赖补充初始化逻辑。\n");
-        code.append("        ").append(methodModel.getClassName()).append(" ").append(subjectName)
-                .append(" = new ").append(methodModel.getClassName()).append("();\n\n");
         for (ParameterModel parameter : methodModel.getParameters()) {
-            String value = dataGenerator.generateValueExpression(parameter.getType());
+            String value = compileSafeValueExpression(parameter.getType());
             if ("null".equals(value)) {
                 code.append("        // TODO: ").append(parameter.getType()).append(" 无法自动构造，请根据业务补充测试数据。\n");
             }
@@ -188,10 +257,10 @@ public class JUnitMockitoTestGenerator {
         }
         String invocation = invocationExpression(methodModel, subjectName, fallbackArguments(methodModel));
         if ("void".equals(methodModel.getReturnType())) {
-            code.append("        ").append(invocation).append(";\n");
+            code.append("        assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         } else {
-            code.append("        ").append(methodModel.getReturnType()).append(" result = ").append(invocation).append(";\n\n");
-            code.append("        assertNotNull(result);\n");
+            code.append("        ").append(methodModel.getReturnType())
+                    .append(" result = assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         }
         code.append("    }\n");
         if (isPrivateMethod(methodModel)) {
@@ -233,10 +302,10 @@ public class JUnitMockitoTestGenerator {
         code.append(" {\n");
 
         Map<String, String> values = valuesForScenario(methodModel, scenario);
-        appendInputVariables(code, methodModel, values);
+        appendInputVariables(code, methodModel, values, mockStrategy);
 
         if (isOptionalReturn(methodModel) && !methodModel.getDependencies().isEmpty()) {
-            appendOptionalTestBody(code, methodModel, scenario, subjectName, values);
+            appendOptionalTestBody(code, methodModel, scenario, subjectName, values, mockStrategy);
             code.append("    }\n");
             return;
         }
@@ -249,19 +318,16 @@ public class JUnitMockitoTestGenerator {
             code.append("        assertThrows(").append(exceptionType).append(".class, () -> {\n");
             code.append("            ").append(invocation).append(";\n");
             code.append("        });\n\n");
-            appendNeverVerifies(code, methodModel);
             code.append("    }\n");
             return;
         }
 
         if ("void".equals(methodModel.getReturnType())) {
-            code.append("        ").append(invocation).append(";\n\n");
-            appendNormalVerifies(code, methodModel);
+            code.append("        assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         } else {
             String resultType = methodModel.getReturnType();
-            code.append("        ").append(resultType).append(" result = ").append(invocation).append(";\n\n");
-            code.append("        assertNotNull(result);\n");
-            appendNormalVerifies(code, methodModel);
+            code.append("        ").append(resultType).append(" result = assertDoesNotThrow(() -> ")
+                    .append(invocation).append(");\n");
         }
         code.append("    }\n");
     }
@@ -278,6 +344,7 @@ public class JUnitMockitoTestGenerator {
 
         if ("NORMAL".equals(scenario.getType())) {
             for (BranchModel branch : methodModel.getBranches()) {
+                if (!"throw".equals(branch.getAction())) continue;
                 applyCondition(values, methodModel, branch.getSafeCondition(), false);
             }
         } else if ("EXCEPTION".equals(scenario.getType()) && !scenario.getCoveredBranches().isEmpty()) {
@@ -323,9 +390,6 @@ public class JUnitMockitoTestGenerator {
      * 边界场景优先取边界值，普通场景取普通值，缺失数据时退回随机生成器。
      */
     private String valueForScenario(MethodModel methodModel, ParameterModel parameter, TestScenario scenario) {
-        if (isMockParameter(parameter.getName(), methodModel)) {
-            return parameter.getName();
-        }
         if (scenario.getCoveredBranches().contains(parameter.getName() + " == null")) {
             return "null";
         }
@@ -364,15 +428,28 @@ public class JUnitMockitoTestGenerator {
      * 追加输入变量声明。
      * 所有非 Mock 参数都先声明局部变量，后续 when、被测调用和 verify 共用这些变量名。
      */
-    private void appendInputVariables(StringBuilder code, MethodModel methodModel, Map<String, String> values) {
+    private void appendInputVariables(StringBuilder code,
+                                      MethodModel methodModel,
+                                      Map<String, String> values,
+                                      MockStrategy mockStrategy) {
         boolean hasInputVariable = false;
         for (ParameterModel parameter : methodModel.getParameters()) {
-            if (isMockParameter(parameter.getName(), methodModel)) {
+            DependencyModel dependency = methodParameterDependency(parameter.getName(), methodModel);
+            if (dependency != null && shouldGenerateFieldMock(dependency, mockStrategy)) {
                 continue;
+            }
+            String expression = values.get(parameter.getName());
+            MockStrategyItem selected = strategyItem(dependency, mockStrategy);
+            if (dependency != null && selected != null && selected.isGenerate()
+                    && isLocalMockStrategy(selected.getMockitoStrategy())) {
+                expression = "mock(" + simpleType(parameter.getType()) + ".class)";
+            } else if (dependency != null && "null".equals(expression)
+                    && dependency.getCallExpressions() != null && !dependency.getCallExpressions().isEmpty()) {
+                expression = "mock(" + simpleType(parameter.getType()) + ".class)";
             }
             code.append("        ").append(parameter.getType()).append(" ")
                     .append(parameter.getName()).append(" = ")
-                    .append(values.get(parameter.getName())).append(";\n");
+                    .append(expression).append(";\n");
             hasInputVariable = true;
         }
         if (hasInputVariable) {
@@ -384,8 +461,17 @@ public class JUnitMockitoTestGenerator {
      * 追加 Optional 返回值方法的专用测试主体。
      * 正常场景使用 Optional.of，空结果场景使用 Optional.empty，避免 Mock 返回 null 和弱断言。
      */
-    private void appendOptionalTestBody(StringBuilder code, MethodModel methodModel, TestScenario scenario, String subjectName, Map<String, String> values) {
+    private void appendOptionalTestBody(StringBuilder code,
+                                        MethodModel methodModel,
+                                        TestScenario scenario,
+                                        String subjectName,
+                                        Map<String, String> values,
+                                        MockStrategy mockStrategy) {
         DependencyModel dependency = firstDependencyWithCall(methodModel);
+        if (dependency != null && !dependency.isMethodParameter()
+                && !shouldGenerateFieldMock(dependency, mockStrategy)) {
+            dependency = null;
+        }
         String callExpression = dependency == null || dependency.getCallExpressions().isEmpty()
                 ? null
                 : dependency.getCallExpressions().get(0);
@@ -397,7 +483,8 @@ public class JUnitMockitoTestGenerator {
 
         String valueType = optionalValueType(methodModel);
         if ("NORMAL".equals(scenario.getType())) {
-            code.append("        ").append(valueType).append(" connection = new ").append(valueType).append("();\n\n");
+            code.append("        ").append(valueType).append(" connection = ")
+                    .append(optionalValueExpression(valueType)).append(";\n\n");
             if (dependency != null && callExpression != null) {
                 code.append("        when(").append(dependency.getFieldName()).append(".").append(callExpression)
                         .append(").thenReturn(Optional.of(connection));\n\n");
@@ -417,9 +504,15 @@ public class JUnitMockitoTestGenerator {
         } else {
             code.append("        assertTrue(result.isEmpty());\n");
         }
-        if (dependency != null && callExpression != null) {
-            code.append("        verify(").append(dependency.getFieldName()).append(").").append(callExpression).append(";\n");
+    }
+
+    private String optionalValueExpression(String valueType) {
+        String generated = dataGenerator.generateValueExpression(valueType);
+        if (generated == null || generated.isBlank() || "null".equals(generated)
+                || generated.startsWith("new ")) {
+            return "mock(" + simpleType(valueType) + ".class)";
         }
+        return generated;
     }
 
     /**
@@ -550,28 +643,6 @@ public class JUnitMockitoTestGenerator {
      * 追加正常路径依赖调用验证。
      * 正常场景期望依赖被调用一次，便于测试观察被测方法的协作行为。
      */
-    private void appendNormalVerifies(StringBuilder code, MethodModel methodModel) {
-        for (DependencyModel dependency : methodModel.getDependencies()) {
-            for (String callExpression : dependency.getCallExpressions()) {
-                code.append("        verify(").append(dependency.getFieldName()).append(").")
-                        .append(callExpression).append(";\n");
-            }
-        }
-    }
-
-    /**
-     * 追加异常路径依赖未调用验证。
-     * 保护分支抛出异常后不应继续调用外部依赖，因此使用 never 规则固定该行为。
-     */
-    private void appendNeverVerifies(StringBuilder code, MethodModel methodModel) {
-        for (DependencyModel dependency : methodModel.getDependencies()) {
-            for (String callExpression : dependency.getCallExpressions()) {
-                code.append("        verify(").append(dependency.getFieldName()).append(", never()).")
-                        .append(callExpression).append(";\n");
-            }
-        }
-    }
-
     /**
      * 为 private 被测方法追加通用反射调用辅助方法。
      * 用户直接右键 private 方法时不能生成 subject.privateMethod(...)，否则测试代码无法编译。
@@ -612,6 +683,9 @@ public class JUnitMockitoTestGenerator {
     private String invocationExpression(MethodModel methodModel, String subjectName, String arguments) {
         if (isPrivateMethod(methodModel)) {
             return privateInvokerName(methodModel) + "(" + arguments + ")";
+        }
+        if (methodModel != null && methodModel.isStaticMethod()) {
+            return methodModel.getClassName() + "." + methodModel.getMethodName() + "(" + arguments + ")";
         }
         return subjectName + "." + methodModel.getMethodName() + "(" + arguments + ")";
     }
@@ -690,10 +764,12 @@ public class JUnitMockitoTestGenerator {
             }
         }
         imports.add("org.junit.jupiter.api.Test");
-        imports.add("org.junit.jupiter.api.extension.ExtendWith");
-        imports.add("org.mockito.InjectMocks");
+        imports.add("org.junit.jupiter.api.BeforeEach");
         imports.add("org.mockito.Mock");
-        imports.add("org.mockito.junit.jupiter.MockitoExtension");
+        imports.add("org.mockito.MockitoAnnotations");
+        if (!methodModel.isStaticMethod()) {
+            imports.add("org.mockito.InjectMocks");
+        }
         if (isPrivateMethod(methodModel)) {
             imports.add("java.lang.reflect.InvocationTargetException");
             imports.add("java.lang.reflect.Method");
@@ -709,6 +785,13 @@ public class JUnitMockitoTestGenerator {
             imports.add("java.util.List");
         }
         return new ArrayList<>(imports);
+    }
+
+    private void appendMockitoInitialization(StringBuilder code) {
+        code.append("    @BeforeEach\n");
+        code.append("    void initMockito() {\n");
+        code.append("        MockitoAnnotations.initMocks(this);\n");
+        code.append("    }\n");
     }
 
     /**
@@ -766,20 +849,23 @@ public class JUnitMockitoTestGenerator {
         return returnType.substring("Optional<".length(), returnType.length() - 1).trim();
     }
 
-    /**
-     * 判断指定参数是否来自 Mock 依赖。
-     * Mock 参数在调用被测方法时直接传变量名，避免生成 new 接口或 null。
-     */
-    private boolean isMockParameter(String parameterName, MethodModel methodModel) {
-        if (methodModel == null) {
-            return false;
-        }
+    private DependencyModel methodParameterDependency(String parameterName, MethodModel methodModel) {
+        if (methodModel == null) return null;
         for (DependencyModel dependency : methodModel.getDependencies()) {
             if (dependency.isMethodParameter() && dependency.getFieldName().equals(parameterName)) {
-                return true;
+                return dependency;
             }
         }
-        return false;
+        return null;
+    }
+
+    private String compileSafeValueExpression(String type) {
+        String expression = dataGenerator.generateValueExpression(type);
+        if (expression == null || expression.isBlank()) return "null";
+        if (expression.startsWith("new ")) {
+            return "mock(" + simpleType(type) + ".class)";
+        }
+        return expression;
     }
 
     /**

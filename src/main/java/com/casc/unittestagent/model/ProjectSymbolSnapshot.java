@@ -13,6 +13,9 @@ public class ProjectSymbolSnapshot {
     private CallableSymbol targetMethod;
     private List<TypeSymbol> types = new ArrayList<>();
     private List<String> unresolvedSymbols = new ArrayList<>();
+    private List<String> testExamples = new ArrayList<>();
+    /** 从已有测试和目标类结构抽取的 Oracle/fixture 契约事实。 */
+    private List<String> contractFacts = new ArrayList<>();
 
     public String getModuleName() {
         return moduleName;
@@ -64,5 +67,14 @@ public class ProjectSymbolSnapshot {
 
     public boolean isUsable() {
         return targetMethod != null && targetMethod.isResolved();
+    }
+
+    public List<String> getTestExamples() { return testExamples; }
+    public void setTestExamples(List<String> testExamples) {
+        this.testExamples = testExamples == null ? new ArrayList<>() : new ArrayList<>(testExamples);
+    }
+    public List<String> getContractFacts() { return contractFacts; }
+    public void setContractFacts(List<String> value) {
+        contractFacts = value == null ? new ArrayList<>() : new ArrayList<>(value);
     }
 }

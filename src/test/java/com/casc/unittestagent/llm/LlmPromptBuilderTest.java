@@ -4,11 +4,19 @@ import com.casc.unittestagent.model.CallableSymbol;
 import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.TypeSymbol;
+import com.casc.unittestagent.model.CoverageGap;
+import com.casc.unittestagent.model.CoverageReport;
+import com.casc.unittestagent.model.CoverageSnapshot;
+import com.casc.unittestagent.model.CoverageMetric;
+import com.casc.unittestagent.model.RuntimeDiagnostic;
+import com.casc.unittestagent.model.TestScenario;
 import org.junit.Test;
 
 import java.util.List;
 
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 
 public class LlmPromptBuilderTest {
     @Test
@@ -41,6 +49,252 @@ public class LlmPromptBuilderTest {
         assertTrue(prompt.contains("CANNOT_FIND_SYMBOL"));
         assertTrue(prompt.contains("repository.missing()"));
         assertTrue(prompt.contains("OrderServiceTest"));
+    }
+
+    @Test
+    public void coveragePromptContainsStructuredGapsAndRuntimeDiagnostics() {
+        CoverageGap gap = new CoverageGap();
+        gap.setKind(CoverageGap.Kind.BRANCH);
+        gap.setLineNumber(42);
+        gap.setSource("if (amount > limit) {");
+        gap.setMissedCount(1);
+        gap.setTotalCount(2);
+        CoverageSnapshot generated = new CoverageSnapshot();
+        generated.setAvailable(true);
+        generated.setLine(new CoverageMetric(9, 1));
+        generated.setBranch(new CoverageMetric(1, 1));
+        CoverageReport report = new CoverageReport();
+        report.setGenerated(generated);
+        report.setGaps(List.of(gap));
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("OrderServiceTest#shouldReject");
+        diagnostic.setExceptionType("org.opentest4j.AssertionFailedError");
+        diagnostic.setCategory("MOCKITO_MISSING_METHOD_INVOCATION");
+        diagnostic.setExpectedExceptionType("java.lang.NullPointerException");
+        diagnostic.setActualExceptionType("java.lang.reflect.InvocationTargetException");
+        diagnostic.setRootCauseType("java.lang.NullPointerException");
+        diagnostic.setCauseChain(List.of("java.lang.reflect.InvocationTargetException", "java.lang.NullPointerException"));
+        diagnostic.setSourceLine(18);
+        diagnostic.setSourceSnippet("when(subject.load()).thenReturn(value);");
+        diagnostic.setSuggestion("删除对 @InjectMocks 被测对象的非法 when");
+        diagnostic.setExpectedValue("expected-output");
+        diagnostic.setActualValue("actual-output");
+        diagnostic.setFailureDetails("full Mockito failure details");
+        diagnostic.setTestFrame("at sample.OrderServiceTest.shouldReject(OrderServiceTest.java:18)");
+        diagnostic.setProductionFrame("at sample.OrderService.reject(OrderService.java:42)");
+        diagnostic.setRootCauseFrame("at sample.Repository.load(Repository.java:9)");
+
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setCoverageReport(report);
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        request.setExistingTestCodeSummary("class OrderServiceTest {}");
+        request.setFocusTestIds(List.of("OrderServiceTest#shouldReject"));
+        request.setFailingTestIds(List.of("shouldReject", "shouldRejectBoundary"));
+        request.setPassedTestIds(List.of("shouldLoad"));
+        request.setMockitoStaticMockingSupported(false);
+        request.setMockitoStaticMockingSupport("mockito-core-4.11.0.jar 未启用 inline MockMaker");
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("\"kind\": \"BRANCH\""));
+        assertTrue(prompt.contains("\"line\": 42"));
+        assertTrue(prompt.contains("amount > limit"));
+        assertTrue(prompt.contains("shouldReject"));
+        assertTrue(prompt.contains("MOCKITO_MISSING_METHOD_INVOCATION"));
+        assertTrue(prompt.contains("when(subject.load())"));
+        assertTrue(prompt.contains("删除对 @InjectMocks"));
+        assertTrue(prompt.contains("lineRate"));
+        assertTrue(prompt.contains("\"staticMockingSupported\": false"));
+        assertTrue(prompt.contains("mockito-core-4.11.0"));
+        assertTrue(prompt.contains("\"taskMode\": \"RUNTIME_REPAIR\""));
+        assertTrue(prompt.contains("意图仲裁"));
+        assertTrue(prompt.contains("runtimeDiagnostics 只描述实际发生了什么"));
+        assertTrue(prompt.contains("禁止改成 assertThrows"));
+        assertTrue(prompt.contains("确保测试输入、被测调用实参及 Mockito stub 的参数和值一致"));
+        assertTrue(prompt.contains("返回前自检"));
+        assertTrue(prompt.contains("expectedExceptionType"));
+        assertTrue(prompt.contains("actualExceptionType"));
+        assertTrue(prompt.contains("expected-output"));
+        assertTrue(prompt.contains("actual-output"));
+        assertTrue(prompt.contains("expectedTestClassName"));
+        assertTrue(prompt.contains("POTENTIAL_SUT_BUG"));
+        assertTrue(prompt.contains("rootCauseType"));
+        assertTrue(prompt.contains("causeChain"));
+        assertTrue(prompt.contains("ASSERT_THROWS_WRAPPED_BY_REFLECTION"));
+        assertTrue(prompt.contains("full Mockito failure details"));
+        assertTrue(prompt.contains("OrderService.java:42"));
+        assertTrue(prompt.contains("shouldRejectBoundary"));
+        assertTrue(prompt.contains("shouldLoad"));
+        assertTrue(prompt.contains("methodPatches"));
+        assertTrue(prompt.contains("不得返回 testCode"));
+        assertTrue(prompt.contains("oracleEvidence"));
+    }
+
+    @Test
+    public void compileRepairSuppressesStaleRuntimeDiagnostics() {
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setCompilerDiagnostics(List.of(new CompileDiagnostic(
+                "ERROR", "CANNOT_FIND_SYMBOL", "cannot find symbol", 12, 8, "missingCall()", true)));
+        RuntimeDiagnostic stale = new RuntimeDiagnostic();
+        stale.setTestId("OrderServiceTest#staleRuntimeFailure");
+        stale.setMessage("STALE_RUNTIME_MESSAGE");
+        request.setRuntimeDiagnostics(List.of(stale));
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("\"taskMode\": \"COMPILE_REPAIR\""));
+        assertTrue(prompt.contains("CANNOT_FIND_SYMBOL"));
+        assertFalse(prompt.contains("STALE_RUNTIME_MESSAGE"));
+        assertFalse(prompt.contains("当前模式：RUNTIME_REPAIR"));
+    }
+
+    @Test
+    public void runtimeRepairKeepsFullSourceAndDoesNotSpecialCaseExceptionMessage() {
+        CoverageGap gap = gap(CoverageGap.Kind.BRANCH, 120, "if (invalid) throw failure;");
+        CoverageReport report = new CoverageReport();
+        report.setGaps(List.of(gap));
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("SubjectTest#shouldReturnNormallyWhenInputValid");
+        diagnostic.setExceptionType("java.lang.IllegalArgumentException");
+        diagnostic.setMessage("arbitrary domain failure");
+        diagnostic.setStackTrace(List.of(
+                "at sample.Subject.work(Subject.java:120)",
+                "at sample.SubjectTest.shouldReturnNormallyWhenInputValid(SubjectTest.java:45)"));
+        String fullSource = "FULL_SOURCE_PREFIX_MUST_REMAIN\n" + "x".repeat(4000);
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setCoverageReport(report);
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        request.setMethodSourceCode(fullSource);
+        request.setExistingTestCodeSummary("class SubjectTest { void shouldReturnNormallyWhenInputValid() {} }");
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("\"taskMode\": \"RUNTIME_REPAIR\""));
+        assertTrue(prompt.contains("FULL_SOURCE_PREFIX_MUST_REMAIN"));
+        assertFalse(prompt.contains("仅保留本轮未覆盖目标附近源码"));
+        assertTrue(prompt.contains("arbitrary domain failure"));
+        assertTrue(prompt.contains("实际异常只是本次执行的事实证据")
+                || new LlmPromptBuilder().coverageSystemPrompt().contains("事实证据"));
+        assertTrue(prompt.contains("成功/正常/有效输入场景意外抛异常时"));
+    }
+
+    @Test
+    public void runtimeRepairPromptIncludesMockitoInvocationCountContract() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("DocumentTypeTest#shouldHandleBoundaryValues()");
+        diagnostic.setCategory("MOCKITO_INVOCATION_COUNT_MISMATCH");
+        diagnostic.setExpectedInvocationCount(1);
+        diagnostic.setActualInvocationCount(2);
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        request.setCoverageReport(new CoverageReport());
+        request.setExistingTestCodeSummary(
+                "class DocumentTypeTest { void shouldHandleBoundaryValues() { verify(out, times(1)).append(\" \" ); } }");
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("MOCKITO_INVOCATION_COUNT_MISMATCH"));
+        assertTrue(prompt.contains("\"expectedInvocationCount\": 1"));
+        assertTrue(prompt.contains("\"actualInvocationCount\": 2"));
+        assertTrue(prompt.contains("times(n)/once/atLeast"));
+        assertTrue(prompt.contains("不得用 atLeast(0)/anyTimes 伪造成功"));
+    }
+
+    @Test
+    public void coveragePromptIncludesCurrentTestCodeOnlyOnce() {
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setExistingTestCodeSummary("class UniqueCoverageCandidateTest {}");
+        request.setCoverageReport(new CoverageReport());
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertEquals(1, occurrences(prompt, "class UniqueCoverageCandidateTest {}"));
+    }
+
+    @Test
+    public void coveragePromptFocusesLargeMethodsOnUncoveredSource() {
+        CoverageGap gap = new CoverageGap();
+        gap.setLineNumber(120);
+        gap.setContext("119: prepare();\n120: if (missing) recover();\n121: finish();");
+        CoverageReport report = new CoverageReport();
+        report.setGaps(List.of(gap));
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setCoverageReport(report);
+        request.setMethodSourceCode("METHOD_ENTRY_MUST_REMAIN\n" + "x".repeat(6000)
+                + "OMITTED_MIDDLE_MARKER\n" + "y".repeat(7000) + "METHOD_TAIL_MUST_REMAIN");
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("METHOD_ENTRY_MUST_REMAIN"));
+        assertFalse(prompt.contains("OMITTED_MIDDLE_MARKER"));
+        assertTrue(prompt.contains("METHOD_TAIL_MUST_REMAIN"));
+        assertTrue(prompt.contains("if (missing) recover()"));
+        assertTrue(prompt.contains("超长方法的路径切片"));
+    }
+
+    @Test
+    public void coveragePromptLimitsTargetsAndRotatesAfterNoProgress() {
+        CoverageGap first = gap(CoverageGap.Kind.BRANCH, 10, "if (first) work();");
+        CoverageGap second = gap(CoverageGap.Kind.BRANCH, 20, "if (second) work();");
+        CoverageReport report = new CoverageReport();
+        report.setGaps(List.of(first, second,
+                gap(CoverageGap.Kind.LINE, 30, "fallback();"),
+                gap(CoverageGap.Kind.LINE, 40, "fallback2();"),
+                gap(CoverageGap.Kind.LINE, 50, "fallback3();"),
+                gap(CoverageGap.Kind.LINE, 60, "fallback4();")));
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setCoverageReport(report);
+
+        String firstPrompt = new LlmPromptBuilder().coveragePrompt(request);
+        report.incrementNoProgressCandidates();
+        String secondPrompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(firstPrompt.matches("(?s).*\\{[^{}]*\\\"line\\\": 10[^{}]*\\\"primary\\\": true[^{}]*}.*")
+                || firstPrompt.matches("(?s).*\\{[^{}]*\\\"primary\\\": true[^{}]*\\\"line\\\": 10[^{}]*}.*"));
+        assertTrue(secondPrompt.matches("(?s).*\\{[^{}]*\\\"line\\\": 20[^{}]*\\\"primary\\\": true[^{}]*}.*")
+                || secondPrompt.matches("(?s).*\\{[^{}]*\\\"primary\\\": true[^{}]*\\\"line\\\": 20[^{}]*}.*"));
+        assertTrue(firstPrompt.contains("\"omittedGapCount\": 1"));
+        assertTrue(firstPrompt.contains("coverage.gaps[0] 是唯一主目标"));
+    }
+
+    @Test
+    public void generationPromptSerializesMockPolicyAndOracleConfidence() {
+        TestScenario scenario = new TestScenario();
+        scenario.setName("normalCase");
+        scenario.setOracleKind("UNKNOWN");
+        scenario.setOracleEvidence("STATIC_ANALYSIS");
+        scenario.setOracleConfidence("LOW");
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setMockUsagePolicy("FORBIDDEN");
+        request.setScenarios(List.of(scenario));
+
+        String prompt = new LlmPromptBuilder().userPrompt(request);
+
+        assertTrue(prompt.contains("\"mockUsagePolicy\": \"FORBIDDEN\""));
+        assertTrue(prompt.contains("\"confidence\": \"LOW\""));
+        assertTrue(prompt.contains("场景名只表示覆盖目标，不是精确 Oracle"));
+        assertTrue(prompt.contains("FORBIDDEN 时禁止新建 mock/spy/verify"));
+    }
+
+    private CoverageGap gap(CoverageGap.Kind kind, int line, String source) {
+        CoverageGap gap = new CoverageGap();
+        gap.setKind(kind);
+        gap.setLineNumber(line);
+        gap.setSource(source);
+        gap.setContext(line + ": " + source);
+        gap.setMissedCount(1);
+        gap.setTotalCount(kind == CoverageGap.Kind.BRANCH ? 2 : 1);
+        return gap;
+    }
+
+    private int occurrences(String text, String value) {
+        int count = 0;
+        int cursor = 0;
+        while ((cursor = text.indexOf(value, cursor)) >= 0) {
+            count++;
+            cursor += value.length();
+        }
+        return count;
     }
 
     private ProjectSymbolSnapshot snapshot() {

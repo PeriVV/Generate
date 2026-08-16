@@ -30,10 +30,22 @@ public class TestScenarioPlanner {
         }
 
         if (isOptionalReturn(methodModel) && !methodModel.getDependencies().isEmpty()) {
-            scenarios.add(scenario("参数合法时，应返回数据", "shouldReturnConnectionWhenIdAndOwnerIdValid", "NORMAL",
-                    "使用合法参数，验证返回 Optional 中存在数据。"));
-            scenarios.add(scenario("仓储返回空时，应返回空结果", "shouldReturnEmptyWhenRepositoryReturnsEmpty", "BOUNDARY",
-                    "仓储未找到数据时，验证返回 Optional.empty()。"));
+            TestScenario present = scenario("参数合法时，应返回数据",
+                    "shouldReturnConnectionWhenIdAndOwnerIdValid", "NORMAL",
+                    "使用合法参数，验证返回 Optional 中存在数据。");
+            present.setOracleKind("RETURN_VALUE");
+            present.setOracleEvidence("STATIC_ANALYSIS");
+            present.setOracleConfidence("MEDIUM");
+            present.getExpectedAssertions().add("returned Optional is present");
+            scenarios.add(present);
+            TestScenario empty = scenario("仓储返回空时，应返回空结果",
+                    "shouldReturnEmptyWhenRepositoryReturnsEmpty", "BOUNDARY",
+                    "仓储未找到数据时，验证返回 Optional.empty()。");
+            empty.setOracleKind("RETURN_VALUE");
+            empty.setOracleEvidence("STATIC_ANALYSIS");
+            empty.setOracleConfidence("HIGH");
+            empty.getExpectedAssertions().add("returned value equals Optional.empty()");
+            scenarios.add(empty);
             for (ParameterModel parameter : methodModel.getParameters()) {
                 if (parameter.isNullable()) {
                     TestScenario nullScenario = scenario(parameter.getName() + " 为空时，应按源码逻辑处理",
@@ -172,6 +184,21 @@ public class TestScenarioPlanner {
         scenario.setMethodNameEn(methodNameEn);
         scenario.setType(type);
         scenario.setDescription(description);
+        if ("EXCEPTION".equals(type)) {
+            scenario.setOracleKind("EXCEPTION");
+            scenario.setOracleEvidence("SOURCE");
+            scenario.setOracleConfidence("HIGH");
+        } else if ("BOUNDARY".equals(type)) {
+            scenario.setOracleKind("BEHAVIOR");
+            scenario.setOracleEvidence("STATIC_ANALYSIS");
+            scenario.setOracleConfidence("MEDIUM");
+        } else {
+            // 通用正常场景没有精确返回值依据。明确标低可信度，防止生成器
+            // 把方法名中的“正常”误当成可编造精确断言或 verify 次数的契约。
+            scenario.setOracleKind("UNKNOWN");
+            scenario.setOracleEvidence("STATIC_ANALYSIS");
+            scenario.setOracleConfidence("LOW");
+        }
         return scenario;
     }
 

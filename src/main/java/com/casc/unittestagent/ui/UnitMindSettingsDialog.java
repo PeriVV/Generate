@@ -1,5 +1,7 @@
 package com.casc.unittestagent.ui;
 
+import com.casc.unittestagent.coverage.CoverageConfig;
+import com.casc.unittestagent.coverage.CoverageConfigManager;
 import com.casc.unittestagent.llm.LlmConfig;
 import com.casc.unittestagent.llm.LlmConfigManager;
 import com.casc.unittestagent.llm.OpenAiCompatibleLlmClient;
@@ -37,11 +39,18 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JPasswordField apiKey = new JPasswordField();
     private final JTextField model = new JTextField();
     private final JSpinner timeoutSeconds = new JSpinner(new SpinnerNumberModel(60, 1, 600, 1));
-    private final JSpinner maxTokens = new JSpinner(new SpinnerNumberModel(6000, 256, 32000, 256));
+    private final JSpinner maxTokens = new JSpinner(new SpinnerNumberModel(12000, 256, 32000, 256));
+    private final JSpinner compileRepairRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
     private final JSpinner temperature = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.1));
     private final JCheckBox fallbackToRuleBased = new JCheckBox("失败时使用规则兜底");
     private final JLabel apiKeyStatus = new JLabel();
     private final JButton testConnection = new JButton("测试连接");
+    private final JSpinner lineCoverage = new JSpinner(new SpinnerNumberModel(90, 0, 100, 1));
+    private final JSpinner branchCoverage = new JSpinner(new SpinnerNumberModel(80, 0, 100, 1));
+    private final JSpinner coverageRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
+    private final JSpinner coverageRepairRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
+    private final JSpinner coverageTimeout = new JSpinner(new SpinnerNumberModel(60, 5, 600, 5));
+    private final JCheckBox existingBaseline = new JCheckBox("计算已有 <被测类>Test 基线");
 
     public UnitMindSettingsDialog(@Nullable Project project) {
         super(project);
@@ -57,8 +66,11 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     protected @Nullable JComponent createCenterPanel() {
         JPanel root = new JPanel(new BorderLayout(0, 12));
         root.add(testDataPanel(), BorderLayout.NORTH);
-        root.add(llmPanel(), BorderLayout.CENTER);
-        root.setPreferredSize(new Dimension(720, 360));
+        JPanel settings = new JPanel(new BorderLayout(0, 12));
+        settings.add(llmPanel(), BorderLayout.CENTER);
+        settings.add(coveragePanel(), BorderLayout.SOUTH);
+        root.add(settings, BorderLayout.CENTER);
+        root.setPreferredSize(new Dimension(720, 520));
         return root;
     }
 
@@ -83,6 +95,14 @@ public class UnitMindSettingsDialog extends DialogWrapper {
             return;
         }
         LlmConfigManager.save(config, new String(apiKey.getPassword()));
+        CoverageConfig coverage = new CoverageConfig();
+        coverage.setLineThreshold(((Integer) lineCoverage.getValue()) / 100.0d);
+        coverage.setBranchThreshold(((Integer) branchCoverage.getValue()) / 100.0d);
+        coverage.setMaxRounds((Integer) coverageRounds.getValue());
+        coverage.setMaxRepairRounds((Integer) coverageRepairRounds.getValue());
+        coverage.setExecutionTimeoutSeconds((Integer) coverageTimeout.getValue());
+        coverage.setExistingBaselineEnabled(existingBaseline.isSelected());
+        CoverageConfigManager.save(coverage);
         super.doOKAction();
     }
 
@@ -111,24 +131,43 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         addRow(panel, constraints, 4, "请求超时时间", timeoutSeconds);
         addRow(panel, constraints, 5, "最大输出长度", maxTokens);
         addRow(panel, constraints, 6, "温度", temperature);
+        addRow(panel, constraints, 7, "最多编译修复轮次", compileRepairRounds);
 
         constraints.gridx = 1;
-        constraints.gridy = 7;
+        constraints.gridy = 8;
         constraints.gridwidth = 1;
         panel.add(fallbackToRuleBased, constraints);
 
         constraints.gridx = 1;
-        constraints.gridy = 8;
+        constraints.gridy = 9;
         panel.add(apiKeyStatus, constraints);
 
         constraints.gridx = 1;
-        constraints.gridy = 9;
+        constraints.gridy = 10;
         testConnection.addActionListener(event -> testConnection());
         panel.add(testConnection, constraints);
 
         constraints.gridx = 1;
-        constraints.gridy = 10;
+        constraints.gridy = 11;
         panel.add(new JLabel("API Key 优先读取环境变量 " + LlmConfigManager.apiKeyEnvironmentName() + "；输入新 Key 后保存到 IDEA PasswordSafe。"), constraints);
+        return panel;
+    }
+
+    private JPanel coveragePanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(javax.swing.BorderFactory.createTitledBorder("测试覆盖率闭环"));
+        GridBagConstraints constraints = new GridBagConstraints();
+        constraints.insets = new Insets(4, 4, 4, 4);
+        constraints.fill = GridBagConstraints.HORIZONTAL;
+        addRow(panel, constraints, 0, "行覆盖率目标（%）", lineCoverage);
+        addRow(panel, constraints, 1, "分支覆盖率目标（%）", branchCoverage);
+        addRow(panel, constraints, 2, "最多覆盖率探索轮次", coverageRounds);
+        addRow(panel, constraints, 3, "最多失败修复轮次", coverageRepairRounds);
+        addRow(panel, constraints, 4, "单轮执行超时（秒）", coverageTimeout);
+        constraints.gridx = 1;
+        constraints.gridy = 5;
+        constraints.weightx = 1;
+        panel.add(existingBaseline, constraints);
         return panel;
     }
 
@@ -153,8 +192,16 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         model.setText(config.getModel());
         timeoutSeconds.setValue(config.getTimeoutSeconds());
         maxTokens.setValue(config.getMaxTokens());
+        compileRepairRounds.setValue(config.getMaxCompileRepairRounds());
         temperature.setValue(config.getTemperature());
         fallbackToRuleBased.setSelected(config.isFallbackToRuleBased());
+        CoverageConfig coverage = CoverageConfigManager.load();
+        lineCoverage.setValue((int) Math.round(coverage.getLineThreshold() * 100));
+        branchCoverage.setValue((int) Math.round(coverage.getBranchThreshold() * 100));
+        coverageRounds.setValue(coverage.getMaxRounds());
+        coverageRepairRounds.setValue(coverage.getMaxRepairRounds());
+        coverageTimeout.setValue(coverage.getExecutionTimeoutSeconds());
+        existingBaseline.setSelected(coverage.isExistingBaselineEnabled());
     }
 
     private LlmConfig configFromUi() {
@@ -166,6 +213,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         config.setModel(model.getText());
         config.setTimeoutSeconds((Integer) timeoutSeconds.getValue());
         config.setMaxTokens((Integer) maxTokens.getValue());
+        config.setMaxCompileRepairRounds((Integer) compileRepairRounds.getValue());
         config.setTemperature(((Number) temperature.getValue()).doubleValue());
         config.setFallbackToRuleBased(fallbackToRuleBased.isSelected());
         return config;

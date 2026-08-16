@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0.10"
+version = "1.0.15"
 
 base {
     archivesName.set("UnitMind")
@@ -93,7 +93,13 @@ dependencies {
     implementation("org.apache.commons:commons-lang3:3.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation ("org.json:json:20210307")
+    // UnitMind 自带覆盖率执行运行时，不要求修改被测项目的构建文件。
+    implementation("org.jacoco:org.jacoco.core:0.8.15")
+    implementation("org.jacoco:org.jacoco.agent:0.8.15")
+    implementation("org.junit.platform:junit-platform-console-standalone:1.12.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.18.0")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.18.0")
 }
 java {
     toolchain {

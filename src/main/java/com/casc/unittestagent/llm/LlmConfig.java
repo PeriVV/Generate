@@ -10,7 +10,8 @@ public class LlmConfig {
     private String apiKey;
     private String model;
     private int timeoutSeconds = 60;
-    private int maxTokens = 6000;
+    private int maxTokens = 12000;
+    private int maxCompileRepairRounds = 5;
     private double temperature = 0.2;
     private boolean fallbackToRuleBased = true;
 
@@ -60,6 +61,14 @@ public class LlmConfig {
 
     public void setMaxTokens(int maxTokens) {
         this.maxTokens = maxTokens;
+    }
+
+    public int getMaxCompileRepairRounds() {
+        return maxCompileRepairRounds;
+    }
+
+    public void setMaxCompileRepairRounds(int maxCompileRepairRounds) {
+        this.maxCompileRepairRounds = Math.max(0, Math.min(30, maxCompileRepairRounds));
     }
 
     public double getTemperature() {

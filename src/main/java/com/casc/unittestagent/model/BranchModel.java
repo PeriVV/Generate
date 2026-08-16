@@ -9,6 +9,10 @@ import java.util.List;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class BranchModel {
+    /** 稳定分支标识，用于把 JaCoCo 缺口关联回静态控制流。 */
+    private String branchId = "";
+    private int sourceStartLine = -1;
+    private int sourceEndLine = -1;
     /** 源码中的原始分支条件，保留给预览页和异常场景命名使用。 */
     private String condition;
     /** 原始条件的安全反向条件，用于生成不会触发异常分支的正常输入。 */
@@ -19,6 +23,13 @@ public class BranchModel {
     private String exceptionType;
     /** 到达该分支前需要满足的前置安全条件，避免测试提前失败在更早的无关分支上。 */
     private List<String> preconditions = new ArrayList<>();
+
+    public String getBranchId() { return branchId; }
+    public void setBranchId(String branchId) { this.branchId = branchId == null ? "" : branchId; }
+    public int getSourceStartLine() { return sourceStartLine; }
+    public void setSourceStartLine(int sourceStartLine) { this.sourceStartLine = sourceStartLine; }
+    public int getSourceEndLine() { return sourceEndLine; }
+    public void setSourceEndLine(int sourceEndLine) { this.sourceEndLine = sourceEndLine; }
 
     /**
      * 读取源码中的原始分支条件，保留给预览页和异常场景命名使用。

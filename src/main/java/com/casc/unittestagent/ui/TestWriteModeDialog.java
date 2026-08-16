@@ -28,7 +28,7 @@ public class TestWriteModeDialog extends DialogWrapper {
     /** 取消写入的选项，用于放弃当前操作。 */
     private final JRadioButton cancelButton = new JRadioButton("取消");
     /** 同一方法已存在 UnitMind 区域时是否替换旧区域。 */
-    private final JCheckBox replaceRegionBox = new JCheckBox("如果当前方法已存在 UnitMind 生成区域，则替换旧区域", true);
+    private final JCheckBox replaceRegionBox = new JCheckBox("如果当前生成目标已存在 UnitMind 区域，则原子替换旧区域", true);
     /** 已存在的目标测试文件。 */
     private final File targetFile;
     /** 是否检测到同一方法的 UnitMind region。 */
@@ -68,7 +68,7 @@ public class TestWriteModeDialog extends DialogWrapper {
         options.add(new JLabel(targetFile == null ? "" : targetFile.getAbsolutePath()));
         options.add(new JLabel("请选择写入方式："));
         options.add(appendButton);
-        options.add(new JLabel("追加到已有测试类：保留原有测试方法，只追加当前方法的新测试。"));
+        options.add(new JLabel("追加到已有测试类：保留 region 外的人工测试和 fixture。"));
         options.add(overwriteButton);
         options.add(new JLabel("覆盖整个测试类：删除原有内容，写入本次生成内容。"));
         options.add(cancelButton);

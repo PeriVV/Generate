@@ -20,9 +20,15 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     private final LlmConfig config;
     private final LlmPromptBuilder promptBuilder = new LlmPromptBuilder();
     private final LlmResponseParser responseParser = new LlmResponseParser();
+    private final OkHttpClient httpClient;
 
     public OpenAiCompatibleLlmClient(LlmConfig config) {
         this.config = config;
+        this.httpClient = new OkHttpClient.Builder()
+                .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
+                .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
+                .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
+                .build();
     }
 
     @Override
@@ -30,13 +36,25 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         String systemPrompt = promptBuilder.systemPrompt();
         String userPrompt = promptBuilder.userPrompt(request);
-        return responseParser.parse(executeChat(systemPrompt, userPrompt));
+        return responseParser.parse(executeChat(systemPrompt, userPrompt,
+                Math.max(config.getMaxTokens(), 12000)));
     }
 
     @Override
     public LlmGenerationResponse repairUnitTest(LlmGenerationRequest request) throws Exception {
         validateConfig();
-        return responseParser.parse(executeChat(promptBuilder.repairSystemPrompt(), promptBuilder.repairPrompt(request)));
+        return responseParser.parse(executeChat(promptBuilder.repairSystemPrompt(), promptBuilder.repairPrompt(request),
+                Math.max(config.getMaxTokens(), 12000)));
+    }
+
+    @Override
+    public LlmGenerationResponse improveCoverage(LlmGenerationRequest request) throws Exception {
+        validateConfig();
+        boolean methodPatch = request.getRuntimeDiagnostics() != null && !request.getRuntimeDiagnostics().isEmpty()
+                && (request.getCompilerDiagnostics() == null || request.getCompilerDiagnostics().isEmpty());
+        int outputBudget = methodPatch ? config.getMaxTokens() : Math.max(config.getMaxTokens(), 12000);
+        return responseParser.parseCoverage(executeChat(
+                promptBuilder.coverageSystemPrompt(), promptBuilder.coveragePrompt(request), outputBudget));
     }
 
     @Override
@@ -48,24 +66,23 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private String executeChat(String systemPrompt, String userPrompt) throws IOException {
-        OkHttpClient client = new OkHttpClient.Builder()
-                .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .build();
+        return executeChat(systemPrompt, userPrompt, config.getMaxTokens());
+    }
+
+    private String executeChat(String systemPrompt, String userPrompt, int maxTokens) throws IOException {
         Request httpRequest = new Request.Builder()
                 .url(config.getApiUrl())
-                .post(RequestBody.create(requestBody(systemPrompt, userPrompt).toString(), JSON))
+                .post(RequestBody.create(requestBody(systemPrompt, userPrompt, maxTokens).toString(), JSON))
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
                 .build();
 
-        try (Response response = client.newCall(httpRequest).execute()) {
+        try (Response response = httpClient.newCall(httpRequest).execute()) {
             String body = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
             }
-            return extractMessageContent(body);
+            return extractMessageContent(body, maxTokens);
         }
     }
 
@@ -76,11 +93,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     public String testConnection() throws Exception {
         validateConfig();
-        OkHttpClient client = new OkHttpClient.Builder()
-                .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .build();
         JSONArray messages = new JSONArray();
         messages.put(new JSONObject().put("role", "system").put("content", "You are a connectivity checker."));
         messages.put(new JSONObject().put("role", "user").put("content", "Reply with OK only."));
@@ -95,7 +107,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
                 .build();
-        try (Response response = client.newCall(httpRequest).execute()) {
+        try (Response response = httpClient.newCall(httpRequest).execute()) {
             String responseBody = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(responseBody));
@@ -105,28 +117,97 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
     }
 
-    private JSONObject requestBody(String systemPrompt, String userPrompt) {
+    JSONObject requestBody(String systemPrompt, String userPrompt) {
+        return requestBody(systemPrompt, userPrompt, config.getMaxTokens());
+    }
+
+    private JSONObject requestBody(String systemPrompt, String userPrompt, int maxTokens) {
         JSONArray messages = new JSONArray();
         messages.put(new JSONObject().put("role", "system").put("content", systemPrompt));
         messages.put(new JSONObject().put("role", "user").put("content", userPrompt));
-        return new JSONObject()
+        JSONObject body = new JSONObject()
                 .put("model", config.getModel())
                 .put("messages", messages)
                 .put("temperature", config.getTemperature())
-                .put("max_tokens", config.getMaxTokens());
+                .put("max_tokens", maxTokens);
+        if (supportsJsonMode()) {
+            body.put("response_format", new JSONObject().put("type", "json_object"));
+        }
+        // DashScope JSON mode conflicts with thinking mode. Coverage repair needs a short,
+        // machine-readable final answer rather than provider-specific reasoning_content.
+        if (isDashScope()) {
+            body.put("enable_thinking", false);
+        }
+        return body;
     }
 
-    private String extractMessageContent(String body) {
+    private boolean supportsJsonMode() {
+        String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
+        return isDashScope() || url.contains("api.openai.com/");
+    }
+
+    private boolean isDashScope() {
+        String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
+        return url.contains("dashscope.aliyuncs.com/");
+    }
+
+    String extractMessageContent(String body) {
+        return extractMessageContent(body, config.getMaxTokens());
+    }
+
+    private String extractMessageContent(String body, int maxTokens) {
         JSONObject root = new JSONObject(body);
         JSONArray choices = root.optJSONArray("choices");
         if (choices == null || choices.length() == 0) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
+            throw new LlmResponseFormatException("大模型响应中没有 choices。");
         }
-        JSONObject message = choices.getJSONObject(0).optJSONObject("message");
+        JSONObject choice = choices.getJSONObject(0);
+        String finishReason = choice.optString("finish_reason", "");
+        if ("length".equalsIgnoreCase(finishReason)) {
+            throw new LlmOutputTruncatedException("大模型输出达到 max_tokens 上限（"
+                    + maxTokens + "），完整代码负载可能已被截断。");
+        }
+        JSONObject message = choice.optJSONObject("message");
         if (message == null) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
+            String legacyText = choice.optString("text", "");
+            if (!legacyText.isBlank()) return legacyText;
+            throw new LlmResponseFormatException("大模型响应中没有 message。");
         }
-        return message.optString("content", "");
+        Object content = message.opt("content");
+        if (content instanceof String && !((String) content).isBlank()) return (String) content;
+        if (content instanceof JSONArray) {
+            StringBuilder joined = new StringBuilder();
+            JSONArray parts = (JSONArray) content;
+            for (int index = 0; index < parts.length(); index++) {
+                Object part = parts.opt(index);
+                String value = textPart(part);
+                if (!value.isBlank()) {
+                    if (joined.length() > 0) joined.append('\n');
+                    joined.append(value);
+                }
+            }
+            if (joined.length() > 0) return joined.toString();
+        }
+        if (content instanceof JSONObject) {
+            String value = textPart(content);
+            if (!value.isBlank()) return value;
+        }
+        String legacyText = choice.optString("text", "");
+        if (!legacyText.isBlank()) return legacyText;
+        if (!message.optString("reasoning_content", "").isBlank()) {
+            throw new LlmResponseFormatException("大模型只返回了推理内容，没有返回可用的最终测试代码。");
+        }
+        return "";
+    }
+
+    private String textPart(Object part) {
+        if (part instanceof String) return (String) part;
+        if (!(part instanceof JSONObject)) return "";
+        JSONObject object = (JSONObject) part;
+        Object text = object.opt("text");
+        if (text instanceof String) return (String) text;
+        if (text instanceof JSONObject) return ((JSONObject) text).optString("value", "");
+        return object.optString("content", "");
     }
 
     private void validateConfig() {

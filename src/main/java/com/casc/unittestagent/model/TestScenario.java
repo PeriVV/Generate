@@ -25,6 +25,12 @@ public class TestScenario {
     private List<String> expectedAssertions = new ArrayList<>();
     /** 该场景计划覆盖的源码分支条件。 */
     private List<String> coveredBranches = new ArrayList<>();
+    /** 断言类型，例如 RETURN_VALUE / STATE / EXCEPTION / INTERACTION / UNKNOWN。 */
+    private String oracleKind = "UNKNOWN";
+    /** 断言依据，例如 SOURCE / EXISTING_TEST / STATIC_ANALYSIS / USER_REQUIREMENT。 */
+    private String oracleEvidence = "STATIC_ANALYSIS";
+    /** 断言可信度：HIGH / MEDIUM / LOW。 */
+    private String oracleConfidence = "LOW";
 
     /**
      * 读取场景名或参数名，生成测试方法名和参数映射时会使用。
@@ -216,5 +222,16 @@ public class TestScenario {
      */
     public void setCoveredBranches(List<String> coveredBranches) {
         this.coveredBranches = coveredBranches;
+    }
+
+    public String getOracleKind() { return oracleKind; }
+    public void setOracleKind(String value) { oracleKind = value == null ? "UNKNOWN" : value; }
+    public String getOracleEvidence() { return oracleEvidence; }
+    public void setOracleEvidence(String value) {
+        oracleEvidence = value == null ? "STATIC_ANALYSIS" : value;
+    }
+    public String getOracleConfidence() { return oracleConfidence; }
+    public void setOracleConfidence(String value) {
+        oracleConfidence = value == null ? "LOW" : value;
     }
 }

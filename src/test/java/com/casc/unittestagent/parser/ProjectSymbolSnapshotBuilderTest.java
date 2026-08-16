@@ -100,6 +100,53 @@ public class ProjectSymbolSnapshotBuilderTest extends LightJavaCodeInsightFixtur
         assertTrue(child.getMethods().stream().anyMatch(method -> method.getName().equals("value")));
     }
 
+    public void testClassModeLocatesRequestedOverloadInsteadOfCaretOverload() {
+        String source = """
+                package sample;
+                class OverloadedService {
+                    int load(int value) { return value; }
+                    String <caret>load(String value) { return value; }
+                }
+                """;
+        PsiFile file = myFixture.configureByText("OverloadedService.java", source);
+        String plain = source.replace("<caret>", "");
+        MethodModel intOverload = new JavaSourceAnalyzer().analyze(plain, "load", 3);
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), intOverload));
+
+        assertTrue(snapshot.isUsable());
+        assertEquals("int", snapshot.getTargetMethod().getReturnType());
+        assertEquals(List.of("int"), snapshot.getTargetMethod().getParameterTypes());
+        assertEquals("sample.OverloadedService#load(int)", snapshot.getTargetMethod().getId());
+    }
+
+    public void testCollectsFixtureMethodsAndProjectSourceBodies() {
+        String source = """
+                package sample;
+                class VisitService {
+                    String <caret>ownerName(Pet pet) { return pet.getName(); }
+                }
+                class Pet {
+                    private String name;
+                    Pet() {}
+                    void setName(String name) { this.name = name; }
+                    String getName() { return name; }
+                }
+                """;
+        PsiFile file = myFixture.configureByText("VisitService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "ownerName");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol pet = typeEndingWith(snapshot, "Pet");
+        assertTrue(pet.getMethods().stream().anyMatch(method -> method.getName().equals("setName")
+                && method.isFixtureMethod()
+                && method.getSourceCode().contains("this.name = name")));
+        assertTrue(snapshot.getTargetMethod().getSourceCode().contains("return pet.getName()"));
+    }
+
     private TypeSymbol typeEndingWith(ProjectSymbolSnapshot snapshot, String name) {
         return snapshot.getTypes().stream()
                 .filter(type -> type.getQualifiedName().endsWith(name))

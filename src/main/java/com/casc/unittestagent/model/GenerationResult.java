@@ -9,6 +9,9 @@ import java.util.List;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class GenerationResult {
+    private GenerationScope generationScope = GenerationScope.METHOD;
+    private List<String> classMethodSignatures = new ArrayList<>();
+    private String sharedFixtureSummary;
     /** 源码分析得到的方法模型，是后续所有生成结果的基础上下文。 */
     private MethodModel methodModel;
     /** 规划出的测试场景列表，决定最终生成多少个测试方法。 */
@@ -33,6 +36,18 @@ public class GenerationResult {
     private ProjectSymbolSnapshot symbolSnapshot;
     /** 当前候选测试代码的项目编译验证结果。 */
     private ValidationResult validationResult = ValidationResult.status(ValidationStatus.NOT_RUN);
+    private CoverageReport coverageReport = CoverageReport.status(CoverageStatus.NOT_RUN);
+
+    public GenerationScope getGenerationScope() { return generationScope; }
+    public void setGenerationScope(GenerationScope generationScope) {
+        this.generationScope = generationScope == null ? GenerationScope.METHOD : generationScope;
+    }
+    public List<String> getClassMethodSignatures() { return classMethodSignatures; }
+    public void setClassMethodSignatures(List<String> classMethodSignatures) {
+        this.classMethodSignatures = classMethodSignatures == null ? new ArrayList<>() : classMethodSignatures;
+    }
+    public String getSharedFixtureSummary() { return sharedFixtureSummary; }
+    public void setSharedFixtureSummary(String sharedFixtureSummary) { this.sharedFixtureSummary = sharedFixtureSummary; }
 
     /**
      * 读取源码分析得到的方法模型，是后续所有生成结果的基础上下文。
@@ -210,5 +225,15 @@ public class GenerationResult {
         this.validationResult = validationResult == null
                 ? ValidationResult.status(ValidationStatus.NOT_RUN)
                 : validationResult;
+    }
+
+    public CoverageReport getCoverageReport() {
+        return coverageReport;
+    }
+
+    public void setCoverageReport(CoverageReport coverageReport) {
+        this.coverageReport = coverageReport == null
+                ? CoverageReport.status(CoverageStatus.NOT_RUN)
+                : coverageReport;
     }
 }

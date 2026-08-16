@@ -1,5 +1,9 @@
 package com.casc.unittestagent.validation;
 
+import com.casc.unittestagent.coverage.ProjectTestEnvironment;
+import com.casc.unittestagent.coverage.ProjectTestEnvironmentResolver;
+import com.casc.unittestagent.coverage.MockitoStaticMockSupport;
+import com.casc.unittestagent.coverage.CoverageCandidatePreflight;
 import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.GeneratedTestFile;
 import com.casc.unittestagent.model.ValidationResult;
@@ -53,6 +57,7 @@ import java.util.Set;
  * 使用 IntelliJ 项目模型和内置 Java 编译能力验证候选测试源码。
  */
 public class ProjectCompileVerifier implements TestCodeValidator {
+    private final ProjectTestEnvironmentResolver environmentResolver = new ProjectTestEnvironmentResolver();
     @Override
     public ValidationResult validate(Project project, PsiFile sourceFile, GeneratedTestFile generatedFile, String code) {
         long started = System.currentTimeMillis();
@@ -60,6 +65,7 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         result.setCodeHash(CodeFingerprint.sha256(code));
         try {
             List<CompileDiagnostic> syntaxDiagnostics = syntaxDiagnostics(project, generatedFile, code);
+            syntaxDiagnostics.addAll(CoverageCandidatePreflight.inspect(code));
             if (!syntaxDiagnostics.isEmpty()) {
                 result.setStatus(ValidationStatus.FAILED);
                 result.setDiagnostics(syntaxDiagnostics);
@@ -72,11 +78,22 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                 result.setDiagnostics(environment.diagnostics);
                 return result;
             }
+            MockitoStaticMockSupport staticMockSupport = MockitoStaticMockSupport.detect(environment.classpath);
+            if (MockitoStaticMockSupport.usesStaticMocking(code) && !staticMockSupport.isSupported()) {
+                result.setStatus(ValidationStatus.FAILED);
+                result.setDiagnostics(Collections.singletonList(new CompileDiagnostic(
+                        "ERROR", "MOCKITO_STATIC_MOCK_UNSUPPORTED",
+                        "当前项目不支持 Mockito 静态 Mock：" + staticMockSupport.getDescription()
+                                + "。请删除 mockStatic/MockedStatic，不要通过修改项目依赖规避。",
+                        -1, -1, "", true)));
+                return result;
+            }
             return compile(environment, generatedFile, code, result);
         } catch (Exception ex) {
             result.setStatus(ValidationStatus.ENVIRONMENT_ERROR);
             result.setDiagnostics(Collections.singletonList(new CompileDiagnostic(
-                    "ERROR", "VALIDATOR_FAILURE", safeMessage(ex), -1, -1, "", false)));
+                    "ERROR", "VALIDATOR_FAILURE", safeMessage(ex), -1, -1, "", false,
+                    "ENVIRONMENT", "")));
             return result;
         } finally {
             result.setDurationMillis(System.currentTimeMillis() - started);
@@ -106,74 +123,21 @@ public class ProjectCompileVerifier implements TestCodeValidator {
 
     private CompilationEnvironment readEnvironment(Project project, PsiFile sourceFile) {
         CompilationEnvironment environment = new CompilationEnvironment();
-        if (project == null || sourceFile == null || sourceFile.getVirtualFile() == null) {
-            environment.error("PROJECT_CONTEXT_MISSING", "缺少项目或源文件上下文，无法执行编译验证。");
-            return environment;
-        }
-        if (DumbService.isDumb(project)) {
-            environment.error("INDEX_NOT_READY", "IntelliJ 项目索引尚未完成，请等待索引完成后重新校验。");
-            return environment;
-        }
-
-        return ApplicationManager.getApplication().runReadAction((Computable<CompilationEnvironment>) () -> {
-            Module module = ProjectFileIndex.getInstance(project).getModuleForFile(sourceFile.getVirtualFile());
-            if (module == null) {
-                environment.error("MODULE_NOT_FOUND", "源文件不属于任何已导入的 IntelliJ 模块。");
-                return environment;
-            }
-            environment.project = project;
-            environment.module = module;
-            environment.sourceFileName = sourceFile.getName();
-            environment.sourceText = sourceFile.getText();
-            environment.sourcePackage = sourceFile instanceof PsiJavaFile
-                    ? ((PsiJavaFile) sourceFile).getPackageName() : "";
-            LanguageLevel languageLevel = PsiUtil.getLanguageLevel(sourceFile);
-            environment.languageFeature = languageLevel.toJavaVersion().feature;
-            environment.previewLanguage = languageLevel.isPreview();
-            List<Module> classpathModules = testClasspathModules(project, module);
-            Sdk sdk = ModuleRootManager.getInstance(module).getSdk();
-            if (sdk == null) {
-                environment.error("SDK_NOT_CONFIGURED", "当前模块未配置 Java SDK。");
-                return environment;
-            }
-
-            JavaPsiFacade facade = JavaPsiFacade.getInstance(project);
-            if (!hasClass(facade, classpathModules, "org.junit.jupiter.api.Test")) {
-                environment.error("JUNIT5_NOT_FOUND", "当前模块测试 classpath 中未找到 JUnit 5。");
-            }
-            if (!hasClass(facade, classpathModules, "org.mockito.Mockito")) {
-                environment.error("MOCKITO_NOT_FOUND", "当前模块测试 classpath 中未找到 Mockito。");
-            }
-            if (!environment.diagnostics.isEmpty()) {
-                return environment;
-            }
-
-            ModuleRootManager roots = ModuleRootManager.getInstance(module);
-            for (Module classpathModule : classpathModules) {
-                ModuleRootManager classpathRoots = ModuleRootManager.getInstance(classpathModule);
-                addRoots(environment.classpath,
-                        classpathRoots.orderEntries().recursively().classes().getRoots());
-                addRoots(environment.sourcePath, classpathRoots.getSourceRoots(true));
-                CompilerModuleExtension compilerExtension = CompilerModuleExtension.getInstance(classpathModule);
-                if (compilerExtension != null) {
-                    addRoot(environment.classpath, compilerExtension.getCompilerOutputPath());
-                    addRoot(environment.classpath, compilerExtension.getCompilerOutputPathForTests());
-                }
-            }
-            addRoots(environment.platformClasspath, sdk.getRootProvider().getFiles(OrderRootType.CLASSES));
-            for (VirtualFile sourceRoot : roots.getSourceRoots(false)) {
-                if (sourceRoot.findChild("module-info.java") != null) {
-                    environment.jpms = true;
-                    break;
-                }
-            }
-
-            if (environment.jpms) {
-                environment.modulePath.addAll(environment.classpath);
-                environment.classpath.clear();
-            }
-            return environment;
-        });
+        ProjectTestEnvironment resolved = environmentResolver.resolve(project, sourceFile);
+        environment.project = resolved.getProject();
+        environment.module = resolved.getModule();
+        environment.sourceFileName = resolved.getSourceFileName();
+        environment.sourceText = resolved.getSourceText();
+        environment.sourcePackage = resolved.getSourcePackage();
+        environment.languageFeature = resolved.getLanguageFeature();
+        environment.previewLanguage = resolved.isPreviewLanguage();
+        environment.jpms = resolved.isJpms();
+        environment.platformClasspath.addAll(resolved.getPlatformClasspath());
+        environment.classpath.addAll(resolved.getClasspath());
+        environment.modulePath.addAll(resolved.getModulePath());
+        environment.sourcePath.addAll(resolved.getSourcePath());
+        environment.diagnostics.addAll(resolved.getDiagnostics());
+        return environment;
     }
 
     /**
@@ -267,8 +231,14 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                     || generatedFile.getFileName().isBlank() ? "GeneratedTest.java" : generatedFile.getFileName();
             Path source = packageDir.resolve(fileName);
             Files.writeString(source, code, StandardCharsets.UTF_8);
-            materializeCurrentSource(environment, sourceDir, source);
+            Path targetSource = materializeCurrentSource(environment, sourceDir, source);
             environment.sourcePath.add(sourceDir.toFile());
+
+            List<File> compilationSources = new ArrayList<>();
+            if (targetSource != null && !targetSource.equals(source)) {
+                compilationSources.add(targetSource.toFile());
+            }
+            compilationSources.add(source.toFile());
 
             try {
                 CompilerManager.getInstance(environment.project).compileJavaCode(
@@ -278,7 +248,7 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                         Collections.emptyList(),
                         environment.modulePath,
                         environment.sourcePath,
-                        Collections.singletonList(source.toFile()),
+                        compilationSources,
                         outputDir.toFile());
                 result.setStatus(ValidationStatus.PASSED);
                 result.setDiagnostics(new ArrayList<>());
@@ -290,18 +260,13 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                         continue;
                     }
                     String text = message.getText() == null ? "" : message.getText();
-                    diagnostics.add(new CompileDiagnostic(
-                            "ERROR",
-                            diagnosticCode(text),
-                            sanitize(text),
-                            message.getLine(),
-                            message.getColumn(),
-                            sourceLine(code, message.getLine()),
-                            isRepairable(text)));
+                    diagnostics.add(compilerDiagnostic(
+                            message, text, code, environment.sourceText, source, targetSource));
                 }
                 if (diagnostics.isEmpty()) {
                     diagnostics.add(new CompileDiagnostic(
-                            "ERROR", "JAVA_COMPILE", sanitize(safeMessage(ex)), -1, -1, "", true));
+                            "ERROR", "JAVA_COMPILE", sanitize(safeMessage(ex)), -1, -1, "", false,
+                            "UNKNOWN", ""));
                 }
                 result.setDiagnostics(diagnostics);
                 result.setStatus(diagnostics.stream().anyMatch(diagnostic -> !diagnostic.isRepairable())
@@ -311,7 +276,8 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         } catch (IOException ex) {
             result.setStatus(ValidationStatus.ENVIRONMENT_ERROR);
             result.setDiagnostics(Collections.singletonList(new CompileDiagnostic(
-                    "ERROR", "TEMP_IO_FAILURE", safeMessage(ex), -1, -1, "", false)));
+                    "ERROR", "TEMP_IO_FAILURE", safeMessage(ex), -1, -1, "", false,
+                    "ENVIRONMENT", "")));
             return result;
         } finally {
             deleteRecursively(tempRoot);
@@ -375,12 +341,12 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         }
     }
 
-    private void materializeCurrentSource(CompilationEnvironment environment,
+    private Path materializeCurrentSource(CompilationEnvironment environment,
                                           Path sourceDir,
                                           Path candidateSource) throws IOException {
         if (environment.sourceText == null || environment.sourceText.isBlank()
                 || environment.sourceFileName == null || environment.sourceFileName.isBlank()) {
-            return;
+            return null;
         }
         Path packageDir = packageDirectory(sourceDir, environment.sourcePackage);
         Files.createDirectories(packageDir);
@@ -388,6 +354,53 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         if (!source.equals(candidateSource)) {
             Files.writeString(source, environment.sourceText, StandardCharsets.UTF_8);
         }
+        return source;
+    }
+
+    private CompileDiagnostic compilerDiagnostic(CompilationException.Message message,
+                                                 String text,
+                                                 String testCode,
+                                                 String targetCode,
+                                                 Path testSource,
+                                                 Path targetSource) {
+        String url = message.getUrl();
+        boolean targetFailure = sourceMatches(url, targetSource)
+                || (!sourceMatches(url, testSource) && mentionsFile(text, targetSource));
+        String origin = targetFailure ? "TARGET_SOURCE" : "TEST_SOURCE";
+        Path diagnosticSource = targetFailure ? targetSource : testSource;
+        String snippet = sourceLine(targetFailure ? targetCode : testCode, message.getLine());
+        return new CompileDiagnostic(
+                "ERROR",
+                diagnosticCode(text),
+                sanitize(text),
+                message.getLine(),
+                message.getColumn(),
+                snippet,
+                !targetFailure && isRepairable(text),
+                origin,
+                diagnosticSource == null ? "" : diagnosticSource.getFileName().toString());
+    }
+
+    private boolean sourceMatches(String url, Path source) {
+        if (url == null || url.isBlank() || source == null) {
+            return false;
+        }
+        Path expected = source.toAbsolutePath().normalize();
+        try {
+            if (url.startsWith("file:")) {
+                return Path.of(java.net.URI.create(url)).toAbsolutePath().normalize().equals(expected);
+            }
+        } catch (IllegalArgumentException ignored) {
+            // 部分编译器返回的 URL 不是严格 URI，继续使用规范化字符串兜底。
+        }
+        String normalizedUrl = url.replace('\\', '/');
+        String normalizedPath = expected.toString().replace('\\', '/');
+        return normalizedUrl.equals(normalizedPath) || normalizedUrl.endsWith(normalizedPath);
+    }
+
+    private boolean mentionsFile(String text, Path source) {
+        return source != null && source.getFileName() != null && text != null
+                && text.contains(source.getFileName().toString());
     }
 
     private List<String> compilerOptions(CompilationEnvironment environment) {
@@ -493,7 +506,8 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         private final List<CompileDiagnostic> diagnostics = new ArrayList<>();
 
         private void error(String code, String message) {
-            diagnostics.add(new CompileDiagnostic("ERROR", code, message, -1, -1, "", false));
+            diagnostics.add(new CompileDiagnostic(
+                    "ERROR", code, message, -1, -1, "", false, "ENVIRONMENT", ""));
         }
     }
 }

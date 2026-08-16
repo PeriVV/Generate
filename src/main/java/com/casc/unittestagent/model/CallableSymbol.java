@@ -17,6 +17,10 @@ public class CallableSymbol {
     private boolean varArgs;
     private boolean constructor;
     private boolean resolved = true;
+    /** 项目源码方法的受限源码片段；库方法保持为空。 */
+    private String sourceCode = "";
+    /** 是否是为构造测试 fixture 补充收集的 setter/adder/factory API。 */
+    private boolean fixtureMethod;
 
     public String getId() {
         return id;
@@ -97,4 +101,9 @@ public class CallableSymbol {
     public void setResolved(boolean resolved) {
         this.resolved = resolved;
     }
+
+    public String getSourceCode() { return sourceCode; }
+    public void setSourceCode(String sourceCode) { this.sourceCode = sourceCode == null ? "" : sourceCode; }
+    public boolean isFixtureMethod() { return fixtureMethod; }
+    public void setFixtureMethod(boolean fixtureMethod) { this.fixtureMethod = fixtureMethod; }
 }

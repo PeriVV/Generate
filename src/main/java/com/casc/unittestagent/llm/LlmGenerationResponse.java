@@ -13,6 +13,11 @@ public class LlmGenerationResponse {
     private String testCode;
     private List<String> warnings = new ArrayList<>();
     private String rawResponse;
+    private String diagnosisRootCauseCategory = "";
+    private List<String> diagnosisEvidence = new ArrayList<>();
+    private String oracleDecision = "";
+    private List<LlmCodeEdit> edits = new ArrayList<>();
+    private List<LlmMethodPatch> methodPatches = new ArrayList<>();
 
     public MockStrategy getMockStrategy() {
         return mockStrategy;
@@ -45,4 +50,22 @@ public class LlmGenerationResponse {
     public void setRawResponse(String rawResponse) {
         this.rawResponse = rawResponse;
     }
+
+    public String getDiagnosisRootCauseCategory() { return diagnosisRootCauseCategory; }
+    public void setDiagnosisRootCauseCategory(String value) {
+        diagnosisRootCauseCategory = value == null ? "" : value;
+    }
+    public List<String> getDiagnosisEvidence() { return diagnosisEvidence; }
+    public void setDiagnosisEvidence(List<String> value) {
+        diagnosisEvidence = value == null ? new ArrayList<>() : value;
+    }
+    public String getOracleDecision() { return oracleDecision; }
+    public void setOracleDecision(String value) { oracleDecision = value == null ? "" : value; }
+    public List<LlmCodeEdit> getEdits() { return edits; }
+    public void setEdits(List<LlmCodeEdit> value) { edits = value == null ? new ArrayList<>() : value; }
+    public List<LlmMethodPatch> getMethodPatches() { return methodPatches; }
+    public void setMethodPatches(List<LlmMethodPatch> value) {
+        methodPatches = value == null ? new ArrayList<>() : value;
+    }
+    public boolean hasMethodPatches() { return methodPatches != null && !methodPatches.isEmpty(); }
 }

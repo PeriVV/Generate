@@ -2,6 +2,8 @@ package com.casc.unittestagent.ui.step;
 
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.TestScenario;
+import com.casc.unittestagent.model.ClassGenerationResult;
+import com.casc.unittestagent.model.MethodGenerationItem;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
@@ -29,6 +31,14 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
     public ScenarioStepPanel(GenerationResult result, Runnable onRestore) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
+        if (result instanceof ClassGenerationResult) {
+            DefaultTableModel classModel = classModel((ClassGenerationResult) result);
+            JBTable classTable = new JBTable(classModel);
+            classTable.setRowHeight(26);
+            classTable.setAutoResizeMode(JBTable.AUTO_RESIZE_ALL_COLUMNS);
+            add(new UnitMindSectionPanel("整类测试场景", new JScrollPane(classTable)), BorderLayout.CENTER);
+            return;
+        }
         DefaultTableModel model = model(result);
         JBTable table = new JBTable(model);
         table.setRowHeight(26);
@@ -38,6 +48,24 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         add(new UnitMindSectionPanel("测试场景", scrollPane), BorderLayout.CENTER);
         add(toolbar(model, table, onRestore), BorderLayout.SOUTH);
+    }
+
+    private DefaultTableModel classModel(ClassGenerationResult result) {
+        DefaultTableModel model = new DefaultTableModel(new String[]{"方法签名", "生成", "场景类型", "场景名称", "触发条件", "期望结果", "测试方法名"}, 0) {
+            @Override public Class<?> getColumnClass(int columnIndex) { return columnIndex == 1 ? Boolean.class : String.class; }
+            @Override public boolean isCellEditable(int row, int column) { return false; }
+        };
+        for (MethodGenerationItem item : result.getMethodItems()) {
+            if (item.getResult() == null || item.getResult().getScenarios().isEmpty()) {
+                model.addRow(new Object[]{item.getSignature(), false, "未规划", "-", "-", "-", "-"});
+                continue;
+            }
+            for (TestScenario scenario : item.getResult().getScenarios()) {
+                model.addRow(new Object[]{item.getSignature(), isExecutable(scenario), scenario.getType(),
+                        scenario.getDisplayNameCn(), triggerText(scenario), expectedText(scenario), scenario.getMethodNameEn()});
+            }
+        }
+        return model;
     }
 
     /**

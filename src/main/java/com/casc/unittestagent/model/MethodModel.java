@@ -9,6 +9,12 @@ import java.util.List;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class MethodModel {
+    /** 在类内稳定标识方法，参数使用擦除后类型以区分重载。 */
+    private String methodId;
+    /** 完整的可展示方法签名。 */
+    private String signature;
+    /** 被测方法是否为 static。 */
+    private boolean staticMethod;
     /** 源码语言标识，当前用于标明分析结果来自 Java。 */
     private String language;
     /** 生成测试类需要复用的包名，保证测试文件与被测类处于同一包上下文。 */
@@ -29,6 +35,9 @@ public class MethodModel {
     private List<String> imports = new ArrayList<>();
     /** 被测方法体文本，PSI 降级时用于保留当前方法上下文，避免整类解析失败后丢失关键信息。 */
     private String methodBodyText;
+    /** 被测方法声明在源文件中的起止行，覆盖率只聚合此范围。 */
+    private int sourceStartLine = -1;
+    private int sourceEndLine = -1;
     /** 被测方法参数列表，是测试输入值生成和方法调用参数拼装的基础。 */
     private List<ParameterModel> parameters = new ArrayList<>();
     /** 从条件表达式提取出的参数约束，用于解释测试数据和分支覆盖关系。 */
@@ -43,6 +52,30 @@ public class MethodModel {
     private List<CallContextModel> callContexts = new ArrayList<>();
     /** 当前类声明的方法名列表，用于区分本类内部调用和普通函数调用。 */
     private List<String> declaredMethodNames = new ArrayList<>();
+
+    public String getMethodId() {
+        return methodId;
+    }
+
+    public void setMethodId(String methodId) {
+        this.methodId = methodId;
+    }
+
+    public String getSignature() {
+        return signature;
+    }
+
+    public void setSignature(String signature) {
+        this.signature = signature;
+    }
+
+    public boolean isStaticMethod() {
+        return staticMethod;
+    }
+
+    public void setStaticMethod(boolean staticMethod) {
+        this.staticMethod = staticMethod;
+    }
 
     /**
      * 读取源码语言标识，当前用于标明分析结果来自 Java。
@@ -276,6 +309,22 @@ public class MethodModel {
      */
     public void setMethodBodyText(String methodBodyText) {
         this.methodBodyText = methodBodyText;
+    }
+
+    public int getSourceStartLine() {
+        return sourceStartLine;
+    }
+
+    public void setSourceStartLine(int sourceStartLine) {
+        this.sourceStartLine = sourceStartLine;
+    }
+
+    public int getSourceEndLine() {
+        return sourceEndLine;
+    }
+
+    public void setSourceEndLine(int sourceEndLine) {
+        this.sourceEndLine = sourceEndLine;
     }
 
     /**

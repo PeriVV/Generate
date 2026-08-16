@@ -22,6 +22,11 @@ public interface LlmClient {
         return generateUnitTest(request);
     }
 
+    /** 根据真实运行失败或 JaCoCo 缺口改进完整测试类。 */
+    default LlmGenerationResponse improveCoverage(LlmGenerationRequest request) throws Exception {
+        return generateUnitTest(request);
+    }
+
     /**
      * 仅生成 Mock 策略候选。
      */

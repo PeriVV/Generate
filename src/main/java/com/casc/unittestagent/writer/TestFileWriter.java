@@ -67,6 +67,16 @@ public class TestFileWriter {
                                  String editedContent,
                                  TestWriteMode requestedMode,
                                  String testedMethodName) {
+        return prepare(project, sourceFile, generatedTestFile, editedContent, requestedMode,
+                GenerationTarget.method(testedMethodName));
+    }
+
+    public PreparedWrite prepare(Project project,
+                                 PsiFile sourceFile,
+                                 GeneratedTestFile generatedTestFile,
+                                 String editedContent,
+                                 TestWriteMode requestedMode,
+                                 GenerationTarget generationTarget) {
         if (sourceFile == null || sourceFile.getVirtualFile() == null) {
             throw new IllegalStateException("源文件不可用。");
         }
@@ -82,12 +92,13 @@ public class TestFileWriter {
         if (content == null || content.trim().isEmpty()) {
             throw new IllegalStateException("测试代码为空，不能写入测试文件。");
         }
-        WriteDecision decision = decideWriteMode(project, targetFile, content, requestedMode, testedMethodName);
+        GenerationTarget effectiveTarget = generationTarget == null ? GenerationTarget.method("未知方法") : generationTarget;
+        WriteDecision decision = decideWriteMode(project, targetFile, content, requestedMode, effectiveTarget);
         if (decision.mode == TestWriteMode.CANCEL) {
             return PreparedWrite.cancelled(targetFile);
         }
         try {
-            String finalContent = contentForWrite(targetFile, content, decision, testedMethodName);
+            String finalContent = contentForWrite(targetFile, content, decision, effectiveTarget);
             return new PreparedWrite(targetFile, finalContent, decision.mode, false);
         } catch (IOException ex) {
             throw new IllegalStateException("准备最终测试文件失败：" + ex.getMessage(), ex);
@@ -156,7 +167,7 @@ public class TestFileWriter {
                                           File targetFile,
                                           String generatedContent,
                                           TestWriteMode requestedMode,
-                                          String testedMethodName) {
+                                          GenerationTarget generationTarget) {
         if (!targetFile.exists()) {
             return new WriteDecision(TestWriteMode.CREATE_NEW, true);
         }
@@ -168,7 +179,7 @@ public class TestFileWriter {
         }
         boolean hasRegion = false;
         try {
-            hasRegion = merger.hasRegionForMethod(Files.readString(targetFile.toPath(), StandardCharsets.UTF_8), testedMethodName);
+            hasRegion = merger.hasRegion(Files.readString(targetFile.toPath(), StandardCharsets.UTF_8), generationTarget);
         } catch (IOException ignored) {
             hasRegion = false;
         }
@@ -183,7 +194,7 @@ public class TestFileWriter {
      * 根据写入模式生成最终落盘内容。
      * 追加模式会走测试类合并器，覆盖和新建模式直接使用当前编辑器内容。
      */
-    private String contentForWrite(File targetFile, String generatedContent, WriteDecision decision, String testedMethodName) throws IOException {
+    private String contentForWrite(File targetFile, String generatedContent, WriteDecision decision, GenerationTarget generationTarget) throws IOException {
         if (decision.mode == TestWriteMode.CREATE_NEW || decision.mode == TestWriteMode.OVERWRITE_EXISTING) {
             return generatedContent;
         }
@@ -191,7 +202,7 @@ public class TestFileWriter {
             MergeOptions options = new MergeOptions();
             options.setReplaceExistingRegionForSameMethod(decision.replaceExistingRegion);
             String existing = Files.readString(targetFile.toPath(), StandardCharsets.UTF_8);
-            return merger.merge(existing, generatedContent, testedMethodName, options);
+            return merger.merge(existing, generatedContent, generationTarget, options);
         }
         return generatedContent;
     }

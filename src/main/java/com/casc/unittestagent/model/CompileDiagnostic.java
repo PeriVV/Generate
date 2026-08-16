@@ -11,11 +11,26 @@ public class CompileDiagnostic {
     private int column = -1;
     private String snippet = "";
     private boolean repairable = true;
+    /** TEST_SOURCE / TARGET_SOURCE / ENVIRONMENT / UNKNOWN. */
+    private String sourceOrigin = "TEST_SOURCE";
+    private String sourcePath = "";
 
     public CompileDiagnostic() {
     }
 
     public CompileDiagnostic(String severity, String code, String message, int line, int column, String snippet, boolean repairable) {
+        this(severity, code, message, line, column, snippet, repairable, "TEST_SOURCE", "");
+    }
+
+    public CompileDiagnostic(String severity,
+                             String code,
+                             String message,
+                             int line,
+                             int column,
+                             String snippet,
+                             boolean repairable,
+                             String sourceOrigin,
+                             String sourcePath) {
         this.severity = severity;
         this.code = code;
         this.message = message;
@@ -23,6 +38,8 @@ public class CompileDiagnostic {
         this.column = column;
         this.snippet = snippet;
         this.repairable = repairable;
+        this.sourceOrigin = sourceOrigin == null || sourceOrigin.isBlank() ? "UNKNOWN" : sourceOrigin;
+        this.sourcePath = sourcePath == null ? "" : sourcePath;
     }
 
     public String getSeverity() {
@@ -79,6 +96,22 @@ public class CompileDiagnostic {
 
     public void setRepairable(boolean repairable) {
         this.repairable = repairable;
+    }
+
+    public String getSourceOrigin() {
+        return sourceOrigin;
+    }
+
+    public void setSourceOrigin(String sourceOrigin) {
+        this.sourceOrigin = sourceOrigin == null || sourceOrigin.isBlank() ? "UNKNOWN" : sourceOrigin;
+    }
+
+    public String getSourcePath() {
+        return sourcePath;
+    }
+
+    public void setSourcePath(String sourcePath) {
+        this.sourcePath = sourcePath == null ? "" : sourcePath;
     }
 
     @Override

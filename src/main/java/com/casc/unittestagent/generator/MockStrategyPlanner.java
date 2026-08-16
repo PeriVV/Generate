@@ -59,12 +59,16 @@ public class MockStrategyPlanner {
             String fieldType = dependency.getFieldType();
             String fieldName = dependency.getFieldName();
             if (looksLikeDtoType(fieldType) || looksLikePathType(fieldType)) {
-                addItem(strategyItems, itemKeys, new MockStrategyItem(false,
+                boolean localMock = dependency.isMethodParameter()
+                        && dependency.getCallExpressions() != null
+                        && !dependency.getCallExpressions().isEmpty()
+                        && !looksLikePathType(fieldType);
+                addItem(strategyItems, itemKeys, new MockStrategyItem(localMock,
                         dependency.isMethodParameter() ? "方法参数数据对象" : "字段数据对象",
                         simpleType(fieldType),
                         "-",
                         fieldName,
-                        "构造测试对象/局部mock/@TempDir",
+                        localMock ? "localMock" : "构造测试对象/局部mock/@TempDir",
                         dtoRemark(fieldType)));
                 continue;
             }
@@ -112,12 +116,12 @@ public class MockStrategyPlanner {
             while (matcher.find()) {
                 hasMethodCall = true;
                 String method = matcher.group(1) + "()";
-                addItem(items, keys, new MockStrategyItem(false,
+                addItem(items, keys, new MockStrategyItem(true,
                         "方法参数数据对象",
                         simpleType(parameter.getType()),
                         method,
                         parameter.getName() + "." + method,
-                        "优先构造；必要时局部 mock",
+                        "localMock",
                         dtoRemark(parameter.getType())));
             }
             if (!hasMethodCall) {
@@ -144,13 +148,13 @@ public class MockStrategyPlanner {
             if (isIgnoredStaticOwner(className)) {
                 continue;
             }
-            addItem(items, keys, new MockStrategyItem(true,
+            addItem(items, keys, new MockStrategyItem(false,
                     "静态方法依赖",
                     className,
                     methodName,
                     className + "." + methodName,
-                    "mockStatic",
-                    "需要 mockito-inline；如果项目没有该依赖，则生成 TODO 注释。"));
+                    "默认真实调用；项目支持时可手动启用 mockStatic",
+                    "静态 Mock 默认关闭。仅当静态调用存在不可控副作用，且项目已启用 Mockito inline MockMaker 时才使用。"));
         }
     }
 

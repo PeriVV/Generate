@@ -4,7 +4,11 @@ import com.casc.unittestagent.model.ConstraintModel;
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
+import com.casc.unittestagent.model.ClassGenerationResult;
+import com.casc.unittestagent.model.ClassModel;
+import com.casc.unittestagent.model.SkippedMethodModel;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
+import com.casc.unittestagent.ui.component.UnitMindErrorPanel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -27,12 +31,57 @@ public class StaticAnalysisStepPanel extends JBPanel<StaticAnalysisStepPanel> {
     public StaticAnalysisStepPanel(GenerationResult result, String sourcePath) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
+        if (result instanceof ClassGenerationResult) {
+            ClassGenerationResult classResult = (ClassGenerationResult) result;
+            ClassModel classModel = classResult.getClassModel();
+            if (classModel == null) {
+                String reason = classResult.getWarnings().isEmpty()
+                        ? "未能定位可分析的顶层 Java 具体类。"
+                        : String.join("\n", classResult.getWarnings());
+                add(new UnitMindErrorPanel("整类静态分析未通过", reason), BorderLayout.CENTER);
+                return;
+            }
+            JBPanel<?> body = new JBPanel<>(new GridLayout(0, 1, 0, 8));
+            body.add(new UnitMindSectionPanel("类信息", table(classInfoModel(classModel, sourcePath), sourcePath)));
+            body.add(new UnitMindSectionPanel("方法范围", table(classMethodModel(classModel), null)));
+            add(new JScrollPane(body), BorderLayout.CENTER);
+            return;
+        }
         MethodModel method = result == null ? null : result.getMethodModel();
         JBPanel<?> body = new JBPanel<>(new GridLayout(0, 1, 0, 8));
         body.add(new UnitMindSectionPanel("方法信息", table(methodInfoModel(method, sourcePath), sourcePath)));
         body.add(new UnitMindSectionPanel("参数信息", table(parameterInfoModel(method), null)));
         body.add(new UnitMindSectionPanel("参数约束", table(constraintModel(method), null)));
         add(new JScrollPane(body), BorderLayout.CENTER);
+    }
+
+    private DefaultTableModel classInfoModel(ClassModel model, String sourcePath) {
+        DefaultTableModel table = readOnlyModel(new String[]{"项目", "内容"});
+        if (model == null) {
+            table.addRow(new Object[]{"状态", "尚未分析当前类。"});
+            return table;
+        }
+        table.addRow(new Object[]{"被测类", model.getQualifiedName()});
+        table.addRow(new Object[]{"纳入方法", model.getMethods().size()});
+        table.addRow(new Object[]{"跳过方法", model.getSkippedMethods().size()});
+        table.addRow(new Object[]{"源码范围", model.getSourceStartLine() + " - " + model.getSourceEndLine()});
+        table.addRow(new Object[]{"源码位置", empty(sourcePath)});
+        return table;
+    }
+
+    private DefaultTableModel classMethodModel(ClassModel model) {
+        DefaultTableModel table = readOnlyModel(new String[]{"是否生成", "方法签名", "类型", "原因/说明"});
+        if (model == null) {
+            table.addRow(new Object[]{false, "-", "-", "请先分析当前类。"});
+            return table;
+        }
+        for (MethodModel method : model.getMethods()) {
+            table.addRow(new Object[]{true, method.getSignature(), method.isStaticMethod() ? "static" : "instance", "符合整类生成范围"});
+        }
+        for (SkippedMethodModel skipped : model.getSkippedMethods()) {
+            table.addRow(new Object[]{false, skipped.getSignature(), "skipped", skipped.getReason()});
+        }
+        return table;
     }
 
     private DefaultTableModel methodInfoModel(MethodModel method, String sourcePath) {

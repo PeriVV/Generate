@@ -11,6 +11,7 @@ import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.Node;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -42,7 +43,7 @@ public class ConstraintExtractor {
         methodDeclaration.getParameters().forEach(parameter -> parameterNames.add(parameter.getNameAsString()));
 
         for (IfStmt ifStmt : methodDeclaration.findAll(IfStmt.class)) {
-            boolean throwsInThen = !ifStmt.getThenStmt().findAll(ThrowStmt.class).isEmpty();
+            boolean throwsInThen = firstDirectThrow(ifStmt.getThenStmt()) != null;
             String source = throwsInThen ? "if-throw" : "if";
             for (BinaryExpr binaryExpr : ifStmt.getCondition().findAll(BinaryExpr.class)) {
                 ConstraintModel constraint = fromBinaryExpr(binaryExpr, parameterNames, source, throwsInThen);
@@ -71,17 +72,30 @@ public class ConstraintExtractor {
         }
 
         for (IfStmt ifStmt : methodDeclaration.findAll(IfStmt.class)) {
-            List<ThrowStmt> throwStatements = ifStmt.getThenStmt().findAll(ThrowStmt.class);
-            if (throwStatements.isEmpty()) {
-                continue;
-            }
-
+            ThrowStmt directThrow = firstDirectThrow(ifStmt.getThenStmt());
             BranchModel branch = new BranchModel();
+            int startLine = ifStmt.getBegin().map(position -> position.line).orElse(-1);
+            int endLine = ifStmt.getEnd().map(position -> position.line).orElse(startLine);
+            branch.setBranchId("IF:" + startLine + ":" + Integer.toHexString(ifStmt.getCondition().toString().hashCode()));
+            branch.setSourceStartLine(startLine);
+            branch.setSourceEndLine(endLine);
             branch.setCondition(ifStmt.getCondition().toString());
             branch.setSafeCondition(negate(ifStmt.getCondition()));
-            branch.setAction("throw");
-            branch.setExceptionType(extractExceptionType(throwStatements.get(0)));
-            branch.setPreconditions(precedingThrowGuardSafeConditions(methodDeclaration, ifStmt));
+            if (directThrow != null) {
+                branch.setAction("throw");
+                branch.setExceptionType(extractExceptionType(directThrow));
+                List<String> preconditions = enclosingPreconditions(ifStmt);
+                preconditions.addAll(precedingThrowGuardSafeConditions(methodDeclaration, ifStmt));
+                branch.setPreconditions(preconditions);
+            } else if (hasDirectReturn(ifStmt.getThenStmt())) {
+                branch.setAction("return");
+                branch.setExceptionType("");
+                branch.setPreconditions(enclosingPreconditions(ifStmt));
+            } else {
+                branch.setAction("conditional");
+                branch.setExceptionType("");
+                branch.setPreconditions(enclosingPreconditions(ifStmt));
+            }
             branches.add(branch);
         }
 
@@ -104,6 +118,11 @@ public class ConstraintExtractor {
         for (SwitchEntry entry : entries) {
             BranchModel branch = new BranchModel();
             String condition = switchCondition(selector, entry);
+            int startLine = entry.getBegin().map(position -> position.line).orElse(-1);
+            int endLine = entry.getEnd().map(position -> position.line).orElse(startLine);
+            branch.setBranchId("SWITCH:" + startLine + ":" + Integer.toHexString(condition.hashCode()));
+            branch.setSourceStartLine(startLine);
+            branch.setSourceEndLine(endLine);
             branch.setCondition(condition);
             branch.setSafeCondition(condition);
             ThrowStmt throwStmt = firstThrowStatement(entry);
@@ -116,6 +135,25 @@ public class ConstraintExtractor {
             }
             branches.add(branch);
         }
+    }
+
+    /** 计算嵌套 if 带来的控制依赖；else 子树使用父条件的反向条件。 */
+    private List<String> enclosingPreconditions(IfStmt target) {
+        List<String> result = new ArrayList<>();
+        Node child = target;
+        Node current = target.getParentNode().orElse(null);
+        while (current != null) {
+            if (current instanceof IfStmt parent) {
+                Node nestedNode = child;
+                boolean inElse = parent.getElseStmt()
+                    .map(node -> node == nestedNode || node.isAncestorOf(nestedNode))
+                    .orElse(false);
+                result.add(0, inElse ? negate(parent.getCondition()) : parent.getCondition().toString());
+            }
+            child = current;
+            current = current.getParentNode().orElse(null);
+        }
+        return result;
     }
 
     /**
@@ -135,7 +173,7 @@ public class ConstraintExtractor {
             if (ifStmt.getBegin().get().line >= targetLine) {
                 continue;
             }
-            if (!ifStmt.getThenStmt().findAll(ThrowStmt.class).isEmpty()) {
+            if (firstDirectThrow(ifStmt.getThenStmt()) != null) {
                 preconditions.add(negate(ifStmt.getCondition()));
             }
         }
@@ -156,20 +194,32 @@ public class ConstraintExtractor {
     }
 
     /**
-     * 查找 switch 分支中的首个 throw。
-     * JavaParser 会把箭头分支和块分支都挂在 SwitchEntry 下，因此使用 findAll 覆盖两种写法。
+     * 查找 switch 分支中的直接 throw，避免把嵌套 if 的条件 throw 错当成整个 case 的动作。
      */
     private ThrowStmt firstThrowStatement(SwitchEntry entry) {
-        List<ThrowStmt> throwStatements = entry.findAll(ThrowStmt.class);
-        if (!throwStatements.isEmpty()) {
-            return throwStatements.get(0);
-        }
         for (Statement statement : entry.getStatements()) {
-            if (statement.isThrowStmt()) {
-                return statement.asThrowStmt();
-            }
+            ThrowStmt direct = firstDirectThrow(statement);
+            if (direct != null) return direct;
         }
         return null;
+    }
+
+    /** 只沿当前 block 的顶层语句查找，明确排除嵌套控制结构里的 throw。 */
+    private ThrowStmt firstDirectThrow(Statement statement) {
+        if (statement == null) return null;
+        if (statement.isThrowStmt()) return statement.asThrowStmt();
+        if (!statement.isBlockStmt()) return null;
+        for (Statement nested : statement.asBlockStmt().getStatements()) {
+            if (nested.isThrowStmt()) return nested.asThrowStmt();
+        }
+        return null;
+    }
+
+    private boolean hasDirectReturn(Statement statement) {
+        if (statement == null) return false;
+        if (statement.isReturnStmt()) return true;
+        if (!statement.isBlockStmt()) return false;
+        return statement.asBlockStmt().getStatements().stream().anyMatch(Statement::isReturnStmt);
     }
 
     /**

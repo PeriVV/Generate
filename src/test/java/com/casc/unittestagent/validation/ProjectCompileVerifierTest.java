@@ -1,6 +1,7 @@
 package com.casc.unittestagent.validation;
 
 import com.casc.unittestagent.model.GeneratedTestFile;
+import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.intellij.openapi.projectRoots.JavaSdk;
@@ -133,7 +134,26 @@ public class ProjectCompileVerifierTest extends LightJavaCodeInsightFixtureTestC
                 "INACCESSIBLE_MEMBER");
         assertDiagnostic(source,
                 "class SubjectTest { void test() { new Subject(\"x\"); Mockito.when(\"x\").thenReturn(1); } }",
-                "INCOMPATIBLE_TYPES");
+                "MOCKITO_WHEN_WITHOUT_INVOCATION");
+    }
+
+    public void testTargetSourceFailureIsNotReportedAsRepairableTestFailure() {
+        addFrameworkStubs();
+        PsiFile source = myFixture.configureByText(
+                "Subject.java",
+                "package sample; public class Subject { MissingProjectType value; }");
+
+        ValidationResult result = new ProjectCompileVerifier().validate(
+                getProject(), source, generatedFile(),
+                "package sample; class SubjectTest { Subject value = new Subject(); }");
+
+        assertEquals(result.getDiagnostics().toString(), ValidationStatus.ENVIRONMENT_ERROR, result.getStatus());
+        CompileDiagnostic diagnostic = result.getDiagnostics().stream()
+                .filter(item -> "TARGET_SOURCE".equals(item.getSourceOrigin()))
+                .findFirst().orElse(null);
+        assertNotNull(result.getDiagnostics().toString(), diagnostic);
+        assertFalse(diagnostic.isRepairable());
+        assertTrue(diagnostic.getSnippet().contains("MissingProjectType"));
     }
 
     private void assertDiagnostic(PsiFile source, String classBody, String expectedCode) {

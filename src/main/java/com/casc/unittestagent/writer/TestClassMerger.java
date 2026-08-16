@@ -1,10 +1,20 @@
 package com.casc.unittestagent.writer;
 
+import com.casc.unittestagent.model.GenerationScope;
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,6 +43,13 @@ public class TestClassMerger {
                         String generatedTestCode,
                         String testedMethodName,
                         MergeOptions options) {
+        return merge(existingTestCode, generatedTestCode, GenerationTarget.method(testedMethodName), options);
+    }
+
+    public String merge(String existingTestCode,
+                        String generatedTestCode,
+                        GenerationTarget generationTarget,
+                        MergeOptions options) {
         if (existingTestCode == null || existingTestCode.isBlank()) {
             return generatedTestCode;
         }
@@ -40,8 +57,13 @@ public class TestClassMerger {
         String existing = normalizeNewlines(existingTestCode);
         String generated = normalizeNewlines(generatedTestCode);
 
+        String regionLabel = generationTarget == null ? "未知方法" : generationTarget.regionLabel();
         if (effectiveOptions.isReplaceExistingRegionForSameMethod()) {
-            existing = removeExistingRegion(existing, testedMethodName);
+            existing = removeExistingRegion(existing, regionLabel);
+        }
+        if (generationTarget != null && generationTarget.getScope() == GenerationScope.CLASS) {
+            validateClassMergeConflicts(existing, generated);
+            existing = mergeClassAnnotations(existing, generated);
         }
 
         List<String> generatedFieldBlocks = extractMockFieldBlocks(generated);
@@ -51,7 +73,7 @@ public class TestClassMerger {
         List<String> newFields = effectiveOptions.isMergeMockFields()
                 ? filterNewMockFields(existing, generatedFieldBlocks)
                 : generatedFieldBlocks;
-        String region = buildRegion(testedMethodName, newFields, generatedMembers);
+        String region = buildRegion(regionLabel, newFields, generatedMembers);
         String merged = insertBeforeLastBrace(existing, region);
         return effectiveOptions.isMergeImports() ? mergeImports(merged, existing, generated) : merged;
     }
@@ -68,6 +90,122 @@ public class TestClassMerger {
             return false;
         }
         return existingTestCode.contains("// region UnitMind generated tests for " + testedMethodName);
+    }
+
+    public boolean hasRegion(String existingTestCode, GenerationTarget target) {
+        return target != null && hasRegionForMethod(existingTestCode, target.regionLabel());
+    }
+
+    /** 类级 region 必须保护人工成员；对无法安全自动化解决的冲突显式阻止默认合并。 */
+    private void validateClassMergeConflicts(String existingCode, String generatedCode) {
+        try {
+            CompilationUnit existingUnit = StaticJavaParser.parse(existingCode);
+            CompilationUnit generatedUnit = StaticJavaParser.parse(generatedCode);
+            validateImportConflicts(existingUnit, generatedUnit);
+            ClassOrInterfaceDeclaration existingClass = existingUnit.findFirst(ClassOrInterfaceDeclaration.class)
+                    .orElseThrow(() -> new IllegalStateException("已有测试文件中未找到测试类。"));
+            ClassOrInterfaceDeclaration generatedClass = generatedUnit.findFirst(ClassOrInterfaceDeclaration.class)
+                    .orElseThrow(() -> new IllegalStateException("生成内容中未找到测试类。"));
+            Map<String, FieldDeclaration> existingFields = fieldsByName(existingClass);
+            for (FieldDeclaration generatedField : generatedClass.getFields()) {
+                generatedField.getVariables().forEach(variable -> {
+                    FieldDeclaration existingField = existingFields.get(variable.getNameAsString());
+                    if (existingField == null) return;
+                    boolean compatibleMock = mockField(existingField) && mockField(generatedField)
+                            && existingField.getVariable(0).getType().asString().equals(variable.getType().asString());
+                    if (!compatibleMock) {
+                        throw new IllegalStateException("整类生成成员与人工字段冲突：" + variable.getNameAsString()
+                                + "。请选择覆盖整个测试类，或手工处理后再追加。");
+                    }
+                });
+            }
+            Set<String> existingMethods = new LinkedHashSet<>();
+            existingClass.getMethods().forEach(method -> existingMethods.add(methodSignature(method)));
+            for (MethodDeclaration method : generatedClass.getMethods()) {
+                if (!existingMethods.contains(methodSignature(method))) continue;
+                throw new IllegalStateException("整类生成方法与人工方法签名冲突：" + methodSignature(method)
+                        + "。请选择覆盖整个测试类，或手工处理后再追加。");
+            }
+        } catch (IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalStateException("无法安全分析整类合并冲突：" + ex.getMessage(), ex);
+        }
+    }
+
+    /** 类模式追加时，把 MockitoExtension 等类级 fixture 注解合并到人工测试类。 */
+    private String mergeClassAnnotations(String existingCode, String generatedCode) {
+        CompilationUnit existingUnit = StaticJavaParser.parse(existingCode);
+        CompilationUnit generatedUnit = StaticJavaParser.parse(generatedCode);
+        ClassOrInterfaceDeclaration existingClass = existingUnit.findFirst(ClassOrInterfaceDeclaration.class)
+                .orElseThrow(() -> new IllegalStateException("已有测试文件中未找到测试类。"));
+        ClassOrInterfaceDeclaration generatedClass = generatedUnit.findFirst(ClassOrInterfaceDeclaration.class)
+                .orElseThrow(() -> new IllegalStateException("生成内容中未找到测试类。"));
+        Set<String> existingAnnotations = new LinkedHashSet<>();
+        existingClass.getAnnotations().forEach(annotation -> existingAnnotations.add(normalizeAnnotation(annotation.toString())));
+        List<String> missing = new ArrayList<>();
+        generatedClass.getAnnotations().forEach(annotation -> {
+            if (!existingAnnotations.contains(normalizeAnnotation(annotation.toString()))) {
+                missing.add(annotation.toString());
+            }
+        });
+        if (missing.isEmpty()) return existingCode;
+
+        String className = Pattern.quote(existingClass.getNameAsString());
+        Pattern declaration = Pattern.compile("(?m)^(\\s*)(?:(?:public|protected|private|abstract|static|final|sealed|non-sealed)\\s+)*class\\s+"
+                + className + "\\b");
+        Matcher matcher = declaration.matcher(existingCode);
+        if (!matcher.find()) {
+            throw new IllegalStateException("无法定位已有测试类声明，已阻止类级注解合并。");
+        }
+        String indent = matcher.group(1);
+        StringBuilder annotations = new StringBuilder();
+        for (String annotation : missing) annotations.append(indent).append(annotation).append('\n');
+        return existingCode.substring(0, matcher.start()) + annotations + existingCode.substring(matcher.start());
+    }
+
+    private String normalizeAnnotation(String annotation) {
+        return annotation == null ? "" : annotation.replaceAll("\\s+", "");
+    }
+
+    private void validateImportConflicts(CompilationUnit existing, CompilationUnit generated) {
+        Map<String, String> imports = new LinkedHashMap<>();
+        for (ImportDeclaration declaration : existing.getImports()) addImport(imports, declaration);
+        for (ImportDeclaration declaration : generated.getImports()) {
+            if (declaration.isStatic() || declaration.isAsterisk()) continue;
+            String name = declaration.getNameAsString();
+            String simple = name.substring(name.lastIndexOf('.') + 1);
+            String previous = imports.get(simple);
+            if (previous != null && !previous.equals(name)) {
+                throw new IllegalStateException("整类生成 import 简名冲突：" + previous + " / " + name);
+            }
+            imports.put(simple, name);
+        }
+    }
+
+    private void addImport(Map<String, String> imports, ImportDeclaration declaration) {
+        if (declaration.isStatic() || declaration.isAsterisk()) return;
+        String name = declaration.getNameAsString();
+        imports.put(name.substring(name.lastIndexOf('.') + 1), name);
+    }
+
+    private Map<String, FieldDeclaration> fieldsByName(ClassOrInterfaceDeclaration type) {
+        Map<String, FieldDeclaration> fields = new LinkedHashMap<>();
+        for (FieldDeclaration field : type.getFields()) {
+            field.getVariables().forEach(variable -> fields.put(variable.getNameAsString(), field));
+        }
+        return fields;
+    }
+
+    private boolean mockField(FieldDeclaration field) {
+        return field.getAnnotations().stream().anyMatch(annotation ->
+                "Mock".equals(annotation.getNameAsString()) || "InjectMocks".equals(annotation.getNameAsString()));
+    }
+
+    private String methodSignature(MethodDeclaration method) {
+        List<String> types = new ArrayList<>();
+        method.getParameters().forEach(parameter -> types.add(parameter.getType().asString()));
+        return method.getNameAsString() + "(" + String.join(",", types) + ")";
     }
 
     /**

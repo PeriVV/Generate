@@ -18,8 +18,8 @@
         It analyzes the method at the editor caret, builds a PSI-backed snapshot of the project APIs
         that the method can reach, plans test scenarios and mock behavior, and produces an editable
         test class. Generated code is compiled against the current IntelliJ module before it can be
-        written normally. Repairable compiler diagnostics can be sent through a bounded two-round
-        model repair loop, while SDK and dependency problems are reported as environment errors.
+        written normally. Repairable compiler diagnostics use a bounded, configurable model repair
+        loop with regression rollback, while SDK and dependency problems are reported as environment errors.
         <br/><br/>
         UnitMind 是一个面向 Java 项目的 IntelliJ IDEA 单元测试生成插件。
         <br/><br/>
@@ -59,6 +59,12 @@
                 class="com.casc.unittestagent.action.ConfigureTestDataRangeAction"
                 text="UnitMind：测试数据生成配置"
                 description="配置 UnitMind 生成单元测试时使用的随机测试数据范围">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action id="UnitTestAgent.GenerateClassUnitTest"
+                class="com.casc.unittestagent.action.GenerateClassUnitTestAction"
+                text="UnitMind：为当前类生成完整测试"
+                description="逐方法生成并聚合当前 Java 类的完整 JUnit5 与 Mockito 测试类">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
     </actions>

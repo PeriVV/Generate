@@ -5,6 +5,9 @@ import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -27,8 +30,6 @@ public class GeneratedTestCodePostProcessor {
     private static final Pattern DEEP_STUB_ANNOTATION = Pattern.compile("@Mock\\s*\\(\\s*answer\\s*=\\s*Answers\\.RETURNS_DEEP_STUBS\\s*\\)");
     private static final Pattern LOCAL_DEEP_STUB = Pattern.compile("\\bmock\\s*\\(\\s*([A-Z][\\w]*(?:\\.[A-Z][\\w]*)?)\\.class\\s*,\\s*RETURNS_DEEP_STUBS\\s*\\)");
     private static final Pattern WHEN_THEN_RETURN = Pattern.compile("when\\s*\\((.+?)\\)\\s*\\.\\s*thenReturn\\s*\\((.+?)\\)\\s*;");
-    private static final Pattern ASSERT_EQUALS_ONE = Pattern.compile("assertEquals\\s*\\(\\s*1\\s*,");
-    private static final Pattern ASSERT_THAT_ONE = Pattern.compile("\\b(is|equalTo|sameInstance)\\s*\\(\\s*1\\s*\\)");
 
     /**
      * 清理并检查生成代码。
@@ -41,15 +42,44 @@ public class GeneratedTestCodePostProcessor {
         String processed = code == null ? "" : code;
         List<String> warnings = new ArrayList<>();
 
+        processed = normalizeTestClassName(processed, methodModel, warnings);
         processed = removeEmptyTearDown(processed, warnings);
         processed = normalizeDeepStubAnnotation(processed, warnings);
         processed = ensureAnswersImport(processed);
-        processed = normalizeAttachmentEmptyAssertions(processed, warnings);
         validateThenReturnTypes(processed, methodModel, warnings);
         processed = removeUnusedImports(processed);
         warnings.addAll(riskWarnings(processed, methodModel));
 
         return new ProcessedCode(processed, warnings);
+    }
+
+    /**
+     * 测试文件名由插件确定，模型不应通过改变顶层类名制造一次额外编译修复。
+     * 只在源码恰好包含一个顶层类时做确定性改名；多类型文件仍交给编译诊断处理。
+     */
+    private String normalizeTestClassName(String code, MethodModel methodModel, List<String> warnings) {
+        if (code == null || code.isBlank() || methodModel == null
+                || methodModel.getClassName() == null || methodModel.getClassName().isBlank()) {
+            return code;
+        }
+        String expected = methodModel.getClassName() + "Test";
+        try {
+            CompilationUnit unit = StaticJavaParser.parse(code);
+            if (unit.getClassByName(expected).isPresent()) return code;
+            List<ClassOrInterfaceDeclaration> topLevelClasses = unit.getTypes().stream()
+                    .filter(type -> type.isClassOrInterfaceDeclaration())
+                    .map(type -> type.asClassOrInterfaceDeclaration())
+                    .toList();
+            if (topLevelClasses.size() != 1) return code;
+            ClassOrInterfaceDeclaration type = topLevelClasses.get(0);
+            String previous = type.getNameAsString();
+            type.getConstructors().forEach(constructor -> constructor.setName(expected));
+            type.setName(expected);
+            warnings.add("已将模型返回的测试类名 " + previous + " 规范化为 " + expected + "。");
+            return unit.toString();
+        } catch (Exception ignored) {
+            return code;
+        }
     }
 
     private String removeEmptyTearDown(String code, List<String> warnings) {
@@ -72,16 +102,6 @@ public class GeneratedTestCodePostProcessor {
             warnings.add("检测到局部 deep stubs mock；注解参数里不要使用 RETURNS_DEEP_STUBS，普通 mock(...) 中才允许使用。");
         }
         return processed;
-    }
-
-    private String normalizeAttachmentEmptyAssertions(String code, List<String> warnings) {
-        if (code == null || code.isBlank()) {
-            return code;
-        }
-        if (ASSERT_EQUALS_ONE.matcher(code).find() || ASSERT_THAT_ONE.matcher(code).find()) {
-            warnings.add("检测到空附件/空路径场景使用 1 作为期望值；请改为 0。");
-        }
-        return code.replace("assertEquals(1,", "assertEquals(0,");
     }
 
     private void validateThenReturnTypes(String code, MethodModel methodModel, List<String> warnings) {

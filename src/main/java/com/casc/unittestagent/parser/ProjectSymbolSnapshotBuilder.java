@@ -29,6 +29,7 @@ import com.intellij.psi.PsiTypeParameter;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.intellij.psi.util.PsiTypesUtil;
 import com.intellij.psi.util.PsiUtil;
+import com.intellij.psi.search.searches.ReferencesSearch;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -75,11 +76,14 @@ public class ProjectSymbolSnapshotBuilder {
         PsiClass targetClass = targetMethod.getContainingClass();
         snapshot.setTargetType(qualifiedName(targetClass));
         snapshot.setTargetMethod(toCallable(targetMethod, null));
+        List<String> testExamples = existingTestExamples(project, targetClass, targetMethod);
+        snapshot.setTestExamples(testExamples);
+        snapshot.setContractFacts(contractFacts(targetClass, targetMethod, testExamples));
 
         SnapshotCollector collector = new SnapshotCollector(project, targetMethod, snapshot);
         collector.addType(targetClass, true);
         for (PsiParameter parameter : targetMethod.getParameterList().getParameters()) {
-            collector.addType(PsiTypesUtil.getPsiClass(parameter.getType()), true);
+            collector.addFixtureType(PsiTypesUtil.getPsiClass(parameter.getType()));
         }
         collector.collectFromMethod(targetMethod, 0);
         snapshot.setTypes(new ArrayList<>(collector.types.values()));
@@ -90,7 +94,8 @@ public class ProjectSymbolSnapshotBuilder {
         if (editor != null) {
             PsiElement element = psiFile.findElementAt(editor.getCaretModel().getOffset());
             PsiMethod current = PsiTreeUtil.getParentOfType(element, PsiMethod.class, false);
-            if (current != null && methodModel.getMethodName().equals(current.getName())) {
+            if (current != null && methodModel.getMethodName().equals(current.getName())
+                    && sameParameters(current, methodModel)) {
                 return current;
             }
         }
@@ -139,7 +144,77 @@ public class ProjectSymbolSnapshotBuilder {
         symbol.setResolved(true);
         symbol.setId(ownerName + "#" + (method.isConstructor() ? "<init>" : method.getName())
                 + "(" + String.join(",", parameters) + ")");
+        PsiFile sourceFile = method.getContainingFile();
+        if (method.getBody() != null && sourceFile != null && sourceFile.getVirtualFile() != null
+                && ProjectFileIndex.getInstance(method.getProject()).isInSourceContent(sourceFile.getVirtualFile())) {
+            symbol.setSourceCode(limit(method.getText(), 2400));
+        }
         return symbol;
+    }
+
+    private List<String> existingTestExamples(Project project, PsiClass targetClass, PsiMethod targetMethod) {
+        List<String> examples = new ArrayList<>();
+        Set<String> seenFiles = new LinkedHashSet<>();
+        collectTestExamples(project, targetMethod, examples, seenFiles);
+        if (examples.size() < 3) collectTestExamples(project, targetClass, examples, seenFiles);
+        return examples;
+    }
+
+    private void collectTestExamples(Project project,
+                                     PsiElement target,
+                                     List<String> examples,
+                                     Set<String> seenFiles) {
+        if (target == null || examples.size() >= 3) return;
+        ReferencesSearch.search(target).forEach(reference -> {
+            if (examples.size() >= 3) return false;
+            PsiFile file = reference.getElement() == null ? null : reference.getElement().getContainingFile();
+            if (file == null || file.getVirtualFile() == null
+                    || !ProjectFileIndex.getInstance(project).isInTestSourceContent(file.getVirtualFile())
+                    || !seenFiles.add(file.getVirtualFile().getPath())) {
+                return true;
+            }
+            PsiClass testClass = PsiTreeUtil.getParentOfType(reference.getElement(), PsiClass.class, false);
+            String text = testClass == null ? file.getText() : testClass.getText();
+            examples.add(limit(text, 8000));
+            return true;
+        });
+    }
+
+    private List<String> contractFacts(PsiClass targetClass,
+                                       PsiMethod targetMethod,
+                                       List<String> examples) {
+        LinkedHashSet<String> facts = new LinkedHashSet<>();
+        if (targetMethod != null) {
+            facts.add("TARGET_SIGNATURE: " + targetMethod.getName() + targetMethod.getParameterList().getText()
+                    + " -> " + (targetMethod.getReturnType() == null ? "void"
+                    : targetMethod.getReturnType().getCanonicalText()));
+        }
+        if (targetClass != null) {
+            for (PsiMethod method : targetClass.getMethods()) {
+                String name = method.getName();
+                if (method.isConstructor() || name.startsWith("set") || name.startsWith("with")
+                        || name.startsWith("add") || name.startsWith("put")) {
+                    facts.add("FIXTURE_API: " + method.getText().lines().findFirst().orElse(method.getName()));
+                }
+                if (facts.size() >= 16) break;
+            }
+        }
+        for (String example : examples) {
+            if (example == null) continue;
+            for (String line : example.lines().toList()) {
+                String trimmed = line.strip();
+                if (trimmed.contains("assert") || trimmed.startsWith("verify(")) {
+                    facts.add("EXISTING_TEST_ORACLE: " + limit(trimmed, 500));
+                }
+                if (facts.size() >= 32) return new ArrayList<>(facts);
+            }
+        }
+        return new ArrayList<>(facts);
+    }
+
+    private String limit(String value, int maxLength) {
+        if (value == null) return "";
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "\n// ... truncated";
     }
 
     private String visibility(PsiMethod method) {
@@ -279,11 +354,37 @@ public class ProjectSymbolSnapshotBuilder {
             }
             addType(owner, false);
             addCallable(owner, toCallable(resolved, actualReturnType), false);
+            addFixtureType(PsiTypesUtil.getPsiClass(actualReturnType == null ? resolved.getReturnType() : actualReturnType));
             for (PsiMethod overload : owner.findMethodsByName(resolved.getName(), true)) {
                 if (isAccessible(overload)) {
                     addCallable(overload.getContainingClass(), toCallable(overload, null), false);
                 }
             }
+        }
+
+        private void addFixtureType(PsiClass psiClass) {
+            if (psiClass == null) return;
+            addType(psiClass, true);
+            if (!isProjectType(psiClass) || psiClass.isInterface()) return;
+            for (PsiMethod method : psiClass.getMethods()) {
+                if (!isAccessible(method) || !looksLikeFixtureMethod(method)) continue;
+                CallableSymbol callable = toCallable(method, null);
+                callable.setFixtureMethod(true);
+                addCallable(psiClass, callable, false);
+            }
+        }
+
+        private boolean looksLikeFixtureMethod(PsiMethod method) {
+            String name = method.getName();
+            return name.startsWith("set") || name.startsWith("add") || name.startsWith("with")
+                    || name.startsWith("put") || name.startsWith("init") || name.startsWith("create")
+                    || name.startsWith("of") || name.equals("builder");
+        }
+
+        private boolean isProjectType(PsiClass psiClass) {
+            PsiFile file = psiClass.getContainingFile();
+            return file != null && file.getVirtualFile() != null
+                    && ProjectFileIndex.getInstance(project).isInSourceContent(file.getVirtualFile());
         }
 
         private void addType(PsiClass psiClass, boolean includeConstructors) {

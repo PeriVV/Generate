@@ -7,45 +7,134 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * 解析大模型返回的结构化 JSON。
  */
 public class LlmResponseParser {
+    private static final Pattern JAVA_TYPE = Pattern.compile(
+            "(?s).*\\b(class|interface|record|enum)\\s+[A-Za-z_$][A-Za-z0-9_$]*.*");
+
     public LlmGenerationResponse parse(String rawText) {
-        String jsonText = extractJson(rawText);
-        if (jsonText == null || jsonText.isBlank()) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
+        if (rawText == null || rawText.isBlank()) {
+            throw new LlmResponseFormatException("大模型返回了空内容。");
         }
-        JSONObject root;
-        try {
-            root = new JSONObject(jsonText);
-        } catch (Exception ex) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。", ex);
-        }
+        JSONObject root = findJsonObject(rawText, "testCode");
 
         LlmGenerationResponse response = new LlmGenerationResponse();
         response.setRawResponse(rawText);
-        response.setTestCode(root.optString("testCode", ""));
-        response.setWarnings(warnings(root.optJSONArray("warnings")));
-        response.setMockStrategy(mockStrategy(root.optJSONArray("mockStrategies")));
+        if (root != null) {
+            response.setTestCode(root.optString("testCode", ""));
+            response.setWarnings(warnings(root.optJSONArray("warnings")));
+            response.setMockStrategy(mockStrategy(root.optJSONArray("mockStrategies")));
+            parseDiagnosis(root.optJSONObject("diagnosis"), response);
+            response.setEdits(edits(root.optJSONArray("edits")));
+        } else {
+            response.setTestCode(extractJavaSource(rawText));
+        }
         if (response.getTestCode() == null || response.getTestCode().isBlank()) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
+            throw new LlmResponseFormatException("大模型未返回可解析的 JSON 或完整 Java 测试类。");
         }
         return response;
     }
 
+    /**
+     * 覆盖率闭环的响应协议。运行修复可以只返回 methodPatches，
+     * 编译修复与覆盖探索仍返回完整 testCode。
+     */
+    public LlmGenerationResponse parseCoverage(String rawText) {
+        if (rawText == null || rawText.isBlank()) {
+            throw new LlmResponseFormatException("大模型返回了空内容。");
+        }
+        JSONObject root = findJsonObject(rawText, null);
+        if (root == null || (!root.has("testCode") && !root.has("methodPatches"))) {
+            throw new LlmResponseFormatException("覆盖率修复未返回 testCode 或 methodPatches。");
+        }
+        LlmGenerationResponse response = new LlmGenerationResponse();
+        response.setRawResponse(rawText);
+        response.setTestCode(root.optString("testCode", ""));
+        response.setWarnings(warnings(root.optJSONArray("warnings")));
+        parseDiagnosis(root.optJSONObject("diagnosis"), response);
+        response.setEdits(edits(root.optJSONArray("edits")));
+        response.setMethodPatches(methodPatches(root.optJSONArray("methodPatches")));
+        if ((response.getTestCode() == null || response.getTestCode().isBlank())
+                && response.getMethodPatches().isEmpty()) {
+            throw new LlmResponseFormatException("覆盖率修复的代码负载为空。");
+        }
+        if (response.hasMethodPatches()) validateCoveragePatchContract(response);
+        return response;
+    }
+
+    private void parseDiagnosis(JSONObject diagnosis, LlmGenerationResponse response) {
+        if (diagnosis == null) return;
+        response.setDiagnosisRootCauseCategory(diagnosis.optString("rootCauseCategory",
+                diagnosis.optString("diagnosticCode", "")));
+        response.setDiagnosisEvidence(warnings(diagnosis.optJSONArray("evidence")));
+        response.setOracleDecision(diagnosis.optString("oracleDecision", ""));
+    }
+
+    private List<LlmCodeEdit> edits(JSONArray array) {
+        List<LlmCodeEdit> values = new ArrayList<>();
+        if (array == null) return values;
+        for (int index = 0; index < array.length(); index++) {
+            JSONObject object = array.optJSONObject(index);
+            if (object == null) continue;
+            LlmCodeEdit edit = new LlmCodeEdit();
+            edit.setTargetMethod(object.optString("targetMethod", object.optString("target", "")));
+            edit.setReason(object.optString("reason", ""));
+            edit.setExpectedEffect(object.optString("expectedEffect", ""));
+            values.add(edit);
+        }
+        return values;
+    }
+
+    private List<LlmMethodPatch> methodPatches(JSONArray array) {
+        List<LlmMethodPatch> values = new ArrayList<>();
+        if (array == null) return values;
+        for (int index = 0; index < array.length(); index++) {
+            JSONObject object = array.optJSONObject(index);
+            if (object == null) continue;
+            LlmMethodPatch patch = new LlmMethodPatch();
+            patch.setMethodName(object.optString("methodName", ""));
+            patch.setMethodCode(object.optString("methodCode", ""));
+            values.add(patch);
+        }
+        return values;
+    }
+
+    private void validateCoveragePatchContract(LlmGenerationResponse response) {
+        if (response.getDiagnosisRootCauseCategory().isBlank()
+                || response.getOracleDecision().isBlank()
+                || response.getDiagnosisEvidence().isEmpty()) {
+            throw new LlmResponseFormatException("运行修复缺少完整 diagnosis（rootCauseCategory/evidence/oracleDecision）。");
+        }
+        java.util.Set<String> patched = new java.util.LinkedHashSet<>();
+        for (LlmMethodPatch patch : response.getMethodPatches()) {
+            if (patch.getMethodName().isBlank() || patch.getMethodCode().isBlank()) {
+                throw new LlmResponseFormatException("methodPatches 必须同时包含 methodName 和 methodCode。");
+            }
+            if (!patched.add(patch.getMethodName())) {
+                throw new LlmResponseFormatException("methodPatches 包含重复目标：" + patch.getMethodName());
+            }
+        }
+        java.util.Set<String> edited = new java.util.LinkedHashSet<>();
+        for (LlmCodeEdit edit : response.getEdits()) {
+            if (edit.getTargetMethod().isBlank() || edit.getReason().isBlank()
+                    || edit.getExpectedEffect().isBlank()) {
+                throw new LlmResponseFormatException("edits 必须完整说明 targetMethod/reason/expectedEffect。");
+            }
+            edited.add(edit.getTargetMethod());
+        }
+        if (!edited.containsAll(patched)) {
+            throw new LlmResponseFormatException("每个 methodPatch 都必须有同名 edits 项。");
+        }
+    }
+
     public LlmGenerationResponse parseMockStrategyOnly(String rawText) {
-        String jsonText = extractJson(rawText);
-        if (jsonText == null || jsonText.isBlank()) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。");
-        }
-        JSONObject root;
-        try {
-            root = new JSONObject(jsonText);
-        } catch (Exception ex) {
-            throw new IllegalArgumentException("大模型返回格式无法解析，请重试。", ex);
-        }
+        if (rawText == null || rawText.isBlank()) throw new LlmResponseFormatException("大模型返回了空内容。");
+        JSONObject root = findJsonObject(rawText, "mockStrategies");
+        if (root == null) throw new LlmResponseFormatException("大模型未返回可解析的 Mock 策略 JSON。");
 
         LlmGenerationResponse response = new LlmGenerationResponse();
         response.setRawResponse(rawText);
@@ -54,7 +143,7 @@ public class LlmResponseParser {
         if (response.getMockStrategy() == null
                 || response.getMockStrategy().getStrategyItems() == null
                 || response.getMockStrategy().getStrategyItems().isEmpty()) {
-            throw new IllegalArgumentException("大模型未返回可展示的 Mock 策略。");
+            throw new LlmResponseFormatException("大模型未返回可展示的 Mock 策略。");
         }
         return response;
     }
@@ -113,40 +202,68 @@ public class LlmResponseParser {
         return warnings;
     }
 
-    private String extractJson(String rawText) {
-        if (rawText == null) {
-            return "";
+    private JSONObject findJsonObject(String text, String requiredKey) {
+        for (String candidate : balancedObjects(text)) {
+            try {
+                JSONObject object = new JSONObject(candidate);
+                if (requiredKey == null || object.has(requiredKey)) return object;
+            } catch (Exception ignored) {
+            }
         }
-        String trimmed = rawText.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-            return trimmed;
-        }
-        String fenced = extractFence(trimmed, "```json");
-        if (!fenced.isBlank()) {
-            return fenced;
-        }
-        fenced = extractFence(trimmed, "```");
-        if (!fenced.isBlank()) {
-            return fenced;
-        }
-        int start = trimmed.indexOf('{');
-        int end = trimmed.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return trimmed.substring(start, end + 1);
-        }
-        return "";
+        return null;
     }
 
-    private String extractFence(String text, String marker) {
-        int start = text.indexOf(marker);
-        if (start < 0) {
-            return "";
+    /** 提取所有平衡的 JSON 对象，忽略字符串字面量中的大括号。 */
+    private List<String> balancedObjects(String text) {
+        List<String> objects = new ArrayList<>();
+        if (text == null) return objects;
+        for (int start = 0; start < text.length(); start++) {
+            if (text.charAt(start) != '{') continue;
+            int depth = 0;
+            boolean quoted = false;
+            boolean escaped = false;
+            for (int index = start; index < text.length(); index++) {
+                char current = text.charAt(index);
+                if (quoted) {
+                    if (escaped) escaped = false;
+                    else if (current == '\\') escaped = true;
+                    else if (current == '"') quoted = false;
+                    continue;
+                }
+                if (current == '"') quoted = true;
+                else if (current == '{') depth++;
+                else if (current == '}' && --depth == 0) {
+                    objects.add(text.substring(start, index + 1));
+                    start = index;
+                    break;
+                }
+            }
         }
-        int contentStart = start + marker.length();
-        int end = text.indexOf("```", contentStart);
-        if (end <= contentStart) {
-            return "";
+        return objects;
+    }
+
+    private String extractJavaSource(String text) {
+        int cursor = 0;
+        while (cursor < text.length()) {
+            int fence = text.indexOf("```", cursor);
+            if (fence < 0) break;
+            int lineEnd = text.indexOf('\n', fence + 3);
+            if (lineEnd < 0) break;
+            int end = text.indexOf("```", lineEnd + 1);
+            if (end < 0) break;
+            String language = text.substring(fence + 3, lineEnd).trim();
+            String content = text.substring(lineEnd + 1, end).trim();
+            if ((language.isBlank() || "java".equalsIgnoreCase(language)) && looksLikeJava(content)) {
+                return content;
+            }
+            cursor = end + 3;
         }
-        return text.substring(contentStart, end).trim();
+        String trimmed = text.trim();
+        return looksLikeJava(trimmed) ? trimmed : "";
+    }
+
+    private boolean looksLikeJava(String text) {
+        return text != null && text.indexOf('{') >= 0 && text.lastIndexOf('}') > text.indexOf('{')
+                && JAVA_TYPE.matcher(text).matches();
     }
 }

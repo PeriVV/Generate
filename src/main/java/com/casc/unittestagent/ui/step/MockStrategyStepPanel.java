@@ -3,6 +3,8 @@ package com.casc.unittestagent.ui.step;
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
+import com.casc.unittestagent.model.ClassGenerationResult;
+import com.casc.unittestagent.model.MethodGenerationItem;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
@@ -39,6 +41,11 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
                                  Runnable onUseLlmMockStrategy) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
+        if (result instanceof ClassGenerationResult) {
+            add(new JLabel("整类模式会按方法使用以下静态策略，并在聚合时去重共享字段 Mock。"), BorderLayout.NORTH);
+            add(new UnitMindSectionPanel("整类 Mock 策略", table(classModel((ClassGenerationResult) result))), BorderLayout.CENTER);
+            return;
+        }
         add(toolbar(result, llmRunning, onGenerateLlmMockStrategy, onUseStaticMockStrategy, onUseLlmMockStrategy), BorderLayout.NORTH);
 
         JPanel body = new JPanel(new GridLayout(0, 1, 0, 8));
@@ -49,6 +56,25 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
             body.add(new UnitMindSectionPanel("大模型候选 Mock 策略", table(emptyLlmModel(llmRunning))));
         }
         add(body, BorderLayout.CENTER);
+    }
+
+    private DefaultTableModel classModel(ClassGenerationResult result) {
+        DefaultTableModel model = new DefaultTableModel(new String[]{"方法签名", "生成", "依赖类型", "对象/类名", "方法", "Mockito策略", "备注"}, 0) {
+            @Override public Class<?> getColumnClass(int columnIndex) { return columnIndex == 1 ? Boolean.class : String.class; }
+            @Override public boolean isCellEditable(int row, int column) { return false; }
+        };
+        for (MethodGenerationItem method : result.getMethodItems()) {
+            MockStrategy strategy = method.getResult() == null ? null : method.getResult().getMockStrategy();
+            if (strategy == null || strategy.getStrategyItems().isEmpty()) {
+                model.addRow(new Object[]{method.getSignature(), false, "未识别", "-", "-", "不处理", "当前方法无字段依赖"});
+                continue;
+            }
+            for (MockStrategyItem item : strategy.getStrategyItems()) {
+                model.addRow(new Object[]{method.getSignature(), item.isGenerate(), item.getDependencyType(),
+                        item.getObjectName(), item.getMethodName(), item.getMockitoStrategy(), item.getRemark()});
+            }
+        }
+        return model;
     }
 
     /**
