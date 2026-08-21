@@ -77,6 +77,7 @@ public class LlmPromptBuilder {
                 + "28. 优先使用真实对象和 public/package-visible 可观测行为；verify/times(n) 仅在源码或已有测试明确支持该交互契约时使用。\n"
                 + "29. 对空附件路径、空集合或空结果场景，期望值应按真实语义生成 0 或 empty，不要把 0 写成 1。\n"
                 + "30. projectSymbolSnapshot 是 IntelliJ PSI 对当前项目的真实解析结果。项目类型的构造函数、方法和重载必须严格从该快照选择，禁止仅根据常见命名编造 getter、builder、factory 或 repository 方法。\n"
+                + "30a. projectSymbolSnapshot.types 中 abstract=true 或 kind=interface 的类型不得直接 new/匿名实现；优先从 concreteSubtypes 选择可构造子类。record 必须使用 constructors 中给出的完整 canonical constructor 参数。\n"
                 + "31. projectSymbolSnapshot.unresolvedSymbols 中的表达式不得猜测返回类型或替代方法；无法生成可靠代码时添加 TODO，并采用不依赖该未知符号的最小测试结构。\n"
                 + "32. Mockito.when(...) 只能包裹对 @Mock/@Spy/Mockito.mock 创建对象的方法调用；"
                 + "不得 stub @InjectMocks 被测对象、new 出来的真实对象、静态方法、private/final/native/equals/hashCode。\n"
@@ -162,6 +163,42 @@ public class LlmPromptBuilder {
                 + payload.toString(2);
     }
 
+    public String classRepairSystemPrompt() {
+        return systemPrompt()
+                + "你正在修复一个已成功编译但完整 JUnit 回归失败的最终测试类。"
+                + "必须保护已通过测试，只有真实生产源码、已有测试和运行诊断可以决定 Oracle。";
+    }
+
+    public String classRepairPrompt(LlmGenerationRequest request) {
+        JSONObject payload = new JSONObject();
+        JSONObject focusedContext = context(request);
+        focusedContext.remove("existingTestCodeSummary");
+        focusedContext.put("classSourceCode", nullToEmpty(request.getClassSourceCode()));
+        payload.put("context", focusedContext);
+        payload.put("currentTestCode", nullToEmpty(request.getExistingTestCodeSummary()));
+        payload.put("runtimeDiagnostics", runtimeDiagnostics(request));
+        payload.put("iteration", request.getRepairAttempt());
+        payload.put("focusTestIds", request.getFocusTestIds());
+        payload.put("allFailingTestIds", request.getFailingTestIds());
+        payload.put("passedTestIds", request.getPassedTestIds());
+        payload.put("previousAttempt", nullToEmpty(request.getPreviousAttemptSummary()));
+        payload.put("userInstruction", nullToEmpty(request.getUserInstruction()));
+        return "请只返回 JSON，不要返回 Markdown。\n"
+                + "输出格式：{\"repairScope\":\"METHOD_ONLY|SHARED_FIXTURE\","
+                + "\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"\"],\"oracleDecision\":\"KEEP|CORRECT\"},"
+                + "\"edits\":[{\"targetMethod\":\"\",\"reason\":\"\",\"expectedEffect\":\"\"}],"
+                + "\"testCode\":\"修复后的完整 Java 测试类\",\"warnings\":[]}。\n"
+                + "规则：\n"
+                + "1. 必须返回完整测试类，类名、package 和现有测试方法集合保持不变。\n"
+                + "2. passedTestIds 对应的测试已经真实通过，严禁修改、删除、改名或禁用。\n"
+                + "3. 局部输入、断言、stub 或 verify 错误选择 METHOD_ONLY；共享字段、@BeforeEach、@InjectMocks/@Mock 或 helper 错误选择 SHARED_FIXTURE。\n"
+                + "4. 允许依据生产源码修正低可信生成断言；不得把正常场景的意外异常改成 assertThrows，不得删除或弱化测试以伪造成功。\n"
+                + "5. 不得添加 @Disabled、无条件 assumption、吞异常的 try/catch 或空测试；不得修改生产源码。\n"
+                + "6. Mockito stubbing 必须与真实调用参数一致；UnnecessaryStubbingException 应删除对应测试内无用 stub，不要全局改成 lenient。\n"
+                + "7. SHARED_FIXTURE 修改后仍必须保证所有 passedTestIds 全量回归通过。\n"
+                + "以下 JSON 是本轮唯一有效事实上下文：\n" + payload.toString(2);
+    }
+
     private String coverageCommonRules(String taskMode) {
         String codeContract = "RUNTIME_REPAIR".equals(taskMode)
                 ? "C1. 只返回 methodPatches，不得返回 testCode。每个补丁只是完整的失败 @Test 方法，不得包含类/import/fixture/helper。\n"
@@ -195,6 +232,8 @@ public class LlmPromptBuilder {
                 + "R2. 路径定位：优先使用 testFrame/productionFrame/rootCauseFrame/failureDetails，再结合完整 stackTrace、branches、constraints、callContexts 还原 Arrange 到失败点的路径，不得只猜异常消息。\n"
                 + "R3. 根因分类：选择最早能解释失败的输入/fixture/stub、Act 调用、低可信 Oracle 错误或不可修环境错误。\n"
                 + "R4. 按证据修复：成功/正常/有效输入场景意外抛异常时，修复 Arrange、输入、fixture、前置条件或依赖 stub，禁止改成 assertThrows、捕获忽略异常、删除或弱化断言。"
+                + "但若 methodSourceCode/branches 明确证明当前输入本就命中 action=throw 的异常契约，则该场景被错分为正常路径："
+                + "应优先把输入改为满足所有 safeCondition 的有效输入；仅在测试名和场景证据都是异常路径时才允许改为精确 assertThrows。"
                 + "确保测试输入、被测调用实参及 Mockito stub 的参数和值一致。\n"
                 + "R5. 修改范围：必须为每个 focusTestIds 中需要修复的失败测试返回同名 methodPatch；严禁修改 passedTestIds，严禁新增 import/fixture/helper。\n"
                 + "R6. 返回前自检：methodCode 是可解析、带测试注解的完整方法；diagnosis/edits/methodPatches 目标逐项对应；Mockito 调用合法。\n"
@@ -211,6 +250,10 @@ public class LlmPromptBuilder {
                 + "E1. coverage.gaps[0] 是唯一主目标，只追加命中该目标所需的最少测试，不得修改现有测试方法。\n"
                 + "E2. BRANCH missingDirection=UNKNOWN 时不得猜 JaCoCo 已覆盖方向；必须对照 currentTestCode 的已有输入与 predicate/pathConstraints，选择不同的相反或边界输入。\n"
                 + "E3. 使用 context.methodSourceCode 的方法入口到 gap 路径，满足所有前置条件；不得只围绕 gap 单行代码猜测。\n"
+                + "E3a. predicate 中出现 contains/startsWith/endsWith/正则字面量时，新输入必须显式包含或排除该精确字面量，不得只换一个无关普通值。\n"
+                + "E3b. 若参数类型 sealed=true、permittedSubtypes 已列全且都无其他可实例化子类，"
+                + "不得为命中穷尽 instanceof 之后的 fallback 伪造匿名实现、mock 或非 permits 子类；"
+                + "应改选其他可达 gap，没有时保持代码不变并在 warnings 说明静态不可达证据。\n"
                 + "E4. 新测试在方法内独立 Arrange，不改写字段或生命周期方法。优先验证返回值/对外状态/精确异常，禁止在没有源码证据时编造 verify/times(n)。\n";
     }
 
@@ -397,6 +440,10 @@ public class LlmPromptBuilder {
             item.put("qualifiedName", nullToEmpty(type.getQualifiedName()));
             item.put("kind", nullToEmpty(type.getKind()));
             item.put("final", type.isFinalType());
+            item.put("abstract", type.isAbstractType());
+            item.put("sealed", type.isSealedType());
+            item.put("permittedSubtypes", type.getPermittedSubtypes());
+            item.put("concreteSubtypes", type.getConcreteSubtypes());
             JSONArray constructors = new JSONArray();
             int constructorCount = Math.min(Math.max(0, maxMembersPerType), type.getConstructors().size());
             for (int index = 0; index < constructorCount; index++) {

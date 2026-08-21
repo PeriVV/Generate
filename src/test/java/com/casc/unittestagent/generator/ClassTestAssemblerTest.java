@@ -114,6 +114,28 @@ public class ClassTestAssemblerTest extends TestCase {
         assertEquals(1, occurrences(assembled, "MockitoAnnotations.initMocks(this)"));
     }
 
+    public void testMockitoExtensionRemovesManualMockitoInitialization() {
+        ClassModel model = classModel(false);
+        String code = candidate("""
+                @Test
+                void shouldLoad() { assertNotNull(subject); }
+                """)
+                .replace("import org.junit.jupiter.api.Test;",
+                        "import org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.extension.ExtendWith;"
+                                + "\nimport org.mockito.junit.jupiter.MockitoExtension;")
+                .replace("class SubjectTest", "@ExtendWith(MockitoExtension.class)\nclass SubjectTest");
+
+        ClassTestAssembler.AssemblyResult result = new ClassTestAssembler().assemble(model, List.of(
+                item("sample.Subject#load(int)", "load(int): int", code)));
+        String assembled = result.getGeneratedTestFile().getContent();
+
+        assertTrue(assembled, assembled.contains("@ExtendWith(MockitoExtension.class)"));
+        assertFalse(assembled, assembled.contains("MockitoAnnotations"));
+        assertFalse(assembled, assembled.contains("void initMockito()"));
+        assertFalse(assembled, assembled.contains("import org.junit.jupiter.api.BeforeEach;"));
+        assertTrue(result.getWarnings().stream().anyMatch(message -> message.contains("重复的 MockitoAnnotations")));
+    }
+
     private ClassModel classModel(boolean pureStatic) {
         ClassModel model = new ClassModel();
         model.setPackageName("sample");
@@ -142,9 +164,8 @@ public class ClassTestAssemblerTest extends TestCase {
         ClassTestAssembler.AssemblyResult result = new ClassTestAssembler().assemble(
                 model, List.of(constructsSubject, unknownMock));
 
-        assertEquals(List.of(constructsSubject.getMethodId(), unknownMock.getMethodId()),
-                result.getRejectedMethodIds());
-        assertTrue(result.getWarnings().stream().anyMatch(message -> message.contains("new 被测对象")));
+        assertEquals(List.of(unknownMock.getMethodId()), result.getRejectedMethodIds());
+        assertFalse(result.getGeneratedTestFile().getContent().contains("subject = new Subject()"));
         assertTrue(result.getWarnings().stream().anyMatch(message -> message.contains("未知 @Mock 字段")));
     }
 

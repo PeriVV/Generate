@@ -7,6 +7,9 @@ import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.ClassGenerationResult;
+import com.casc.unittestagent.model.ClassJUnitRepairReport;
+import com.casc.unittestagent.model.ClassJUnitStatus;
+import com.casc.unittestagent.model.ClassJUnitStopReason;
 import com.casc.unittestagent.model.GenerationScope;
 import com.casc.unittestagent.model.GenerationStatus;
 import com.casc.unittestagent.model.MethodModel;
@@ -532,9 +535,12 @@ public class UnitMindToolWindowPanel extends JPanel {
                 generationNote(),
                 generationResult == null ? null : generationResult.getValidationResult(),
                 generationResult == null ? null : generationResult.getCoverageReport(),
+                generationResult instanceof ClassGenerationResult
+                        ? ((ClassGenerationResult) generationResult).getClassJUnitRepairReport() : null,
                 coverageRunning,
                 !(generationResult instanceof ClassGenerationResult),
-                !(generationResult instanceof ClassGenerationResult),
+                true,
+                generationResult instanceof ClassGenerationResult,
                 this::regenerateTestCode,
                 this::validateCurrentCode,
                 this::markValidationStale,
@@ -794,7 +800,10 @@ public class UnitMindToolWindowPanel extends JPanel {
                         return;
                     }
                 }
-                if (passed && !confirmCoverageWrite(currentResult.getCoverageReport(), force)) {
+                boolean executionConfirmed = !passed || (currentResult instanceof ClassGenerationResult classResult
+                        ? confirmClassJUnitWrite(classResult.getClassJUnitRepairReport(), force)
+                        : confirmCoverageWrite(currentResult.getCoverageReport(), force));
+                if (passed && !executionConfirmed) {
                     stepStatuses[4] = StepStatus.WARNING;
                     rebuildSteps();
                     return;
@@ -857,6 +866,24 @@ public class UnitMindToolWindowPanel extends JPanel {
                 Messages.getWarningIcon()) == Messages.YES;
     }
 
+    private boolean confirmClassJUnitWrite(ClassJUnitRepairReport report, boolean force) {
+        if (report == null || report.getStatus() == ClassJUnitStatus.NOT_RUN
+                || report.getStatus() == ClassJUnitStatus.PASSED) return true;
+        if (report.getStatus() == ClassJUnitStatus.TEST_FAILED && !force) {
+            Messages.showErrorDialog(project,
+                    "完整测试类 JUnit 执行未通过，正常写入已阻止。请修复测试或使用强制写入草稿。\n\n"
+                            + report.getMessage(), "UnitMind 整类测试未通过");
+            return false;
+        }
+        if (force && report.getStatus() == ClassJUnitStatus.TEST_FAILED) {
+            return Messages.showYesNoDialog(project,
+                    "完整测试类 JUnit 执行未通过，确定仍要写入草稿吗？\n\n" + report.getMessage(),
+                    "强制写入未通过整类测试", "仍然写入草稿", "取消",
+                    Messages.getWarningIcon()) == Messages.YES;
+        }
+        return true;
+    }
+
     private void markValidationStale(String code) {
         editedCode = code == null ? "" : code;
         if (generationResult == null) {
@@ -871,15 +898,18 @@ public class UnitMindToolWindowPanel extends JPanel {
             coverage.setStatus(CoverageStatus.STALE);
             coverage.setMessage("测试代码已修改，覆盖率结果失效。");
         }
+        if (generationResult instanceof ClassGenerationResult classResult
+                && classResult.getClassJUnitRepairReport() != null
+                && classResult.getClassJUnitRepairReport().getStatus() != ClassJUnitStatus.NOT_RUN) {
+            classResult.getClassJUnitRepairReport().setStatus(ClassJUnitStatus.STALE);
+            classResult.getClassJUnitRepairReport().setMessage("测试代码已修改，整类 JUnit 结果失效。");
+        }
         stepStatuses[3] = StepStatus.WARNING;
     }
 
     private void runCoverageLoop() {
         if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning) return;
-        if (generationResult.getGenerationScope() == GenerationScope.CLASS) {
-            Messages.showInfoMessage(project, "整类模式首期不执行类级覆盖率闭环。如需覆盖率补测，请使用原“生成单元测试”入口选择单个方法。", "UnitMind 覆盖率");
-            return;
-        }
+        boolean classMode = generationResult.getGenerationScope() == GenerationScope.CLASS;
         if (!CoverageConfigManager.isExecutionConfirmed()) {
             int answer = Messages.showOkCancelDialog(project,
                     "UnitMind 将在本机隔离 JVM 中真实执行本次生成测试和对应的已有测试。"
@@ -894,25 +924,40 @@ public class UnitMindToolWindowPanel extends JPanel {
         editedCode = currentCode();
         int requestId = ++coverageSequence;
         coverageRunning = true;
-        generationResult.setCoverageReport(CoverageReport.status(CoverageStatus.RUNNING));
+        if (classMode) {
+            ((ClassGenerationResult) generationResult).setClassJUnitRepairReport(
+                    ClassJUnitRepairReport.status(ClassJUnitStatus.RUNNING));
+        } else {
+            generationResult.setCoverageReport(CoverageReport.status(CoverageStatus.RUNNING));
+        }
         stepStatuses[3] = StepStatus.RUNNING;
         rebuildSteps();
         GenerationResult currentResult = generationResult;
         String candidate = editedCode;
-        new Task.Backgroundable(project, "UnitMind 正在运行覆盖率闭环", true) {
+        new Task.Backgroundable(project, classMode
+                ? "UnitMind 正在运行整类 JUnit 修复" : "UnitMind 正在运行覆盖率闭环", true) {
             private GenerationResult completed;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 coverageIndicator = indicator;
                 indicator.setIndeterminate(false);
-                completed = generationService.runCoverageLoop(
-                        project,
-                        currentPsiFile,
-                        currentResult,
-                        candidate,
-                        indicator::isCanceled,
+                completed = classMode
+                        ? generationService.runFinalClassJUnitRepair(project, currentPsiFile,
+                        (ClassGenerationResult) currentResult, candidate, indicator::isCanceled,
                         (text, fraction) -> {
+                            indicator.setText(text);
+                            indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
+                            ApplicationManager.getApplication().invokeLater(() -> {
+                                if (requestId == coverageSequence && coverageRunning && !project.isDisposed()
+                                        && testCodeStepPanel != null) {
+                                    testCodeStepPanel.updateClassJUnitReport(
+                                            ((ClassGenerationResult) currentResult).getClassJUnitRepairReport());
+                                }
+                            });
+                        })
+                        : generationService.runCoverageLoop(project, currentPsiFile, currentResult,
+                        candidate, indicator::isCanceled, (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
                             ApplicationManager.getApplication().invokeLater(() -> {
@@ -934,10 +979,18 @@ public class UnitMindToolWindowPanel extends JPanel {
             public void onCancel() {
                 if (requestId != coverageSequence) return;
                 if (completed == null) {
-                    CoverageReport report = currentResult.getCoverageReport();
-                    report.setStatus(CoverageStatus.CANCELLED);
-                    report.setStopReason(CoverageStopReason.CANCELLED);
-                    report.setMessage("覆盖率执行已取消。");
+                    if (classMode) {
+                        ClassJUnitRepairReport report = ((ClassGenerationResult) currentResult)
+                                .getClassJUnitRepairReport();
+                        report.setStatus(ClassJUnitStatus.CANCELLED);
+                        report.setStopReason(ClassJUnitStopReason.CANCELLED);
+                        report.setMessage("整类 JUnit 修复已取消。");
+                    } else {
+                        CoverageReport report = currentResult.getCoverageReport();
+                        report.setStatus(CoverageStatus.CANCELLED);
+                        report.setStopReason(CoverageStopReason.CANCELLED);
+                        report.setMessage("覆盖率执行已取消。");
+                    }
                     completed = currentResult;
                 }
                 applyCoverageResult(completed);
@@ -946,10 +999,19 @@ public class UnitMindToolWindowPanel extends JPanel {
             @Override
             public void onThrowable(@NotNull Throwable error) {
                 if (requestId != coverageSequence) return;
-                CoverageReport report = currentResult.getCoverageReport();
-                report.setStatus(CoverageStatus.ENVIRONMENT_ERROR);
-                report.setStopReason(CoverageStopReason.ENVIRONMENT_ERROR);
-                report.setMessage(error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                if (classMode) {
+                    ClassJUnitRepairReport report = ((ClassGenerationResult) currentResult)
+                            .getClassJUnitRepairReport();
+                    report.setStatus(ClassJUnitStatus.ENVIRONMENT_ERROR);
+                    report.setStopReason(ClassJUnitStopReason.ENVIRONMENT_ERROR);
+                    report.setMessage(message);
+                } else {
+                    CoverageReport report = currentResult.getCoverageReport();
+                    report.setStatus(CoverageStatus.ENVIRONMENT_ERROR);
+                    report.setStopReason(CoverageStopReason.ENVIRONMENT_ERROR);
+                    report.setMessage(message);
+                }
                 applyCoverageResult(currentResult);
             }
         }.queue();
@@ -967,17 +1029,28 @@ public class UnitMindToolWindowPanel extends JPanel {
             GeneratedTestFile file = completed.getGeneratedTestFile();
             generatedCode = file == null ? generatedCode : file.getContent();
             editedCode = generatedCode;
-            CoverageReport report = completed.getCoverageReport();
             String latestSourceHash = currentPsiFile == null ? ""
                     : ReadAction.compute(() -> CodeFingerprint.sha256(currentPsiFile.getText()));
-            if (report != null && !report.getSourceHash().isBlank()
-                    && !report.getSourceHash().equals(latestSourceHash)) {
-                report.setStatus(CoverageStatus.STALE);
-                report.setMessage("被测源码已修改，覆盖率结果失效，请重新分析后运行。");
+            if (completed instanceof ClassGenerationResult classResult) {
+                ClassJUnitRepairReport report = classResult.getClassJUnitRepairReport();
+                if (report != null && !report.getSourceHash().isBlank()
+                        && !report.getSourceHash().equals(latestSourceHash)) {
+                    report.setStatus(ClassJUnitStatus.STALE);
+                    report.setMessage("被测源码已修改，整类 JUnit 结果失效，请重新分析后运行。");
+                }
+                stepStatuses[3] = report != null && report.getStatus() == ClassJUnitStatus.PASSED
+                        ? StepStatus.SUCCESS : StepStatus.WARNING;
+            } else {
+                CoverageReport report = completed.getCoverageReport();
+                if (report != null && !report.getSourceHash().isBlank()
+                        && !report.getSourceHash().equals(latestSourceHash)) {
+                    report.setStatus(CoverageStatus.STALE);
+                    report.setMessage("被测源码已修改，覆盖率结果失效，请重新分析后运行。");
+                }
+                CoverageStatus status = completed.getCoverageReport() == null
+                        ? CoverageStatus.ENVIRONMENT_ERROR : completed.getCoverageReport().getStatus();
+                stepStatuses[3] = status == CoverageStatus.PASSED ? StepStatus.SUCCESS : StepStatus.WARNING;
             }
-            CoverageStatus status = completed.getCoverageReport() == null
-                    ? CoverageStatus.ENVIRONMENT_ERROR : completed.getCoverageReport().getStatus();
-            stepStatuses[3] = status == CoverageStatus.PASSED ? StepStatus.SUCCESS : StepStatus.WARNING;
         }
         rebuildSteps();
     }

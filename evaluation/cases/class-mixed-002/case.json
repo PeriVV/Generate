@@ -1,0 +1,1 @@
+{"id":"class-mixed-002","scope":"CLASS","sourceKind":"SELF","difficulty":"HARD","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classmixed002/WorkflowService.java","targetClass":"eval.cases.classmixed002.WorkflowService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["class","overload","state-machine"]}

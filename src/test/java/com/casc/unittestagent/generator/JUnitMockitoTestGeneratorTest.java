@@ -7,6 +7,7 @@ import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.TestScenario;
+import com.casc.unittestagent.parser.JavaSourceAnalyzer;
 import junit.framework.TestCase;
 
 import java.io.File;
@@ -68,14 +69,90 @@ public class JUnitMockitoTestGeneratorTest extends TestCase {
 
     public void testOptionalValueDoesNotAssumeNoArgConstructor() {
         MethodModel method = method("find", "Optional<ValueObject>");
+        method.setMethodBodyText("{ return repository.find(); }");
         method.getDependencies().add(dependency("repository", "Repository", false, "find()"));
-        MockStrategy strategy = new MockStrategyPlanner().plan(method, List.of(normalScenario()));
+        List<TestScenario> scenarios = new TestScenarioPlanner().plan(method).stream()
+                .filter(scenario -> "NORMAL".equals(scenario.getType()))
+                .toList();
+        MockStrategy strategy = new MockStrategyPlanner().plan(method, scenarios);
 
         String code = new JUnitMockitoTestGenerator().generate(
-                method, List.of(normalScenario()), strategy).getContent();
+                method, scenarios, strategy).getContent();
 
         assertFalse(code, code.contains("new ValueObject()"));
         assertTrue(code, code.contains("mock(ValueObject.class)"));
+        assertFalse(code, code.contains("connection"));
+        assertTrue(code, code.contains("expectedValue"));
+    }
+
+    public void testStrictInequalityInputsActuallyReachNormalAndExceptionPaths() {
+        MethodModel method = new JavaSourceAnalyzer().analyze("""
+                package sample;
+                class Subject {
+                    int requireNonNegative(int value) {
+                        if (value < 0) throw new IllegalArgumentException();
+                        return value;
+                    }
+                }
+                """, "requireNonNegative");
+        List<TestScenario> scenarios = new TestScenarioPlanner().plan(method).stream()
+                .filter(scenario -> "NORMAL".equals(scenario.getType()) || "EXCEPTION".equals(scenario.getType()))
+                .toList();
+
+        String code = new JUnitMockitoTestGenerator().generate(
+                method, scenarios, new MockStrategyPlanner().plan(method, scenarios)).getContent();
+
+        assertTrue(code, code.contains("int value = 0;"));
+        assertTrue(code, code.contains("int value = -1;"));
+        assertTrue(code, code.contains("assertThrows(IllegalArgumentException.class"));
+    }
+
+    public void testCompoundThrowGuardUsesDeMorganSafeInputs() {
+        MethodModel method = new JavaSourceAnalyzer().analyze("""
+                package sample;
+                class Subject {
+                    int add(int left, int right) {
+                        if (left < 0 || right < 0) throw new IllegalArgumentException();
+                        return left + right;
+                    }
+                }
+                """, "add");
+        assertEquals("(left >= 0) && (right >= 0)", method.getBranches().get(0).getSafeCondition());
+        List<TestScenario> scenarios = new TestScenarioPlanner().plan(method).stream()
+                .filter(scenario -> "NORMAL".equals(scenario.getType()) || "EXCEPTION".equals(scenario.getType()))
+                .toList();
+
+        String code = new JUnitMockitoTestGenerator().generate(
+                method, scenarios, new MockStrategyPlanner().plan(method, scenarios)).getContent();
+
+        assertTrue(code, code.contains("int left = 0;"));
+        assertTrue(code, code.contains("int right = 0;"));
+        assertTrue(code, code.contains("int left = -1;") || code.contains("int right = -1;"));
+    }
+
+    public void testBoundaryInputPreservesParameterRelationSafeConditions() {
+        MethodModel method = new JavaSourceAnalyzer().analyze("""
+                package sample;
+                class Subject {
+                    int length(int start, int end) {
+                        if (start < 0) throw new IllegalArgumentException("start");
+                        if (start >= end) throw new IllegalArgumentException("range");
+                        return end - start;
+                    }
+                }
+                """, "length");
+        List<TestScenario> scenarios = new TestScenarioPlanner().plan(method).stream()
+                .filter(scenario -> "BOUNDARY".equals(scenario.getType()))
+                .toList();
+
+        String code = new JUnitMockitoTestGenerator().generate(
+                method, scenarios, new MockStrategyPlanner().plan(method, scenarios)).getContent();
+
+        assertEquals(1, scenarios.size());
+        assertTrue(scenarios.get(0).getDescription().contains("safeCondition"));
+        assertTrue(code, code.contains("int start = 0;"));
+        assertTrue(code, code.contains("int end = 100;"));
+        assertFalse(code, code.contains("int end = 0;"));
     }
 
     private MethodModel method(String name, String returnType) {

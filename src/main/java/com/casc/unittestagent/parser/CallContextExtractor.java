@@ -2,6 +2,7 @@ package com.casc.unittestagent.parser;
 
 import com.casc.unittestagent.model.CallContextModel;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.Expression;
@@ -28,10 +29,13 @@ public class CallContextExtractor {
 
         Map<String, MethodDeclaration> declaredMethods = declaredMethods(classDeclaration);
         Map<String, String> parameterTypes = parameterTypes(methodDeclaration);
+        Map<String, String> fieldTypes = fieldTypes(classDeclaration);
+        Map<String, ClassOrInterfaceDeclaration> availableTypes = availableTypes(classDeclaration);
         Set<String> seen = new LinkedHashSet<>();
 
         for (MethodCallExpr call : methodDeclaration.findAll(MethodCallExpr.class)) {
-            CallContextModel context = contextForCall(classDeclaration, methodDeclaration, call, declaredMethods, parameterTypes);
+            CallContextModel context = contextForCall(classDeclaration, methodDeclaration, call, declaredMethods,
+                    parameterTypes, fieldTypes, availableTypes);
             if (context != null && seen.add(context.getKind() + "|" + context.getExpression())) {
                 contexts.add(context);
             }
@@ -43,7 +47,9 @@ public class CallContextExtractor {
                                             MethodDeclaration currentMethod,
                                             MethodCallExpr call,
                                             Map<String, MethodDeclaration> declaredMethods,
-                                            Map<String, String> parameterTypes) {
+                                            Map<String, String> parameterTypes,
+                                            Map<String, String> fieldTypes,
+                                            Map<String, ClassOrInterfaceDeclaration> availableTypes) {
         Optional<Expression> scope = call.getScope();
         if (scope.isEmpty()) {
             MethodDeclaration internal = declaredMethods.get(call.getNameAsString());
@@ -62,7 +68,15 @@ public class CallContextExtractor {
         String root = rootReceiver(scopeText);
         if (parameterTypes.containsKey(root)) {
             String kind = scopeText.contains(".") ? "PARAMETER_CHAIN_CALL" : "PARAMETER_OBJECT_CALL";
-            return simpleContext(kind, root + ":" + parameterTypes.get(root), call.getNameAsString(), call.toString(), "", "", "", "");
+            String type = parameterTypes.get(root);
+            return simpleContext(kind, root + ":" + type, call.getNameAsString(), call.toString(),
+                    declaredReturnType(type, call, availableTypes), "", "", "");
+        }
+        if (fieldTypes.containsKey(root)) {
+            String type = fieldTypes.get(root);
+            String kind = scopeText.contains(".") ? "FIELD_CHAIN_CALL" : "FIELD_DEPENDENCY_CALL";
+            return simpleContext(kind, root + ":" + type, call.getNameAsString(), call.toString(),
+                    declaredReturnType(type, call, availableTypes), "", "", "");
         }
         return null;
     }
@@ -135,6 +149,38 @@ public class CallContextExtractor {
             parameters.put(parameter.getNameAsString(), parameter.getType().toString());
         }
         return parameters;
+    }
+
+    private Map<String, String> fieldTypes(ClassOrInterfaceDeclaration classDeclaration) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        for (FieldDeclaration field : classDeclaration.getFields()) {
+            field.getVariables().forEach(variable -> fields.put(variable.getNameAsString(), variable.getType().toString()));
+        }
+        return fields;
+    }
+
+    private Map<String, ClassOrInterfaceDeclaration> availableTypes(ClassOrInterfaceDeclaration classDeclaration) {
+        Map<String, ClassOrInterfaceDeclaration> types = new LinkedHashMap<>();
+        classDeclaration.findCompilationUnit().ifPresent(unit -> unit.findAll(ClassOrInterfaceDeclaration.class)
+                .forEach(type -> types.put(type.getNameAsString(), type)));
+        return types;
+    }
+
+    /** 在当前编译单元可见类型中按方法名和参数个数解析返回类型；无法证明时保持空值。 */
+    private String declaredReturnType(String ownerType,
+                                      MethodCallExpr call,
+                                      Map<String, ClassOrInterfaceDeclaration> availableTypes) {
+        String simple = ownerType == null ? "" : ownerType.replaceAll("<.*>", "");
+        int dot = simple.lastIndexOf('.');
+        if (dot >= 0) simple = simple.substring(dot + 1);
+        ClassOrInterfaceDeclaration declaration = availableTypes.get(simple);
+        if (declaration == null) return "";
+        for (MethodDeclaration method : declaration.getMethodsByName(call.getNameAsString())) {
+            if (method.getParameters().size() == call.getArguments().size()) {
+                return method.getType().toString();
+            }
+        }
+        return "";
     }
 
     private String signature(MethodDeclaration method) {

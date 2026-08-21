@@ -1,0 +1,1 @@
+{"id":"mock-005","scope":"METHOD","sourceKind":"SELF","difficulty":"MEDIUM","branchBand":"LOW","targetSource":"src/main/java/eval/cases/mock005/QuotaService.java","targetClass":"eval.cases.mock005.QuotaService","targetMethod":"reserve(String,int)","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":true,"smoke":false,"tags":["mock","times","existing-test"]}

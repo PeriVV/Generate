@@ -11,6 +11,8 @@ import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.util.StringUtils;
 import com.intellij.openapi.diagnostic.Logger;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
@@ -304,7 +306,7 @@ public class JUnitMockitoTestGenerator {
         Map<String, String> values = valuesForScenario(methodModel, scenario);
         appendInputVariables(code, methodModel, values, mockStrategy);
 
-        if (isOptionalReturn(methodModel) && !methodModel.getDependencies().isEmpty()) {
+        if (isDirectOptionalDelegation(methodModel) && isEvidenceBackedOptionalScenario(scenario)) {
             appendOptionalTestBody(code, methodModel, scenario, subjectName, values, mockStrategy);
             code.append("    }\n");
             return;
@@ -342,22 +344,45 @@ public class JUnitMockitoTestGenerator {
             values.put(parameter.getName(), valueForScenario(methodModel, parameter, scenario));
         }
 
-        if ("NORMAL".equals(scenario.getType())) {
+        if ("NORMAL".equals(scenario.getType()) || "BOUNDARY".equals(scenario.getType())) {
+            // Boundary values still have to enter the intended non-exception path. In particular,
+            // values for related parameters cannot be chosen independently (start/end, min/max...).
             for (BranchModel branch : methodModel.getBranches()) {
                 if (!"throw".equals(branch.getAction())) continue;
-                applyCondition(values, methodModel, branch.getSafeCondition(), false);
+                applyCondition(values, methodModel, branch.getSafeCondition());
+            }
+            // A later relation (start < end) may choose the configured minimum for start and undo
+            // an earlier scalar guard (start >= 0). Re-apply non-relational guards after relations.
+            for (BranchModel branch : methodModel.getBranches()) {
+                if (!"throw".equals(branch.getAction())
+                        || hasDirectParameterRelation(methodModel, branch.getSafeCondition())) continue;
+                applyCondition(values, methodModel, branch.getSafeCondition());
             }
         } else if ("EXCEPTION".equals(scenario.getType()) && !scenario.getCoveredBranches().isEmpty()) {
             BranchModel targetBranch = branchForScenario(methodModel, scenario);
             if (targetBranch != null && targetBranch.getPreconditions() != null) {
                 for (String precondition : targetBranch.getPreconditions()) {
-                    applyCondition(values, methodModel, precondition, false);
+                    applyCondition(values, methodModel, precondition);
                 }
             }
-            applyCondition(values, methodModel, scenario.getCoveredBranches().get(0), true);
+            applyCondition(values, methodModel, scenario.getCoveredBranches().get(0));
         }
 
         return values;
+    }
+
+    private boolean hasDirectParameterRelation(MethodModel methodModel, String condition) {
+        if (condition == null || condition.isBlank()) return false;
+        for (ParameterModel left : methodModel.getParameters()) {
+            for (ParameterModel right : methodModel.getParameters()) {
+                if (left == right) continue;
+                String pattern = "(?s).*\\b" + java.util.regex.Pattern.quote(left.getName())
+                        + "\\b\\s*(?:>=|<=|==|!=|>|<)\\s*\\b"
+                        + java.util.regex.Pattern.quote(right.getName()) + "\\b.*";
+                if (condition.matches(pattern)) return true;
+            }
+        }
+        return false;
     }
 
     private BranchModel branchForScenario(MethodModel methodModel, TestScenario scenario) {
@@ -467,27 +492,22 @@ public class JUnitMockitoTestGenerator {
                                         String subjectName,
                                         Map<String, String> values,
                                         MockStrategy mockStrategy) {
-        DependencyModel dependency = firstDependencyWithCall(methodModel);
+        DependencyModel dependency = directOptionalDependencyWithCall(methodModel);
         if (dependency != null && !dependency.isMethodParameter()
                 && !shouldGenerateFieldMock(dependency, mockStrategy)) {
             dependency = null;
         }
         String callExpression = dependency == null || dependency.getCallExpressions().isEmpty()
                 ? null
-                : dependency.getCallExpressions().get(0);
-
-        if (scenario.getMethodNameEn().contains("Null")) {
-            code.append("        // TODO: 根据源码逻辑补充期望行为，例如 assertThrows 或 assertTrue(result.isEmpty())\n");
-            return;
-        }
+                : directOptionalCallExpression(methodModel, dependency);
 
         String valueType = optionalValueType(methodModel);
         if ("NORMAL".equals(scenario.getType())) {
-            code.append("        ").append(valueType).append(" connection = ")
+            code.append("        ").append(valueType).append(" expectedValue = ")
                     .append(optionalValueExpression(valueType)).append(";\n\n");
             if (dependency != null && callExpression != null) {
                 code.append("        when(").append(dependency.getFieldName()).append(".").append(callExpression)
-                        .append(").thenReturn(Optional.of(connection));\n\n");
+                        .append(").thenReturn(Optional.of(expectedValue));\n\n");
             }
         } else {
             if (dependency != null && callExpression != null) {
@@ -500,7 +520,7 @@ public class JUnitMockitoTestGenerator {
         code.append("        ").append(methodModel.getReturnType()).append(" result = ").append(invocation).append(";\n\n");
         if ("NORMAL".equals(scenario.getType())) {
             code.append("        assertTrue(result.isPresent());\n");
-            code.append("        assertSame(connection, result.get());\n");
+            code.append("        assertSame(expectedValue, result.get());\n");
         } else {
             code.append("        assertTrue(result.isEmpty());\n");
         }
@@ -519,24 +539,45 @@ public class JUnitMockitoTestGenerator {
      * 根据条件表达式修正参数取值。
      * 该方法只处理当前 MVP 支持的空值、非空、范围和参数关系，复杂表达式保持默认值。
      */
-    private void applyCondition(Map<String, String> values, MethodModel methodModel, String condition, boolean exceptionInput) {
+    private boolean applyCondition(Map<String, String> values, MethodModel methodModel, String condition) {
         if (condition == null || condition.isBlank()) {
-            return;
+            return false;
         }
         String normalized = strip(condition);
 
-        if (normalized.contains("== null")) {
-            String parameter = normalized.substring(0, normalized.indexOf("== null")).trim();
-            values.put(parameter, "null");
-            return;
+        List<String> conjunction = splitTopLevel(normalized, "&&");
+        if (conjunction.size() > 1) {
+            boolean applied = true;
+            for (String part : conjunction) {
+                applied &= applyCondition(values, methodModel, part);
+            }
+            return applied;
         }
-        if (normalized.contains("!= null")) {
-            String parameter = normalized.substring(0, normalized.indexOf("!= null")).trim();
-            values.put(parameter, nonNullValue(methodModel, parameter));
-            return;
+        List<String> alternatives = splitTopLevel(normalized, "||");
+        if (alternatives.size() > 1) {
+            for (String alternative : alternatives) {
+                Map<String, String> candidate = new LinkedHashMap<>(values);
+                if (applyCondition(candidate, methodModel, alternative)) {
+                    values.clear();
+                    values.putAll(candidate);
+                    return true;
+                }
+            }
+            return false;
         }
 
-        for (String operator : new String[]{">=", ">", "<=", "<"}) {
+        String parameter = nullComparedParameter(methodModel, normalized, "==");
+        if (parameter != null) {
+            values.put(parameter, "null");
+            return true;
+        }
+        parameter = nullComparedParameter(methodModel, normalized, "!=");
+        if (parameter != null) {
+            values.put(parameter, nonNullValue(methodModel, parameter));
+            return true;
+        }
+
+        for (String operator : new String[]{">=", "<=", "==", "!=", ">", "<"}) {
             int index = normalized.indexOf(operator);
             if (index < 0) {
                 continue;
@@ -545,11 +586,23 @@ public class JUnitMockitoTestGenerator {
             String right = normalized.substring(index + operator.length()).trim();
             if (isParameter(methodModel, left) && isParameter(methodModel, right)) {
                 applyRelation(values, methodModel, left, right, operator);
+                return true;
             } else if (isParameter(methodModel, left)) {
-                values.put(left, exceptionInput ? right : safeLiteralFor(left, right, operator, methodModel));
+                String satisfying = satisfyingLiteral(left, right, operator, methodModel);
+                if (satisfying != null) {
+                    values.put(left, satisfying);
+                    return true;
+                }
+            } else if (isParameter(methodModel, right)) {
+                String satisfying = satisfyingLiteral(right, left, reverse(operator), methodModel);
+                if (satisfying != null) {
+                    values.put(right, satisfying);
+                    return true;
+                }
             }
-            return;
+            return false;
         }
+        return false;
     }
 
     /**
@@ -564,31 +617,68 @@ public class JUnitMockitoTestGenerator {
         }
         String low = dataGenerator.relationLowValue(leftParameter.getType());
         String high = dataGenerator.relationHighValue(rightParameter.getType());
-        if (">=".equals(operator) || ">".equals(operator)) {
+        if (">=".equals(operator) || ">".equals(operator) || "!=".equals(operator)) {
             values.put(left, high);
             values.put(right, low);
-        } else {
+        } else if ("<=".equals(operator) || "<".equals(operator)) {
             values.put(left, low);
             values.put(right, high);
+        } else {
+            values.put(left, low);
+            values.put(right, low);
         }
     }
 
     /**
-     * 为范围条件选择安全边界值。
-     * 正常路径使用配置边界绕过异常条件，避免直接使用触发异常的字面量。
+     * 根据比较表达式生成真正满足条件的字面量。
+     * 严格不等式必须跨过边界，例如 `value < 0` 使用 -1，而不是错误地使用 0。
      */
-    private String safeLiteralFor(String parameterName, String literal, String operator, MethodModel methodModel) {
+    private String satisfyingLiteral(String parameterName, String literal, String operator, MethodModel methodModel) {
         ParameterModel parameter = parameter(methodModel, parameterName);
-        if (parameter == null) {
-            return literal;
+        if (parameter == null || literal == null || literal.isBlank()) {
+            return null;
         }
-        if (">=".equals(operator) || ">".equals(operator)) {
-            return dataGenerator.minValueExpression(parameter.getType());
+        String type = simpleType(parameter.getType());
+        if (isIntegralType(type)) {
+            try {
+                String raw = literal.replace("_", "").replaceAll("[lL]$", "");
+                BigInteger value = new BigInteger(raw);
+                if (">".equals(operator)) value = value.add(BigInteger.ONE);
+                if ("<".equals(operator)) value = value.subtract(BigInteger.ONE);
+                if ("!=".equals(operator)) value = value.add(BigInteger.ONE);
+                return value + (("long".equals(type) || "Long".equals(type)) ? "L" : "");
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
-        if ("<=".equals(operator) || "<".equals(operator)) {
-            return dataGenerator.maxValueExpression(parameter.getType());
+        if (isFloatingType(type)) {
+            try {
+                String raw = literal.replace("_", "").replaceAll("[fFdD]$", "");
+                BigDecimal value = new BigDecimal(raw);
+                if (">".equals(operator)) value = value.add(BigDecimal.ONE);
+                if ("<".equals(operator)) value = value.subtract(BigDecimal.ONE);
+                if ("!=".equals(operator)) value = value.add(BigDecimal.ONE);
+                String suffix = ("float".equals(type) || "Float".equals(type)) ? "f" : "";
+                return value.stripTrailingZeros().toPlainString() + suffix;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
-        return literal;
+        if (("char".equals(type) || "Character".equals(type)) && literal.matches("'[^']'")) {
+            char value = literal.charAt(1);
+            if (">".equals(operator) || "!=".equals(operator)) value++;
+            if ("<".equals(operator)) value--;
+            return "'" + value + "'";
+        }
+        if ("boolean".equals(type) || "Boolean".equals(type)) {
+            if ("==".equals(operator)) return literal;
+            if ("!=".equals(operator)) return "true".equals(literal) ? "false" : "true";
+        }
+        if ("String".equals(type)) {
+            if ("==".equals(operator)) return literal;
+            if ("!=".equals(operator)) return "\"__different_value__\"";
+        }
+        return "==".equals(operator) ? literal : null;
     }
 
     /**
@@ -601,6 +691,56 @@ public class JUnitMockitoTestGenerator {
             return "\"test\"";
         }
         return dataGenerator.generateValueExpression(parameter.getType());
+    }
+
+    private String nullComparedParameter(MethodModel methodModel, String condition, String operator) {
+        int index = condition.indexOf(operator);
+        if (index < 0) return null;
+        String left = strip(condition.substring(0, index));
+        String right = strip(condition.substring(index + operator.length()));
+        if ("null".equals(right) && isParameter(methodModel, left)) return left;
+        if ("null".equals(left) && isParameter(methodModel, right)) return right;
+        return null;
+    }
+
+    /** 按顶层逻辑运算符拆分条件，不破坏括号内的子表达式。 */
+    private List<String> splitTopLevel(String condition, String operator) {
+        List<String> parts = new ArrayList<>();
+        int depth = 0;
+        int start = 0;
+        for (int index = 0; index <= condition.length() - operator.length(); index++) {
+            char ch = condition.charAt(index);
+            if (ch == '(') depth++;
+            if (ch == ')') depth--;
+            if (depth == 0 && condition.startsWith(operator, index)) {
+                parts.add(condition.substring(start, index).trim());
+                start = index + operator.length();
+                index += operator.length() - 1;
+            }
+        }
+        if (start > 0) parts.add(condition.substring(start).trim());
+        if (parts.isEmpty()) parts.add(condition);
+        return parts;
+    }
+
+    private String reverse(String operator) {
+        if (">".equals(operator)) return "<";
+        if (">=".equals(operator)) return "<=";
+        if ("<".equals(operator)) return ">";
+        if ("<=".equals(operator)) return ">=";
+        return operator;
+    }
+
+    private boolean isIntegralType(String type) {
+        return "byte".equals(type) || "Byte".equals(type)
+                || "short".equals(type) || "Short".equals(type)
+                || "int".equals(type) || "Integer".equals(type)
+                || "long".equals(type) || "Long".equals(type);
+    }
+
+    private boolean isFloatingType(String type) {
+        return "float".equals(type) || "Float".equals(type)
+                || "double".equals(type) || "Double".equals(type);
     }
 
     /**
@@ -816,17 +956,42 @@ public class JUnitMockitoTestGenerator {
                 || isPrivateMethod(methodModel);
     }
 
-    /**
-     * 查找第一个包含实际调用表达式的依赖。
-     * Optional 查询类方法通常只有一个仓储依赖，使用该依赖生成 when 与 verify。
-     */
-    private DependencyModel firstDependencyWithCall(MethodModel methodModel) {
+    /** 查找源码直接返回其调用结果的依赖。 */
+    private DependencyModel directOptionalDependencyWithCall(MethodModel methodModel) {
+        String body = compact(methodModel.getMethodBodyText());
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            if (!dependency.getCallExpressions().isEmpty()) {
-                return dependency;
+            for (String call : dependency.getCallExpressions()) {
+                if (body.contains("return" + compact(dependency.getFieldName() + "." + call) + ";")) {
+                    return dependency;
+                }
             }
         }
         return null;
+    }
+
+    private String directOptionalCallExpression(MethodModel methodModel, DependencyModel dependency) {
+        if (dependency == null) return null;
+        String body = compact(methodModel.getMethodBodyText());
+        for (String call : dependency.getCallExpressions()) {
+            if (body.contains("return" + compact(dependency.getFieldName() + "." + call) + ";")) {
+                return call;
+            }
+        }
+        return null;
+    }
+
+    private boolean isDirectOptionalDelegation(MethodModel methodModel) {
+        return isOptionalReturn(methodModel) && directOptionalDependencyWithCall(methodModel) != null;
+    }
+
+    private boolean isEvidenceBackedOptionalScenario(TestScenario scenario) {
+        if (scenario == null || scenario.getExpectedAssertions() == null) return false;
+        return scenario.getExpectedAssertions().contains("directly returned Optional is present")
+                || scenario.getExpectedAssertions().contains("returned value equals Optional.empty()");
+    }
+
+    private String compact(String text) {
+        return text == null ? "" : text.replaceAll("\\s+", "");
     }
 
     /**
@@ -905,9 +1070,21 @@ public class JUnitMockitoTestGenerator {
      */
     private String strip(String text) {
         String value = text.trim();
-        if (value.startsWith("(") && value.endsWith(")")) {
-            return value.substring(1, value.length() - 1).trim();
+        while (hasBalancedOuterParentheses(value)) {
+            value = value.substring(1, value.length() - 1).trim();
         }
         return value;
+    }
+
+    private boolean hasBalancedOuterParentheses(String value) {
+        if (!value.startsWith("(") || !value.endsWith(")")) return false;
+        int depth = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            if (ch == '(') depth++;
+            if (ch == ')') depth--;
+            if (depth == 0 && index < value.length() - 1) return false;
+        }
+        return depth == 0;
     }
 }

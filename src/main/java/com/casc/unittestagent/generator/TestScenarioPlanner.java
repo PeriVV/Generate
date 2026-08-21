@@ -29,46 +29,39 @@ public class TestScenarioPlanner {
             return scenarios;
         }
 
-        if (isOptionalReturn(methodModel) && !methodModel.getDependencies().isEmpty()) {
-            TestScenario present = scenario("参数合法时，应返回数据",
-                    "shouldReturnConnectionWhenIdAndOwnerIdValid", "NORMAL",
-                    "使用合法参数，验证返回 Optional 中存在数据。");
+        String methodPart = identifierPart(methodModel.getMethodName(), "Method");
+        boolean directOptionalDelegation = isOptionalReturn(methodModel) && hasDirectOptionalDelegation(methodModel);
+        if (directOptionalDelegation) {
+            TestScenario present = scenario("依赖返回数据时，应原样返回 Optional 数据",
+                    "shouldReturnPresentValueWhen" + methodPart + "DependencyFindsValue", "NORMAL",
+                    "源码直接返回依赖调用结果；依赖返回 Optional.of(value) 时，验证被测方法返回同一结果。");
             present.setOracleKind("RETURN_VALUE");
-            present.setOracleEvidence("STATIC_ANALYSIS");
-            present.setOracleConfidence("MEDIUM");
-            present.getExpectedAssertions().add("returned Optional is present");
+            present.setOracleEvidence("SOURCE_DIRECT_RETURN");
+            present.setOracleConfidence("HIGH");
+            present.getExpectedAssertions().add("directly returned Optional is present");
             scenarios.add(present);
-            TestScenario empty = scenario("仓储返回空时，应返回空结果",
-                    "shouldReturnEmptyWhenRepositoryReturnsEmpty", "BOUNDARY",
-                    "仓储未找到数据时，验证返回 Optional.empty()。");
+            TestScenario empty = scenario("依赖返回空 Optional 时，应原样返回空结果",
+                    "shouldReturnEmptyWhen" + methodPart + "DependencyFindsNoValue", "BOUNDARY",
+                    "源码直接返回依赖调用结果；依赖返回 Optional.empty() 时，验证被测方法返回空结果。");
             empty.setOracleKind("RETURN_VALUE");
-            empty.setOracleEvidence("STATIC_ANALYSIS");
+            empty.setOracleEvidence("SOURCE_DIRECT_RETURN");
             empty.setOracleConfidence("HIGH");
             empty.getExpectedAssertions().add("returned value equals Optional.empty()");
             scenarios.add(empty);
-            for (ParameterModel parameter : methodModel.getParameters()) {
-                if (parameter.isNullable()) {
-                    TestScenario nullScenario = scenario(parameter.getName() + " 为空时，应按源码逻辑处理",
-                            "shouldHandleNull" + capitalize(parameter.getName()) + "AccordingToSourceLogic",
-                            "BOUNDARY",
-                            "覆盖 " + parameter.getName() + " 为 null 的边界输入。");
-                    nullScenario.getCoveredBranches().add(parameter.getName() + " == null");
-                    scenarios.add(nullScenario);
-                    break;
-                }
-            }
-            return completeScenarioSet(scenarios, methodModel);
+        } else {
+            scenarios.add(scenario("有效输入时，应正常返回", "shouldReturnNormallyWhen" + methodPart + "InputValid", "NORMAL",
+                    "有效输入应使被测方法按正常路径执行。"));
         }
 
-        scenarios.add(scenario("有效输入时，应正常返回", "shouldReturnNormallyWhenInputValid", "NORMAL",
-                "有效输入应使被测方法按正常路径执行。"));
-
+        int exceptionIndex = 0;
         for (BranchModel branch : methodModel.getBranches()) {
             if (!"throw".equals(branch.getAction())) {
                 continue;
             }
+            exceptionIndex++;
+            String exceptionPart = identifierPart(branch.getExceptionType(), "Exception");
             TestScenario exceptionScenario = scenario("条件命中时，应抛出异常",
-                    "shouldThrowWhenConditionMatched",
+                    "shouldThrow" + exceptionPart + "When" + methodPart + "Condition" + exceptionIndex + "Matched",
                     "EXCEPTION",
                     "非法输入应触发 " + branch.getExceptionType() + "；进入该分支前必须先满足前置路径条件："
                             + preconditionText(branch.getPreconditions()) + "。");
@@ -77,9 +70,10 @@ public class TestScenarioPlanner {
             scenarios.add(exceptionScenario);
         }
 
-        if (!methodModel.getBranches().isEmpty() && hasBoundaryValues(methodModel)) {
+        if (!hasScenarioType(scenarios, "BOUNDARY")
+                && !methodModel.getBranches().isEmpty() && hasBoundaryValues(methodModel)) {
             scenarios.add(scenario("边界值输入时，应正常处理",
-                    "shouldHandleBoundaryValues",
+                    "shouldHandle" + methodPart + "BoundaryValues",
                     "BOUNDARY",
                     "边界输入应被被测方法正确处理。"));
         }
@@ -92,17 +86,21 @@ public class TestScenarioPlanner {
      */
     private List<TestScenario> completeScenarioSet(List<TestScenario> scenarios, MethodModel methodModel) {
         if (!hasScenarioType(scenarios, "NORMAL")) {
-            scenarios.add(scenario("有效输入时，应正常返回", "shouldReturnNormallyWhenInputValid", "NORMAL",
+            scenarios.add(scenario("有效输入时，应正常返回",
+                    "shouldReturnNormallyWhen" + identifierPart(methodModel.getMethodName(), "Method") + "InputValid", "NORMAL",
                     "有效输入应使被测方法按正常路径执行。"));
         }
         if (!hasScenarioType(scenarios, "EXCEPTION")) {
-            scenarios.add(scenario("未生成异常场景", "exceptionScenarioNotGenerated", "EXCEPTION_REASON",
+            scenarios.add(scenario("未生成异常场景",
+                    "exceptionScenarioNotGeneratedFor" + identifierPart(methodModel.getMethodName(), "Method"), "EXCEPTION_REASON",
                     exceptionMissingReason(methodModel)));
         }
         if (!hasScenarioType(scenarios, "BOUNDARY")) {
             TestScenario boundary = boundaryScenario(methodModel);
             scenarios.add(boundary == null
-                    ? scenario("未生成边界场景", "boundaryScenarioNotGenerated", "BOUNDARY_REASON", boundaryMissingReason(methodModel))
+                    ? scenario("未生成边界场景",
+                    "boundaryScenarioNotGeneratedFor" + identifierPart(methodModel.getMethodName(), "Method"),
+                    "BOUNDARY_REASON", boundaryMissingReason(methodModel))
                     : boundary);
         }
         return scenarios;
@@ -124,10 +122,29 @@ public class TestScenarioPlanner {
      * 根据参数候选边界值生成边界场景。
      */
     private TestScenario boundaryScenario(MethodModel methodModel) {
+        for (BranchModel branch : methodModel.getBranches()) {
+            if (!"throw".equals(branch.getAction()) || !referencesMultipleParameters(methodModel, branch.getCondition())) {
+                continue;
+            }
+            TestScenario scenario = scenario("参数关系临界值时，应在有效区间内正常处理",
+                    "shouldHandle" + identifierPart(methodModel.getMethodName(), "Method") + "ParameterRelationBoundary",
+                    "BOUNDARY",
+                    "覆盖参数关系 " + branch.getCondition()
+                            + " 附近的有效边界；输入必须同时满足所有 throw 分支的 safeCondition。");
+            for (BranchModel guard : methodModel.getBranches()) {
+                if ("throw".equals(guard.getAction()) && guard.getSafeCondition() != null
+                        && !guard.getSafeCondition().isBlank()) {
+                    scenario.getInputExpressions().add(guard.getSafeCondition());
+                }
+            }
+            scenario.getCoveredBranches().add(branch.getSafeCondition());
+            return scenario;
+        }
         for (ParameterModel parameter : methodModel.getParameters()) {
             if (parameter.isNullable()) {
                 TestScenario scenario = scenario(parameter.getName() + " 为空时，应按源码逻辑处理",
-                        "shouldHandleNull" + capitalize(parameter.getName()) + "AccordingToSourceLogic",
+                        "shouldHandleNull" + identifierPart(parameter.getName(), "Parameter") + "When"
+                                + identifierPart(methodModel.getMethodName(), "Method") + "Called",
                         "BOUNDARY",
                         "覆盖 " + parameter.getName() + " 为 null 的边界输入。");
                 scenario.getCoveredBranches().add(parameter.getName() + " == null");
@@ -135,7 +152,8 @@ public class TestScenarioPlanner {
             }
             if (parameter.getBoundaryValues() != null && !parameter.getBoundaryValues().isEmpty()) {
                 TestScenario scenario = scenario(parameter.getName() + " 使用边界值时，应按源码逻辑处理",
-                        "shouldHandleBoundary" + capitalize(parameter.getName()) + "AccordingToSourceLogic",
+                        "shouldHandleBoundary" + identifierPart(parameter.getName(), "Parameter") + "When"
+                                + identifierPart(methodModel.getMethodName(), "Method") + "Called",
                         "BOUNDARY",
                         "覆盖 " + parameter.getName() + " 的边界输入：" + String.join(", ", parameter.getBoundaryValues()) + "。");
                 scenario.getCoveredBranches().add(parameter.getName() + " boundary value");
@@ -143,6 +161,19 @@ public class TestScenarioPlanner {
             }
         }
         return null;
+    }
+
+    private boolean referencesMultipleParameters(MethodModel methodModel, String expression) {
+        if (expression == null || expression.isBlank()) return false;
+        int referenced = 0;
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            String name = parameter.getName();
+            if (name != null && !name.isBlank()
+                    && expression.matches("(?s).*\\b" + java.util.regex.Pattern.quote(name) + "\\b.*")) {
+                referenced++;
+            }
+        }
+        return referenced >= 2;
     }
 
     /**
@@ -202,23 +233,50 @@ public class TestScenarioPlanner {
         return scenario;
     }
 
-    /**
-     * 判断被测方法是否返回 Optional。
-     * Optional 返回值需要生成存在和空结果两个场景，不能只用 assertNotNull 弱断言。
-     */
+    /** 判断被测方法是否返回 Optional。 */
     private boolean isOptionalReturn(MethodModel methodModel) {
         return methodModel.getReturnType() != null && methodModel.getReturnType().startsWith("Optional<");
     }
 
     /**
-     * 将参数名转换为英文方法名片段。
-     * 空值场景需要把参数名拼入测试方法名，保持生成代码标识符全英文。
+     * 只有源码直接 `return dependency.call(...)` 时，才把依赖的 present/empty 结果提升为被测方法契约。
+     * 仅凭返回类型为 Optional 无法证明方法会透传依赖结果，可能还存在 filter、map 或异常转换。
      */
-    private String capitalize(String text) {
-        if (text == null || text.isBlank()) {
-            return "Parameter";
+    private boolean hasDirectOptionalDelegation(MethodModel methodModel) {
+        String body = compact(methodModel.getMethodBodyText());
+        for (com.casc.unittestagent.model.DependencyModel dependency : methodModel.getDependencies()) {
+            for (String call : dependency.getCallExpressions()) {
+                String invocation = dependency.getFieldName() + "." + call;
+                if (body.contains("return" + compact(invocation) + ";")) {
+                    return true;
+                }
+            }
         }
-        return Character.toUpperCase(text.charAt(0)) + text.substring(1);
+        return false;
+    }
+
+    private String compact(String text) {
+        return text == null ? "" : text.replaceAll("\\s+", "");
+    }
+
+    /** 把源码名称转换为稳定、合法且可读的测试方法名片段。 */
+    private String identifierPart(String text, String fallback) {
+        if (text == null || text.isBlank()) return fallback;
+        String simple = text;
+        int dot = simple.lastIndexOf('.');
+        if (dot >= 0) simple = simple.substring(dot + 1);
+        StringBuilder result = new StringBuilder();
+        boolean capitalizeNext = true;
+        for (int index = 0; index < simple.length(); index++) {
+            char ch = simple.charAt(index);
+            if (!Character.isJavaIdentifierPart(ch)) {
+                capitalizeNext = true;
+                continue;
+            }
+            result.append(capitalizeNext ? Character.toUpperCase(ch) : ch);
+            capitalizeNext = false;
+        }
+        return result.length() == 0 ? fallback : result.toString();
     }
 
     private String preconditionText(List<String> preconditions) {

@@ -5,6 +5,8 @@ import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.model.CoverageReport;
+import com.casc.unittestagent.model.ClassJUnitRepairReport;
+import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.ui.component.CoverageReportPanel;
 import com.casc.unittestagent.ui.component.UnitMindEmptyStatePanel;
 import com.casc.unittestagent.ui.component.UnitMindErrorPanel;
@@ -49,6 +51,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     private JPanel detailsPanel;
     /** 当前覆盖率可视化组件。 */
     private JComponent coverageComponent;
+    private JComponent classJUnitComponent;
 
     /**
      * 创建测试代码页。
@@ -111,6 +114,29 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
                              Consumer<String> onCodeChanged,
                              Runnable onRunCoverage,
                              Runnable onStopCoverage) {
+        this(project, status, generatedCode, currentCode, error, generationNote, validationResult,
+                coverageReport, null, coverageRunning, regenerationAllowed, coverageAllowed,
+                false, onRegenerate, onValidate, onCodeChanged, onRunCoverage, onStopCoverage);
+    }
+
+    public TestCodeStepPanel(Project project,
+                             GenerationStatus status,
+                             String generatedCode,
+                             String currentCode,
+                             String error,
+                             String generationNote,
+                             ValidationResult validationResult,
+                             CoverageReport coverageReport,
+                             ClassJUnitRepairReport classJUnitReport,
+                             boolean coverageRunning,
+                             boolean regenerationAllowed,
+                             boolean coverageAllowed,
+                             boolean classMode,
+                             Consumer<String> onRegenerate,
+                             Runnable onValidate,
+                             Consumer<String> onCodeChanged,
+                             Runnable onRunCoverage,
+                             Runnable onStopCoverage) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         this.generatedCode = generatedCode == null ? "" : generatedCode;
@@ -139,6 +165,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (diagnostics != null) detailsPanel.add(diagnostics);
         coverageComponent = coveragePanel(coverageReport);
         if (coverageComponent != null) detailsPanel.add(coverageComponent);
+        classJUnitComponent = classJUnitPanel(classJUnitReport);
+        if (classJUnitComponent != null) detailsPanel.add(classJUnitComponent);
         if (detailsPanel.getComponentCount() > 0) {
             statusPanel.add(detailsPanel, BorderLayout.SOUTH);
         }
@@ -179,8 +207,9 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JButton restore = new JButton("恢复生成代码");
         JButton regenerate = new JButton(regenerationAllowed ? "再次生成" : "整类请重新分析后生成");
         JButton validate = new JButton("重新校验");
-        JButton runCoverage = new JButton(!coverageAllowed ? "整类覆盖率首期不支持"
-                : coverageRunning ? "覆盖率运行中..." : "运行覆盖率并自动补测");
+        JButton runCoverage = new JButton(!coverageAllowed ? "运行闭环不可用"
+                : coverageRunning ? (classMode ? "整类 JUnit 修复中..." : "覆盖率运行中...")
+                : classMode ? "运行整类 JUnit 并自动修复" : "运行覆盖率并自动补测");
         JButton stopCoverage = new JButton("停止");
         copy.addActionListener(event -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(getCode()), null));
         restore.addActionListener(event -> setCode(generatedCode));
@@ -248,6 +277,15 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         detailsPanel.repaint();
     }
 
+    public void updateClassJUnitReport(ClassJUnitRepairReport report) {
+        if (detailsPanel == null) return;
+        if (classJUnitComponent != null) detailsPanel.remove(classJUnitComponent);
+        classJUnitComponent = classJUnitPanel(report);
+        if (classJUnitComponent != null) detailsPanel.add(classJUnitComponent);
+        detailsPanel.revalidate();
+        detailsPanel.repaint();
+    }
+
     private String validationText(ValidationResult result) {
         if (result == null || result.getStatus() == ValidationStatus.NOT_RUN) {
             return "编译校验：尚未执行。";
@@ -297,5 +335,26 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
             return null;
         }
         return new CoverageReportPanel(report);
+    }
+
+    private JComponent classJUnitPanel(ClassJUnitRepairReport report) {
+        if (report == null || report.getStatus() == ClassJUnitStatus.NOT_RUN) return null;
+        JTextArea area = new JTextArea("整类 JUnit：" + report.getStatus()
+                + "；JUnit@1 " + executionText(report.getInitialExecution())
+                + "；最终 " + executionText(report.getFinalExecution())
+                + "；运行修复 " + report.getRuntimeRepairRounds() + " 轮"
+                + "；停止原因 " + report.getStopReason()
+                + (report.getMessage().isBlank() ? "" : "\n" + report.getMessage()));
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setRows(3);
+        return area;
+    }
+
+    private String executionText(com.casc.unittestagent.model.TestExecutionSummary execution) {
+        if (execution == null) return "未执行";
+        return execution.getSucceeded() + "/" + execution.getFound()
+                + " 通过，失败 " + execution.getFailed();
     }
 }

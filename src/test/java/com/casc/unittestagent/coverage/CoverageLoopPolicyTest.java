@@ -18,6 +18,25 @@ public class CoverageLoopPolicyTest extends TestCase {
         assertTrue(CoverageLoopPolicy.reached(snapshot(9, 1, 0, 0), new CoverageConfig()));
     }
 
+    public void testReachedThresholdStillContinuesWhileCoverageCanImprove() {
+        CoverageSnapshot reachedButIncomplete = snapshot(9, 1, 8, 2);
+
+        assertTrue(CoverageLoopPolicy.reached(reachedButIncomplete, new CoverageConfig()));
+        assertFalse(CoverageLoopPolicy.perfect(reachedButIncomplete));
+        assertTrue(CoverageLoopPolicy.shouldContinueImproving(
+                reachedButIncomplete, true, true));
+    }
+
+    public void testStopsImprovingAtPerfectCoverageOrWithoutActionableBudget() {
+        CoverageSnapshot perfect = snapshot(10, 0, 4, 0);
+        CoverageSnapshot incomplete = snapshot(9, 1, 8, 2);
+
+        assertTrue(CoverageLoopPolicy.perfect(perfect));
+        assertFalse(CoverageLoopPolicy.shouldContinueImproving(perfect, true, true));
+        assertFalse(CoverageLoopPolicy.shouldContinueImproving(incomplete, false, true));
+        assertFalse(CoverageLoopPolicy.shouldContinueImproving(incomplete, true, false));
+    }
+
     public void testDetectsBranchOrLineGainAndRejectsNoProgress() {
         CoverageSnapshot previous = snapshot(5, 5, 1, 3);
         assertTrue(CoverageLoopPolicy.improved(previous, snapshot(6, 4, 1, 3)));

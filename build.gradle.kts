@@ -74,6 +74,43 @@ tasks {
     publishPlugin {
         token.set(System.getenv("PUBLISH_TOKEN"))
     }
+
+    named<Test>("test") {
+        // Real API evaluation is paid and must never run as part of the ordinary test suite.
+        exclude("**/UnitMindRealApiEvaluationTest.class")
+    }
+
+    register<Test>("unitMindEval") {
+        group = "verification"
+        description = "Runs the checkpointed UnitMind real-API generation evaluation suite."
+        testClassesDirs = sourceSets["test"].output.classesDirs
+        classpath = sourceSets["test"].runtimeClasspath
+        include("**/UnitMindRealApiEvaluationTest.class")
+        maxParallelForks = 1
+        maxHeapSize = "3g"
+        failFast = false
+        outputs.upToDateWhen { false }
+
+        systemProperty("unitmind.eval.enabled", "true")
+        systemProperty("unitmind.eval.root", rootProject.projectDir.absolutePath)
+        systemProperty("unitmind.eval.reports",
+                layout.buildDirectory.dir("reports/unitmind-eval").get().asFile.absolutePath)
+        systemProperty("unitmind.eval.profile",
+                providers.gradleProperty("unitmindEvalProfile").orElse("regular").get())
+        systemProperty("unitmind.eval.case",
+                providers.gradleProperty("unitmindEvalCase").orElse("").get())
+        systemProperty("unitmind.eval.resume",
+                providers.gradleProperty("unitmindEvalResume").orElse("").get())
+        systemProperty("unitmind.eval.promoteBaseline",
+                providers.gradleProperty("unitmindEvalPromoteBaseline").orElse("false").get())
+        systemProperty("unitmind.eval.gitRevision",
+                providers.environmentVariable("GIT_COMMIT").orElse("unknown").get())
+
+        testLogging {
+            events("passed", "failed", "skipped")
+            showStandardStreams = true
+        }
+    }
 }
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))

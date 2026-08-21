@@ -1,0 +1,7 @@
+Apache Commons Lang is licensed under the Apache License, Version 2.0.
+
+Upstream: https://github.com/apache/commons-lang
+Evaluation fixtures record Apache Commons Lang 3.14.0 as their source version.
+
+The complete license text is available at https://www.apache.org/licenses/LICENSE-2.0 and in the
+upstream distribution. This attribution file accompanies the small adapted evaluation fixtures.

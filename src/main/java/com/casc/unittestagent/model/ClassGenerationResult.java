@@ -9,6 +9,8 @@ public class ClassGenerationResult extends GenerationResult {
     private List<MethodGenerationItem> methodItems = new ArrayList<>();
     private boolean cancelled;
     private boolean complete;
+    private ClassJUnitRepairReport classJUnitRepairReport =
+            ClassJUnitRepairReport.status(ClassJUnitStatus.NOT_RUN);
 
     public ClassGenerationResult() {
         setGenerationScope(GenerationScope.CLASS);
@@ -22,4 +24,9 @@ public class ClassGenerationResult extends GenerationResult {
     public void setCancelled(boolean cancelled) { this.cancelled = cancelled; }
     public boolean isComplete() { return complete; }
     public void setComplete(boolean complete) { this.complete = complete; }
+    public ClassJUnitRepairReport getClassJUnitRepairReport() { return classJUnitRepairReport; }
+    public void setClassJUnitRepairReport(ClassJUnitRepairReport value) {
+        classJUnitRepairReport = value == null
+                ? ClassJUnitRepairReport.status(ClassJUnitStatus.NOT_RUN) : value;
+    }
 }

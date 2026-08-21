@@ -27,6 +27,11 @@ public interface LlmClient {
         return generateUnitTest(request);
     }
 
+    /** 根据完整类的 JUnit 失败诊断修复最终测试类。 */
+    default LlmGenerationResponse repairClassTest(LlmGenerationRequest request) throws Exception {
+        return repairUnitTest(request);
+    }
+
     /**
      * 仅生成 Mock 策略候选。
      */

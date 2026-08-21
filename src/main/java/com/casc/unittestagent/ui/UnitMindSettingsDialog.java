@@ -38,7 +38,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JTextField apiUrl = new JTextField();
     private final JPasswordField apiKey = new JPasswordField();
     private final JTextField model = new JTextField();
-    private final JSpinner timeoutSeconds = new JSpinner(new SpinnerNumberModel(60, 1, 600, 1));
+    private final JSpinner timeoutSeconds = new JSpinner(new SpinnerNumberModel(180, 1, 600, 1));
     private final JSpinner maxTokens = new JSpinner(new SpinnerNumberModel(12000, 256, 32000, 256));
     private final JSpinner compileRepairRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
     private final JSpinner temperature = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.1));

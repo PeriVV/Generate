@@ -1,0 +1,1 @@
+{"id":"pure-004","scope":"METHOD","sourceKind":"SELF","difficulty":"EASY","branchBand":"NONE","targetSource":"src/main/java/eval/cases/pure004/VectorMath.java","targetClass":"eval.cases.pure004.VectorMath","targetMethod":"dot(int[],int[])","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["pure","array","branch-none"]}

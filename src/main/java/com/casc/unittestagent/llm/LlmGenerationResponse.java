@@ -18,6 +18,7 @@ public class LlmGenerationResponse {
     private String oracleDecision = "";
     private List<LlmCodeEdit> edits = new ArrayList<>();
     private List<LlmMethodPatch> methodPatches = new ArrayList<>();
+    private String repairScope = "METHOD_ONLY";
 
     public MockStrategy getMockStrategy() {
         return mockStrategy;
@@ -68,4 +69,8 @@ public class LlmGenerationResponse {
         methodPatches = value == null ? new ArrayList<>() : value;
     }
     public boolean hasMethodPatches() { return methodPatches != null && !methodPatches.isEmpty(); }
+    public String getRepairScope() { return repairScope; }
+    public void setRepairScope(String value) {
+        repairScope = value == null || value.isBlank() ? "METHOD_ONLY" : value;
+    }
 }

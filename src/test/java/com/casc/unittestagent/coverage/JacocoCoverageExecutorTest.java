@@ -148,6 +148,68 @@ public class JacocoCoverageExecutorTest extends TestCase {
         }
     }
 
+    public void testRecoversNestedMethodWhenSnapshotPointsAtOuterSameSignature() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-jacoco-nested-recovery-test-");
+        Path source = root.resolve("source/sample");
+        Path classes = root.resolve("classes");
+        Files.createDirectories(source);
+        Files.createDirectories(classes);
+        String subject = """
+                package sample;
+                public abstract class Wrapper {
+                    public abstract Wrapper append(char value);
+                    public static final class Nested extends Wrapper {
+                        @Override
+                        public Nested append(char value) {
+                            return this;
+                        }
+                    }
+                }
+                """;
+        String test = """
+                package sample;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertNotNull;
+                class WrapperTest {
+                    @Test void appendsThroughNestedImplementation() {
+                        assertNotNull(new Wrapper.Nested().append('x'));
+                    }
+                }
+                """;
+        Path subjectFile = source.resolve("Wrapper.java");
+        Path testFile = source.resolve("WrapperTest.java");
+        Files.writeString(subjectFile, subject, StandardCharsets.UTF_8);
+        Files.writeString(testFile, test, StandardCharsets.UTF_8);
+        Process javac = new ProcessBuilder("javac", "--release", "17", "-g", "-cp",
+                System.getProperty("java.class.path"), "-d", classes.toString(),
+                subjectFile.toString(), testFile.toString()).redirectErrorStream(true).start();
+        String javacOutput = new String(javac.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(javacOutput, 0, javac.waitFor());
+
+        MethodModel method = new MethodModel();
+        method.setClassName("Nested");
+        method.setMethodName("append");
+        method.setMethodBodyText("{ return this; }");
+        method.setSourceStartLine(5);
+        method.setSourceEndLine(8);
+        String java = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java").toString();
+
+        // Simulate the historical snapshot bug: target owner is the outer class, while the selected
+        // source range belongs to its nested concrete implementation.
+        try (CompiledTestArtifact artifact = new CompiledTestArtifact(root, classes,
+                "sample.WrapperTest", "sample.Wrapper", java,
+                new ArrayList<>(), new ArrayList<>())) {
+            CoverageRunResult result = new JacocoCoverageExecutor().execute(
+                    artifact, method, subject, new CoverageConfig(), () -> false);
+
+            assertFalse(result.getSnapshot().getMessage(), result.isEnvironmentError());
+            assertTrue(result.getSnapshot().getMessage(), result.getSnapshot().isAvailable());
+            assertEquals(1, result.getSnapshot().getLine().getCovered());
+            assertEquals(0, result.getSnapshot().getLine().getMissed());
+        }
+    }
+
     public void testDoesNotMixLocalClassBranchesIntoSelectedMethod() throws Exception {
         Path root = Files.createTempDirectory("unitmind-jacoco-local-class-test-");
         Path source = root.resolve("source/sample");

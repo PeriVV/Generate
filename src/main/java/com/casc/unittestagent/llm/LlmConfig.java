@@ -9,7 +9,7 @@ public class LlmConfig {
     private String apiUrl;
     private String apiKey;
     private String model;
-    private int timeoutSeconds = 60;
+    private int timeoutSeconds = 180;
     private int maxTokens = 12000;
     private int maxCompileRepairRounds = 5;
     private double temperature = 0.2;

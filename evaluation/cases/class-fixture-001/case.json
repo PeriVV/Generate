@@ -1,0 +1,1 @@
+{"id":"class-fixture-001","scope":"CLASS","sourceKind":"SELF","difficulty":"HARD","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classfixture001/ProfileService.java","targetClass":"eval.cases.classfixture001.ProfileService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["class","fixture","object-graph"]}

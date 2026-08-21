@@ -56,6 +56,46 @@ public class JacocoCoverageExecutor {
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern CAUSED_BY = Pattern.compile("^Caused by:\\s*([\\w.$]+)");
 
+    /** 只执行完整 JUnit 测试类，不计算任何方法或类级覆盖率。 */
+    public CoverageRunResult executeTestsOnly(CompiledTestArtifact artifact,
+                                              CoverageConfig config,
+                                              BooleanSupplier cancelled) {
+        CoverageRunResult result = new CoverageRunResult();
+        CoverageSnapshot snapshot = new CoverageSnapshot();
+        result.setSnapshot(snapshot);
+        if (artifact == null || !artifact.isSuccessful()) {
+            result.setEnvironmentError(true);
+            snapshot.setMessage("候选测试尚未成功编译。");
+            return result;
+        }
+        try {
+            Path execFile = artifact.getRoot().resolve("junit-only.exec");
+            Path reports = artifact.getRoot().resolve("junit-only-reports");
+            Path agent = artifact.getRoot().resolve("junit-only-agent.jar");
+            Files.createDirectories(reports);
+            AgentJar.extractTo(agent.toFile());
+            TestExecutionSummary execution = runProcess(artifact, execFile, reports, agent,
+                    config == null ? new CoverageConfig() : config, cancelled);
+            snapshot.setExecution(execution);
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                result.setCancelled(true);
+                snapshot.setMessage("JUnit 执行已取消。");
+            } else if (!execution.isSuccessful()) {
+                if (isExecutionEnvironmentFailure(execution)) result.setEnvironmentError(true);
+                snapshot.setMessage(execution.isTimedOut() ? "候选测试执行超时。"
+                        : execution.getFound() == 0 ? "未发现可执行的 JUnit 5 测试。"
+                        : "候选测试执行失败。");
+            } else {
+                snapshot.setMessage("完整 JUnit 测试类执行通过。");
+            }
+            return result;
+        } catch (Exception ex) {
+            result.setEnvironmentError(true);
+            snapshot.setMessage("JUnit 执行环境错误：" + safeMessage(ex));
+            return result;
+        }
+    }
+
     public CoverageRunResult execute(CompiledTestArtifact artifact,
                                      MethodModel method,
                                      String sourceText,
@@ -307,6 +347,13 @@ public class JacocoCoverageExecutor {
             collectLines(targetCoverage, start, end, lines);
         }
         if (lines.isEmpty()) {
+            IMethodCoverage nested = selectNestedMethodCoverage(
+                    builder, targetCoverage, target, method, start, end);
+            if (nested != null) {
+                collectLines(nested, start, end, lines);
+            }
+        }
+        if (lines.isEmpty()) {
             if (method != null && (method.getMethodBodyText() == null || method.getMethodBodyText().isBlank())) {
                 throw new IOException("当前选择的方法是抽象或 native 声明，本身没有可执行字节码；"
                         + "请选择具体实现方法后重新生成测试。");
@@ -356,6 +403,42 @@ public class JacocoCoverageExecutor {
             int distance = Math.abs(first - sourceStart) + Math.abs(last - sourceEnd);
             if (distance < bestDistance) {
                 selected = candidate;
+                bestDistance = distance;
+            }
+        }
+        return selected;
+    }
+
+    /**
+     * 符号快照偶尔会把内部类具体方法错配到同签名的外部抽象方法。JaCoCo 已分析同一
+     * 源文件的所有 class，因此可用方法名和源码行范围确定性地恢复真正的嵌套二进制类。
+     */
+    private IMethodCoverage selectNestedMethodCoverage(CoverageBuilder builder,
+                                                       IClassCoverage requestedOwner,
+                                                       String requestedBinaryName,
+                                                       MethodModel method,
+                                                       int sourceStart,
+                                                       int sourceEnd) {
+        if (builder == null || requestedOwner == null || requestedBinaryName == null || method == null) return null;
+        IMethodCoverage selected = null;
+        int bestDistance = Integer.MAX_VALUE;
+        for (IClassCoverage candidateOwner : builder.getClasses()) {
+            if (candidateOwner == requestedOwner
+                    || !candidateOwner.getName().startsWith(requestedBinaryName + "$")) {
+                continue;
+            }
+            if (requestedOwner.getSourceFileName() != null
+                    && candidateOwner.getSourceFileName() != null
+                    && !requestedOwner.getSourceFileName().equals(candidateOwner.getSourceFileName())) {
+                continue;
+            }
+            IMethodCoverage candidateMethod = selectMethodCoverage(
+                    candidateOwner, method, sourceStart, sourceEnd);
+            if (candidateMethod == null) continue;
+            int distance = Math.abs(candidateMethod.getFirstLine() - sourceStart)
+                    + Math.abs(candidateMethod.getLastLine() - sourceEnd);
+            if (distance < bestDistance) {
+                selected = candidateMethod;
                 bestDistance = distance;
             }
         }

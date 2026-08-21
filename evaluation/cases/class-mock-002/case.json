@@ -1,0 +1,1 @@
+{"id":"class-mock-002","scope":"CLASS","sourceKind":"SELF","difficulty":"MEDIUM","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classmock002/BillingService.java","targetClass":"eval.cases.classmock002.BillingService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":true,"tags":["class","mock","multiple-dependencies"]}

@@ -232,7 +232,20 @@ public class ConstraintExtractor {
      * @return 取反后的条件表达式文本
      */
     public String negate(Expression expression) {
-        return negate(expression.toString());
+        if (expression != null && expression.isBinaryExpr()) {
+            BinaryExpr binary = expression.asBinaryExpr();
+            if (binary.getOperator() == BinaryExpr.Operator.AND) {
+                return "(" + negate(binary.getLeft()) + ") || (" + negate(binary.getRight()) + ")";
+            }
+            if (binary.getOperator() == BinaryExpr.Operator.OR) {
+                return "(" + negate(binary.getLeft()) + ") && (" + negate(binary.getRight()) + ")";
+            }
+            String inverse = inverseOperator(binary.getOperator());
+            if (inverse != null) {
+                return binary.getLeft() + " " + inverse + " " + binary.getRight();
+            }
+        }
+        return negate(expression == null ? "" : expression.toString());
     }
 
     /**
@@ -291,15 +304,21 @@ public class ConstraintExtractor {
             return null;
         }
 
-        String kind = kindOf(expression, leftIsParameter, rightIsParameter, right);
+        String kind = kindOf(expression, leftIsParameter, rightIsParameter, left, right);
         if (kind == null) {
             return null;
         }
 
         ConstraintModel constraint = new ConstraintModel();
-        constraint.setParameterName(leftIsParameter ? left : right);
-        constraint.setExpression(expression.toString());
-        constraint.setSafeExpression(negate(expression));
+        String parameterName = leftIsParameter ? left : right;
+        boolean nullComparison = isNullComparison(expression, left, right);
+        constraint.setParameterName(parameterName);
+        constraint.setExpression(nullComparison
+                ? parameterName + " " + expression.getOperator().asString() + " null"
+                : expression.toString());
+        constraint.setSafeExpression(nullComparison
+                ? parameterName + " " + inverseOperator(expression.getOperator()) + " null"
+                : negate(expression));
         constraint.setKind(exceptionGuard ? "EXCEPTION_GUARD" : kind);
         constraint.setSource(source);
         constraint.setConfidence(0.8d);
@@ -310,9 +329,10 @@ public class ConstraintExtractor {
      * 判断约束表达式的业务分类。
      * 分类结果决定后续是按空值、范围还是参数关系处理测试输入。
      */
-    private String kindOf(BinaryExpr expression, boolean leftIsParameter, boolean rightIsParameter, String right) {
+    private String kindOf(BinaryExpr expression, boolean leftIsParameter, boolean rightIsParameter, String left, String right) {
         BinaryExpr.Operator operator = expression.getOperator();
-        if ((operator == BinaryExpr.Operator.EQUALS || operator == BinaryExpr.Operator.NOT_EQUALS) && "null".equals(right)) {
+        if ((operator == BinaryExpr.Operator.EQUALS || operator == BinaryExpr.Operator.NOT_EQUALS)
+                && ("null".equals(left) || "null".equals(right))) {
             return operator == BinaryExpr.Operator.EQUALS ? "NULL_CHECK" : "NOT_NULL_CHECK";
         }
         if (leftIsParameter && rightIsParameter) {
@@ -322,6 +342,22 @@ public class ConstraintExtractor {
                 || operator == BinaryExpr.Operator.GREATER || operator == BinaryExpr.Operator.GREATER_EQUALS) {
             return "RANGE";
         }
+        return null;
+    }
+
+    private boolean isNullComparison(BinaryExpr expression, String left, String right) {
+        return (expression.getOperator() == BinaryExpr.Operator.EQUALS
+                || expression.getOperator() == BinaryExpr.Operator.NOT_EQUALS)
+                && ("null".equals(left) || "null".equals(right));
+    }
+
+    private String inverseOperator(BinaryExpr.Operator operator) {
+        if (operator == BinaryExpr.Operator.EQUALS) return "!=";
+        if (operator == BinaryExpr.Operator.NOT_EQUALS) return "==";
+        if (operator == BinaryExpr.Operator.GREATER) return "<=";
+        if (operator == BinaryExpr.Operator.GREATER_EQUALS) return "<";
+        if (operator == BinaryExpr.Operator.LESS) return ">=";
+        if (operator == BinaryExpr.Operator.LESS_EQUALS) return ">";
         return null;
     }
 

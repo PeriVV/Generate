@@ -76,5 +76,76 @@ public class OpenAiCompatibleLlmClientTest extends TestCase {
 
         assertFalse(body.has("response_format"));
         assertFalse(body.has("enable_thinking"));
+        assertFalse(body.has("thinking"));
+    }
+
+    public void testDeepSeekDisablesThinkingAndRequestsJsonMode() {
+        LlmConfig config = new LlmConfig();
+        config.setApiUrl("https://api.deepseek.com");
+        config.setModel("deepseek-v4-flash");
+
+        JSONObject body = new OpenAiCompatibleLlmClient(config)
+                .requestBody("return JSON", "generate JSON");
+
+        assertEquals("json_object", body.getJSONObject("response_format").getString("type"));
+        assertEquals("disabled", body.getJSONObject("thinking").getString("type"));
+        assertEquals("deepseek-v4-flash", body.getString("model"));
+    }
+
+    public void testDeepSeekLegacyModelNamesMapToV4Flash() {
+        LlmConfig config = new LlmConfig();
+        config.setApiUrl("https://api.deepseek.com/v1");
+        config.setModel("deepseek-chat");
+
+        JSONObject body = new OpenAiCompatibleLlmClient(config)
+                .requestBody("return JSON", "generate JSON");
+
+        assertEquals("deepseek-v4-flash", body.getString("model"));
+    }
+
+    public void testEndpointUrlAppendsChatCompletionsPath() {
+        LlmConfig config = new LlmConfig();
+        OpenAiCompatibleLlmClient client = new OpenAiCompatibleLlmClient(config);
+
+        config.setApiUrl("https://api.deepseek.com");
+        assertEquals("https://api.deepseek.com/chat/completions", client.endpointUrl());
+
+        config.setApiUrl("https://api.deepseek.com/");
+        assertEquals("https://api.deepseek.com/chat/completions", client.endpointUrl());
+
+        config.setApiUrl("https://api.deepseek.com/v1");
+        assertEquals("https://api.deepseek.com/v1/chat/completions", client.endpointUrl());
+
+        config.setApiUrl("https://api.deepseek.com/v1/");
+        assertEquals("https://api.deepseek.com/v1/chat/completions", client.endpointUrl());
+
+        config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+        assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", client.endpointUrl());
+    }
+
+    public void testRejectsContentFilteredCompletion() {
+        String body = """
+                {"choices":[{"finish_reason":"content_filter","message":{"content":""}}]}
+                """;
+
+        try {
+            new OpenAiCompatibleLlmClient(new LlmConfig()).extractMessageContent(body);
+            fail("应拒绝被内容过滤的响应");
+        } catch (LlmResponseFormatException ex) {
+            assertTrue(ex.getMessage().contains("内容安全"));
+        }
+    }
+
+    public void testRejectsInsufficientResourceCompletion() {
+        String body = """
+                {"choices":[{"finish_reason":"insufficient_system_resource","message":{"content":""}}]}
+                """;
+
+        try {
+            new OpenAiCompatibleLlmClient(new LlmConfig()).extractMessageContent(body);
+            fail("应拒绝推理资源不足的响应");
+        } catch (LlmResponseFormatException ex) {
+            assertTrue(ex.getMessage().contains("推理资源不足"));
+        }
     }
 }

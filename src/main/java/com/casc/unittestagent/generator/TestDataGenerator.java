@@ -2,6 +2,7 @@ package com.casc.unittestagent.generator;
 
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
+import com.casc.unittestagent.model.TestDataRangeConfig;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,14 +35,16 @@ public class TestDataGenerator {
             parameter.setNormalValues(normalValues);
 
             List<String> boundaryValues = new ArrayList<>();
-            boundaryValues.add(randomGenerator.minValueExpression(parameter.getType()));
-            boundaryValues.add(randomGenerator.maxValueExpression(parameter.getType()));
+            TestDataRangeConfigManager.findByType(parameter.getType())
+                    .filter(this::hasNumericBoundary)
+                    .ifPresent(config -> {
+                        boundaryValues.add(randomGenerator.minValueExpression(parameter.getType()));
+                        boundaryValues.add(randomGenerator.maxValueExpression(parameter.getType()));
+                    });
             parameter.setBoundaryValues(boundaryValues);
 
             List<String> invalidValues = new ArrayList<>();
-            if (parameter.isNullable()) {
-                invalidValues.add("null");
-            } else if (supportsBelowMinInvalidValue(parameter.getType())) {
+            if (!parameter.isNullable() && supportsBelowMinInvalidValue(parameter.getType())) {
                 invalidValues.add(randomGenerator.belowMinValueExpression(parameter.getType()));
             }
             parameter.setInvalidValues(invalidValues);
@@ -54,7 +57,12 @@ public class TestDataGenerator {
      */
     private boolean supportsBelowMinInvalidValue(String javaType) {
         return TestDataRangeConfigManager.findByType(javaType)
-                .map(config -> !config.isCandidateType())
-                .orElse(true);
+                .map(config -> !config.isCandidateType() && config.getMinValue() != null)
+                .orElse(false);
+    }
+
+    private boolean hasNumericBoundary(TestDataRangeConfig config) {
+        return config != null && !config.isCandidateType()
+                && config.getMinValue() != null && config.getMaxValue() != null;
     }
 }

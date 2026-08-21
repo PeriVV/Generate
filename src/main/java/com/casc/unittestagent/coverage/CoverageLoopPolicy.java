@@ -13,6 +13,26 @@ public final class CoverageLoopPolicy {
                 || snapshot.getBranch().getRate() >= config.getBranchThreshold());
     }
 
+    /** 达到配置阈值不是探索终点；只有所有适用计数器都没有遗漏时才算满覆盖。 */
+    public static boolean perfect(CoverageSnapshot snapshot) {
+        return snapshot != null && snapshot.isAvailable()
+                && snapshot.getLine().getMissed() == 0
+                && (!snapshot.getBranch().isApplicable()
+                || snapshot.getBranch().getMissed() == 0);
+    }
+
+    /**
+     * 只要还有可行动缺口和探索预算，就继续提升覆盖率；该判断有意不依赖“是否已达阈值”。
+     */
+    public static boolean shouldContinueImproving(CoverageSnapshot snapshot,
+                                                  boolean hasActionableGaps,
+                                                  boolean explorationAvailable) {
+        return snapshot != null && snapshot.isAvailable()
+                && !perfect(snapshot)
+                && hasActionableGaps
+                && explorationAvailable;
+    }
+
     public static boolean improved(CoverageSnapshot previous, CoverageSnapshot current) {
         if (previous == null || current == null) return false;
         int previousLines = previous.getLine().getCovered();

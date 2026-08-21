@@ -1,6 +1,7 @@
 package com.casc.unittestagent.generator;
 
 import com.casc.unittestagent.model.DependencyModel;
+import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
@@ -81,9 +82,11 @@ public class MockStrategyPlanner {
                     "mock",
                     dependency.isMethodParameter() ? "框架或接口型方法参数，需要作为 Mock 传入。" : "普通字段依赖，可生成 @Mock。"));
             for (String callExpression : dependency.getCallExpressions()) {
-                verifyRules.add("verify(" + fieldName + ")." + callExpression);
-                if (looksLikeQuery(methodName(callExpression))) {
-                    whenRules.add("when(" + fieldName + "." + callExpression + ").thenReturn(" + defaultReturnValue(methodModel) + ")");
+                // 发现调用只能证明协作者参与了实现，不能证明调用次数是业务契约，因此不自动生成 verify。
+                String returnType = dependencyCallReturnType(methodModel, dependency, callExpression);
+                if (looksLikeQuery(methodName(callExpression))
+                        && isOptionalType(returnType) && hasEmptyOptionalScenario(scenarios)) {
+                    whenRules.add("when(" + fieldName + "." + callExpression + ").thenReturn(Optional.empty())");
                 }
             }
         }
@@ -335,15 +338,50 @@ public class MockStrategyPlanner {
         return index < 0 ? callExpression : callExpression.substring(0, index);
     }
 
-    /**
-     * 根据被测方法返回类型选择展示用 Mock 返回值。
-     * Optional 返回值不能展示 thenReturn(null)，否则会误导生成代码和用户预期。
-     */
-    private String defaultReturnValue(MethodModel methodModel) {
-        if (methodModel.getReturnType() != null && methodModel.getReturnType().startsWith("Optional<")) {
-            return "Optional.of(connection)";
+    /** 根据调用上下文解析依赖方法自身的返回类型，禁止借用被测方法返回类型猜测桩值。 */
+    private String dependencyCallReturnType(MethodModel methodModel,
+                                            DependencyModel dependency,
+                                            String callExpression) {
+        String expectedExpression = compact(dependency.getFieldName() + "." + callExpression);
+        for (CallContextModel context : methodModel.getCallContexts()) {
+            if (context == null || context.getReturnType() == null || context.getReturnType().isBlank()) {
+                continue;
+            }
+            String expression = compact(context.getExpression());
+            boolean sameExpression = expression.equals(expectedExpression);
+            boolean sameOwnerAndMethod = context.getOwner() != null
+                    && context.getOwner().startsWith(dependency.getFieldName() + ":")
+                    && methodName(callExpression).equals(context.getMethodName());
+            if (sameExpression || sameOwnerAndMethod) {
+                return context.getReturnType();
+            }
         }
-        return "null";
+
+        // 直接 return dependency.call(...) 时，Java 类型系统保证调用结果可赋给被测方法返回类型。
+        String body = compact(methodModel.getMethodBodyText());
+        if (body.contains("return" + expectedExpression + ";")) {
+            return methodModel.getReturnType();
+        }
+        return "";
+    }
+
+    private boolean hasEmptyOptionalScenario(List<TestScenario> scenarios) {
+        if (scenarios == null) return false;
+        for (TestScenario scenario : scenarios) {
+            if (scenario != null && scenario.getExpectedAssertions() != null
+                    && scenario.getExpectedAssertions().contains("returned value equals Optional.empty()")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isOptionalType(String type) {
+        return type != null && (type.startsWith("Optional<") || "Optional".equals(type));
+    }
+
+    private String compact(String text) {
+        return text == null ? "" : text.replaceAll("\\s+", "");
     }
 
 }

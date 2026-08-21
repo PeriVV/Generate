@@ -1,0 +1,1 @@
+{"id":"class-mock-003","scope":"CLASS","sourceKind":"SELF","difficulty":"MEDIUM","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classmock003/TicketService.java","targetClass":"eval.cases.classmock003.TicketService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["class","mock","state"]}

@@ -32,6 +32,8 @@ public class LlmGenerationRequest {
     private String accessModifier;
     private boolean staticMethod;
     private String methodSourceCode;
+    /** 整类最终运行修复时使用的完整生产类源码。 */
+    private String classSourceCode;
     private String classFields;
     private String imports;
     private List<String> knownTypes = new ArrayList<>();
@@ -136,6 +138,9 @@ public class LlmGenerationRequest {
     public void setMethodSourceCode(String methodSourceCode) {
         this.methodSourceCode = methodSourceCode;
     }
+
+    public String getClassSourceCode() { return classSourceCode; }
+    public void setClassSourceCode(String value) { classSourceCode = value == null ? "" : value; }
 
     public String getClassFields() {
         return classFields;

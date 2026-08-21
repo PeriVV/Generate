@@ -16,12 +16,15 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.type.ReferenceType;
 
 import java.util.ArrayList;
@@ -355,7 +358,7 @@ public class JavaSourceAnalyzer {
 
     /**
      * 从方法声明中提取参数模型。
-     * 非基本类型默认标记为可空，为异常输入生成提供基础判断。
+     * 引用类型本身不能证明 null 是合法输入；只有可空注解或源码中明确处理 null 的路径才标记为可空。
      */
     private List<ParameterModel> extractParameters(MethodDeclaration methodDeclaration) {
         List<ParameterModel> parameters = new ArrayList<>();
@@ -363,10 +366,63 @@ public class JavaSourceAnalyzer {
             ParameterModel model = new ParameterModel();
             model.setName(parameter.getNameAsString());
             model.setType(parameter.getType().toString());
-            model.setNullable(!parameter.getType().isPrimitiveType());
+            model.setNullable(!parameter.getType().isPrimitiveType()
+                    && (hasNullableAnnotation(parameter) || hasHandledNullPath(methodDeclaration, parameter.getNameAsString())));
             parameters.add(model);
         }
         return parameters;
+    }
+
+    /** 只接受明确表达可空语义的常见注解，避免把所有引用类型都当作 null 边界。 */
+    private boolean hasNullableAnnotation(Parameter parameter) {
+        return parameter.getAnnotations().stream().anyMatch(annotation -> {
+            String name = annotation.getName().getIdentifier();
+            return "Nullable".equals(name) || "CheckForNull".equals(name)
+                    || "NullAllowed".equals(name) || "MaybeNull".equals(name);
+        });
+    }
+
+    /**
+     * 判断源码是否存在能够正常处理 null 的直接路径。
+     * `if (value == null) throw ...` 是非空约束，由异常场景覆盖，不能再生成“正常处理 null”的虚假边界场景。
+     */
+    private boolean hasHandledNullPath(MethodDeclaration method, String parameterName) {
+        for (IfStmt ifStmt : method.findAll(IfStmt.class)) {
+            if (!ifStmt.getCondition().isBinaryExpr()) {
+                continue;
+            }
+            BinaryExpr condition = ifStmt.getCondition().asBinaryExpr();
+            if (!isDirectNullComparison(condition, parameterName)) {
+                continue;
+            }
+            boolean nullEntersThen = condition.getOperator() == BinaryExpr.Operator.EQUALS;
+            if (nullEntersThen) {
+                return firstDirectThrow(ifStmt.getThenStmt()) == null;
+            }
+            return ifStmt.getElseStmt().map(this::firstDirectThrow).orElse(null) == null;
+        }
+        return false;
+    }
+
+    private boolean isDirectNullComparison(BinaryExpr expression, String parameterName) {
+        if (expression.getOperator() != BinaryExpr.Operator.EQUALS
+                && expression.getOperator() != BinaryExpr.Operator.NOT_EQUALS) {
+            return false;
+        }
+        String left = expression.getLeft().toString();
+        String right = expression.getRight().toString();
+        return (parameterName.equals(left) && "null".equals(right))
+                || ("null".equals(left) && parameterName.equals(right));
+    }
+
+    private ThrowStmt firstDirectThrow(Statement statement) {
+        if (statement == null) return null;
+        if (statement.isThrowStmt()) return statement.asThrowStmt();
+        if (!statement.isBlockStmt()) return null;
+        for (Statement nested : statement.asBlockStmt().getStatements()) {
+            if (nested.isThrowStmt()) return nested.asThrowStmt();
+        }
+        return null;
     }
 
     /**

@@ -1,0 +1,1 @@
+{"id":"class-pure-001","scope":"CLASS","sourceKind":"SELF","difficulty":"MEDIUM","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classpure001/PricingRules.java","targetClass":"eval.cases.classpure001.PricingRules","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":true,"tags":["class","pure","multi-method"]}

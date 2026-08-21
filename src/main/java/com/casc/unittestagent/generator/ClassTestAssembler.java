@@ -12,12 +12,14 @@ import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.comments.LineComment;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
+import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.Modifier;
 
 import java.nio.charset.StandardCharsets;
@@ -162,6 +164,7 @@ public class ClassTestAssembler {
             }
         }
 
+        normalizeMockitoLifecycle(output, target, warnings);
         sortImports(output);
         String rendered = output.toString();
         updateLineRanges(rendered, testOwners);
@@ -171,6 +174,34 @@ public class ClassTestAssembler {
         file.setFileName(classModel.getClassName() + "Test.java");
         file.setContent(rendered);
         return new AssemblyResult(file, rejected, warnings);
+    }
+
+    /**
+     * MockitoExtension and MockitoAnnotations both initialize every @Mock/@InjectMocks field. Keeping
+     * both in an assembled class replaces the mocks after the subject has been injected, so verifies
+     * observe a different instance from the one used by the subject. Prefer the JUnit 5 extension
+     * whenever any accepted candidate requested it.
+     */
+    private void normalizeMockitoLifecycle(CompilationUnit unit,
+                                           ClassOrInterfaceDeclaration target,
+                                           List<String> warnings) {
+        boolean usesMockitoExtension = target.getAnnotations().stream()
+                .anyMatch(annotation -> annotation.toString().contains("MockitoExtension"));
+        if (!usesMockitoExtension) return;
+
+        List<MethodDeclaration> duplicateInitializers = target.getMethods().stream()
+                .filter(this::isSharedMockitoInitializer)
+                .toList();
+        duplicateInitializers.forEach(MethodDeclaration::remove);
+        if (duplicateInitializers.isEmpty()) return;
+
+        boolean stillUsesBeforeEach = target.getMethods().stream()
+                .anyMatch(method -> annotationNames(method).contains("BeforeEach"));
+        unit.getImports().removeIf(declaration ->
+                declaration.getNameAsString().equals("org.mockito.MockitoAnnotations")
+                        || !stillUsesBeforeEach
+                        && declaration.getNameAsString().equals("org.junit.jupiter.api.BeforeEach"));
+        warnings.add("检测到 MockitoExtension，已移除重复的 MockitoAnnotations 生命周期初始化，避免 @InjectMocks 持有失效 mock。");
     }
 
     private Candidate parseCandidate(String code, String expectedClassName) {
@@ -303,6 +334,35 @@ public class ClassTestAssembler {
                                             String subjectType,
                                             String subjectName,
                                             Map<String, String> realFields) {
+        // Class-mode methods must use the one assembled fixture. LLM candidates often create a
+        // semantically equivalent local subject despite that contract; route those references to
+        // the shared @InjectMocks field before applying the strict isolation gate.
+        for (MethodDeclaration method : candidate.methods) {
+            for (VariableDeclarator variable : new ArrayList<>(method.findAll(VariableDeclarator.class))) {
+                if (!sameType(subjectType, variable.getType().asString()) || variable.getInitializer().isEmpty()
+                        || !variable.getInitializer().get().isObjectCreationExpr()
+                        || !sameType(subjectType,
+                        variable.getInitializer().get().asObjectCreationExpr().getType().asString())) continue;
+                String localName = variable.getNameAsString();
+                method.findAll(NameExpr.class).stream()
+                        .filter(expression -> localName.equals(expression.getNameAsString()))
+                        .forEach(expression -> expression.setName(subjectName));
+                variable.findAncestor(ExpressionStmt.class).ifPresent(ExpressionStmt::remove);
+            }
+            for (AssignExpr assignment : new ArrayList<>(method.findAll(AssignExpr.class))) {
+                if (!assignment.getTarget().isNameExpr()
+                        || !subjectName.equals(assignment.getTarget().asNameExpr().getNameAsString())
+                        || !assignment.getValue().isObjectCreationExpr()
+                        || !sameType(subjectType,
+                        assignment.getValue().asObjectCreationExpr().getType().asString())) continue;
+                assignment.findAncestor(ExpressionStmt.class).ifPresent(ExpressionStmt::remove);
+            }
+            for (ObjectCreationExpr creation : new ArrayList<>(method.findAll(ObjectCreationExpr.class))) {
+                if (sameType(subjectType, creation.getType().asString())) {
+                    creation.replace(new NameExpr(subjectName));
+                }
+            }
+        }
         for (FieldDeclaration field : candidate.fields) {
             if (field.getVariables().size() != 1) continue;
             String oldName = field.getVariable(0).getNameAsString();

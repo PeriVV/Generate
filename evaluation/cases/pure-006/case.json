@@ -1,0 +1,1 @@
+{"id":"pure-006","scope":"METHOD","sourceKind":"SELF","difficulty":"EASY","branchBand":"LOW","targetSource":"src/main/java/eval/cases/pure006/ScoreBand.java","targetClass":"eval.cases.pure006.ScoreBand","targetMethod":"grade(int)","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["pure","switch","branch-low"]}

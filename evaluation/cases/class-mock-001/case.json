@@ -1,0 +1,1 @@
+{"id":"class-mock-001","scope":"CLASS","sourceKind":"SELF","difficulty":"MEDIUM","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classmock001/AccountService.java","targetClass":"eval.cases.classmock001.AccountService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["class","mock","constructor-injection"]}

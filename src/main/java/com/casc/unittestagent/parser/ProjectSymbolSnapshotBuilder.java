@@ -4,6 +4,7 @@ import com.casc.unittestagent.model.CallableSymbol;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.TypeSymbol;
+import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.project.DumbService;
@@ -22,7 +23,9 @@ import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiNewExpression;
 import com.intellij.psi.PsiParameter;
+import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiReferenceExpression;
+import com.intellij.psi.PsiRecordComponent;
 import com.intellij.psi.PsiSubstitutor;
 import com.intellij.psi.PsiType;
 import com.intellij.psi.PsiTypeParameter;
@@ -30,6 +33,7 @@ import com.intellij.psi.util.PsiTreeUtil;
 import com.intellij.psi.util.PsiTypesUtil;
 import com.intellij.psi.util.PsiUtil;
 import com.intellij.psi.search.searches.ReferencesSearch;
+import com.intellij.psi.search.searches.ClassInheritorsSearch;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -91,22 +95,76 @@ public class ProjectSymbolSnapshotBuilder {
     }
 
     private PsiMethod locateTargetMethod(PsiJavaFile psiFile, Editor editor, MethodModel methodModel) {
+        PsiMethod current = null;
         if (editor != null) {
             PsiElement element = psiFile.findElementAt(editor.getCaretModel().getOffset());
-            PsiMethod current = PsiTreeUtil.getParentOfType(element, PsiMethod.class, false);
-            if (current != null && methodModel.getMethodName().equals(current.getName())
-                    && sameParameters(current, methodModel)) {
-                return current;
+            current = PsiTreeUtil.getParentOfType(element, PsiMethod.class, false);
+        }
+
+        List<PsiMethod> matching = new ArrayList<>();
+        for (PsiMethod method : PsiTreeUtil.findChildrenOfType(psiFile, PsiMethod.class)) {
+            if (methodModel.getMethodName().equals(method.getName()) && sameParameters(method, methodModel)) {
+                matching.add(method);
             }
         }
-        for (PsiClass psiClass : psiFile.getClasses()) {
-            for (PsiMethod method : psiClass.findMethodsByName(methodModel.getMethodName(), false)) {
-                if (sameParameters(method, methodModel)) {
-                    return method;
+        if (matching.isEmpty()) return null;
+
+        Document document = PsiDocumentManager.getInstance(psiFile.getProject()).getDocument(psiFile);
+        if (current != null && matching.contains(current)
+                && sourceRangeDistance(current, methodModel, document) == 0) {
+            return current;
+        }
+
+        // JavaParser has already selected the target by caret line. Preserve that decision when PSI's
+        // caret element is whitespace/an annotation edge and therefore cannot directly find a method.
+        // This also prevents an inner concrete method from falling back to an outer abstract method
+        // with the same name and parameter list.
+        if (methodModel.getSourceStartLine() > 0 && methodModel.getSourceEndLine() > 0 && document != null) {
+            PsiMethod byRange = null;
+            int bestDistance = Integer.MAX_VALUE;
+            for (PsiMethod method : matching) {
+                int distance = sourceRangeDistance(method, methodModel, document);
+                if (distance < bestDistance) {
+                    byRange = method;
+                    bestDistance = distance;
                 }
             }
+            if (byRange != null && sourceRangesOverlap(byRange, methodModel, document)) return byRange;
         }
-        return null;
+
+        if (current != null && matching.contains(current) && ownerMatches(current, methodModel)) return current;
+        for (PsiMethod method : matching) {
+            if (ownerMatches(method, methodModel)) return method;
+        }
+        return matching.size() == 1 ? matching.get(0) : null;
+    }
+
+    private boolean ownerMatches(PsiMethod method, MethodModel model) {
+        PsiClass owner = method == null ? null : method.getContainingClass();
+        return owner != null && model != null && model.getClassName() != null
+                && model.getClassName().equals(owner.getName());
+    }
+
+    private int sourceRangeDistance(PsiMethod method, MethodModel model, Document document) {
+        int[] range = sourceLines(method, document);
+        if (range == null || model == null) return Integer.MAX_VALUE;
+        return Math.abs(range[0] - model.getSourceStartLine())
+                + Math.abs(range[1] - model.getSourceEndLine());
+    }
+
+    private boolean sourceRangesOverlap(PsiMethod method, MethodModel model, Document document) {
+        int[] range = sourceLines(method, document);
+        return range != null && model != null
+                && range[1] >= model.getSourceStartLine()
+                && range[0] <= model.getSourceEndLine();
+    }
+
+    private int[] sourceLines(PsiMethod method, Document document) {
+        if (method == null || document == null || method.getTextRange() == null) return null;
+        int startOffset = Math.max(0, Math.min(method.getTextRange().getStartOffset(), document.getTextLength()));
+        int endOffset = Math.max(startOffset,
+                Math.min(Math.max(startOffset, method.getTextRange().getEndOffset() - 1), document.getTextLength()));
+        return new int[]{document.getLineNumber(startOffset) + 1, document.getLineNumber(endOffset) + 1};
     }
 
     private boolean sameParameters(PsiMethod method, MethodModel methodModel) {
@@ -365,13 +423,32 @@ public class ProjectSymbolSnapshotBuilder {
         private void addFixtureType(PsiClass psiClass) {
             if (psiClass == null) return;
             addType(psiClass, true);
-            if (!isProjectType(psiClass) || psiClass.isInterface()) return;
+            if (!isProjectType(psiClass)) return;
+            if (psiClass.isInterface() || psiClass.hasModifierProperty(PsiModifier.ABSTRACT)) {
+                addConcreteFixtureSubtypes(psiClass);
+            }
+            if (psiClass.isInterface()) return;
             for (PsiMethod method : psiClass.getMethods()) {
                 if (!isAccessible(method) || !looksLikeFixtureMethod(method)) continue;
                 CallableSymbol callable = toCallable(method, null);
                 callable.setFixtureMethod(true);
                 addCallable(psiClass, callable, false);
             }
+        }
+
+        private void addConcreteFixtureSubtypes(PsiClass baseType) {
+            TypeSymbol base = types.get(qualifiedName(baseType));
+            if (base == null) return;
+            LinkedHashSet<String> concrete = new LinkedHashSet<>(base.getConcreteSubtypes());
+            for (PsiClass inheritor : ClassInheritorsSearch.search(baseType, baseType.getUseScope(), true)) {
+                if (types.size() >= MAX_TYPE_COUNT || concrete.size() >= 12) break;
+                if (!isProjectType(inheritor) || inheritor.isInterface()
+                        || inheritor.hasModifierProperty(PsiModifier.ABSTRACT)) continue;
+                String subtypeName = qualifiedName(inheritor);
+                if (subtypeName.isBlank() || !concrete.add(subtypeName)) continue;
+                addType(inheritor, true);
+            }
+            base.setConcreteSubtypes(new ArrayList<>(concrete));
         }
 
         private boolean looksLikeFixtureMethod(PsiMethod method) {
@@ -400,6 +477,15 @@ public class ProjectSymbolSnapshotBuilder {
                 created.setQualifiedName(qualifiedName);
                 created.setKind(kind(psiClass));
                 created.setFinalType(psiClass.hasModifierProperty(PsiModifier.FINAL));
+                created.setAbstractType(psiClass.hasModifierProperty(PsiModifier.ABSTRACT));
+                created.setSealedType(psiClass.hasModifierProperty(PsiModifier.SEALED));
+                List<String> permitted = new ArrayList<>();
+                for (PsiType permittedType : psiClass.getPermitsListTypes()) {
+                    PsiClass resolved = PsiTypesUtil.getPsiClass(permittedType);
+                    String name = qualifiedName(resolved);
+                    if (!name.isBlank()) permitted.add(name);
+                }
+                created.setPermittedSubtypes(permitted);
                 return created;
             });
             if (includeConstructors) {
@@ -408,7 +494,32 @@ public class ProjectSymbolSnapshotBuilder {
                         addCallable(psiClass, toCallable(constructor, null), true);
                     }
                 }
+                if (psiClass.isRecord()) {
+                    addCallable(psiClass, recordCanonicalConstructor(psiClass), true);
+                }
             }
+        }
+
+        private CallableSymbol recordCanonicalConstructor(PsiClass recordType) {
+            CallableSymbol symbol = new CallableSymbol();
+            String ownerName = qualifiedName(recordType);
+            List<String> parameters = new ArrayList<>();
+            for (PsiRecordComponent component : recordType.getRecordComponents()) {
+                parameters.add(canonicalType(component.getType()));
+            }
+            symbol.setOwnerQualifiedName(ownerName);
+            symbol.setName(simpleType(ownerName));
+            symbol.setParameterTypes(parameters);
+            symbol.setVisibility(recordType.hasModifierProperty(PsiModifier.PUBLIC)
+                    ? "public" : "package-private");
+            symbol.setConstructor(true);
+            symbol.setResolved(true);
+            symbol.setId(ownerName + "#<init>(" + String.join(",", parameters) + ")");
+            if (recordType.getRecordHeader() != null) {
+                symbol.setSourceCode(limit("record " + recordType.getName()
+                        + recordType.getRecordHeader().getText(), 2400));
+            }
+            return symbol;
         }
 
         private void addCallable(PsiClass owner, CallableSymbol callable, boolean constructor) {

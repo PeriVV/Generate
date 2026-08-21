@@ -13,6 +13,7 @@ import com.casc.unittestagent.model.MethodGenerationStatus;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
+import com.casc.unittestagent.coverage.CoverageProgressListener;
 import com.casc.unittestagent.parser.JavaSourceAnalyzer;
 import com.casc.unittestagent.util.PsiUtils;
 import com.casc.unittestagent.util.StringUtils;
@@ -33,6 +34,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /** 编排当前顶层 Java 类的逐方法测试生成、事务式 AST 聚合和增量完整类编译门禁。 */
 public class ClassUnitTestGenerationService {
@@ -256,6 +258,17 @@ public class ClassUnitTestGenerationService {
         if (indicator != null) indicator.setFraction(1d);
         logGenerationOutcome(result, System.currentTimeMillis() - started);
         return result;
+    }
+
+    /** 显式执行最终完整类 JUnit，并复用方法服务持有的真实 LLM 客户端和遥测工厂。 */
+    public ClassGenerationResult runFinalJUnitRepair(Project project,
+                                                     PsiFile psiFile,
+                                                     ClassGenerationResult result,
+                                                     String currentCode,
+                                                     BooleanSupplier cancelled,
+                                                     CoverageProgressListener progress) {
+        return methodService.runFinalClassJUnitRepair(
+                project, psiFile, result, currentCode, cancelled, progress);
     }
 
     /**

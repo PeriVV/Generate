@@ -28,6 +28,7 @@ public class LlmResponseParser {
             response.setTestCode(root.optString("testCode", ""));
             response.setWarnings(warnings(root.optJSONArray("warnings")));
             response.setMockStrategy(mockStrategy(root.optJSONArray("mockStrategies")));
+            response.setRepairScope(root.optString("repairScope", "METHOD_ONLY"));
             parseDiagnosis(root.optJSONObject("diagnosis"), response);
             response.setEdits(edits(root.optJSONArray("edits")));
         } else {
@@ -55,6 +56,7 @@ public class LlmResponseParser {
         response.setRawResponse(rawText);
         response.setTestCode(root.optString("testCode", ""));
         response.setWarnings(warnings(root.optJSONArray("warnings")));
+        response.setRepairScope(root.optString("repairScope", "METHOD_ONLY"));
         parseDiagnosis(root.optJSONObject("diagnosis"), response);
         response.setEdits(edits(root.optJSONArray("edits")));
         response.setMethodPatches(methodPatches(root.optJSONArray("methodPatches")));

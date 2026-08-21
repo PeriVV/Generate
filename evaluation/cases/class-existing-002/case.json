@@ -1,0 +1,1 @@
+{"id":"class-existing-002","scope":"CLASS","sourceKind":"SELF","difficulty":"HARD","branchBand":"NONE","targetSource":"src/main/java/eval/cases/classexisting002/CouponService.java","targetClass":"eval.cases.classexisting002.CouponService","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":true,"smoke":false,"tags":["class","existing-test","overload"]}

@@ -10,6 +10,10 @@ public class TypeSymbol {
     private String qualifiedName = "";
     private String kind = "class";
     private boolean finalType;
+    private boolean abstractType;
+    private boolean sealedType;
+    private List<String> permittedSubtypes = new ArrayList<>();
+    private List<String> concreteSubtypes = new ArrayList<>();
     private List<CallableSymbol> constructors = new ArrayList<>();
     private List<CallableSymbol> methods = new ArrayList<>();
 
@@ -35,6 +39,19 @@ public class TypeSymbol {
 
     public void setFinalType(boolean finalType) {
         this.finalType = finalType;
+    }
+
+    public boolean isAbstractType() { return abstractType; }
+    public void setAbstractType(boolean abstractType) { this.abstractType = abstractType; }
+    public boolean isSealedType() { return sealedType; }
+    public void setSealedType(boolean sealedType) { this.sealedType = sealedType; }
+    public List<String> getPermittedSubtypes() { return permittedSubtypes; }
+    public void setPermittedSubtypes(List<String> values) {
+        permittedSubtypes = values == null ? new ArrayList<>() : new ArrayList<>(values);
+    }
+    public List<String> getConcreteSubtypes() { return concreteSubtypes; }
+    public void setConcreteSubtypes(List<String> values) {
+        concreteSubtypes = values == null ? new ArrayList<>() : new ArrayList<>(values);
     }
 
     public List<CallableSymbol> getConstructors() {

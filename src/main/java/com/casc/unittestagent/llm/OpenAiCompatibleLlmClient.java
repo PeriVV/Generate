@@ -58,6 +58,14 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     @Override
+    public LlmGenerationResponse repairClassTest(LlmGenerationRequest request) throws Exception {
+        validateConfig();
+        return responseParser.parse(executeChat(
+                promptBuilder.classRepairSystemPrompt(), promptBuilder.classRepairPrompt(request),
+                Math.max(config.getMaxTokens(), 12000)));
+    }
+
+    @Override
     public LlmGenerationResponse generateMockStrategy(LlmGenerationRequest request) throws Exception {
         validateConfig();
         String systemPrompt = promptBuilder.mockStrategySystemPrompt();
@@ -71,7 +79,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     private String executeChat(String systemPrompt, String userPrompt, int maxTokens) throws IOException {
         Request httpRequest = new Request.Builder()
-                .url(config.getApiUrl())
+                .url(endpointUrl())
                 .post(RequestBody.create(requestBody(systemPrompt, userPrompt, maxTokens).toString(), JSON))
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
@@ -93,16 +101,20 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     public String testConnection() throws Exception {
         validateConfig();
+        // JSON 模式要求消息中显式要求 JSON，否则部分提供商会输出空白直到 token 上限。
         JSONArray messages = new JSONArray();
-        messages.put(new JSONObject().put("role", "system").put("content", "You are a connectivity checker."));
-        messages.put(new JSONObject().put("role", "user").put("content", "Reply with OK only."));
+        messages.put(new JSONObject().put("role", "system")
+                .put("content", "You are a connectivity checker. Always reply in JSON."));
+        messages.put(new JSONObject().put("role", "user")
+                .put("content", "Reply with {\"status\":\"ok\"} only."));
         JSONObject body = new JSONObject()
-                .put("model", config.getModel())
+                .put("model", modelName())
                 .put("messages", messages)
                 .put("temperature", 0)
                 .put("max_tokens", 16);
+        applyProviderOptions(body);
         Request httpRequest = new Request.Builder()
-                .url(config.getApiUrl())
+                .url(endpointUrl())
                 .post(RequestBody.create(body.toString(), JSON))
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
@@ -126,10 +138,15 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         messages.put(new JSONObject().put("role", "system").put("content", systemPrompt));
         messages.put(new JSONObject().put("role", "user").put("content", userPrompt));
         JSONObject body = new JSONObject()
-                .put("model", config.getModel())
+                .put("model", modelName())
                 .put("messages", messages)
                 .put("temperature", config.getTemperature())
                 .put("max_tokens", maxTokens);
+        applyProviderOptions(body);
+        return body;
+    }
+
+    private void applyProviderOptions(JSONObject body) {
         if (supportsJsonMode()) {
             body.put("response_format", new JSONObject().put("type", "json_object"));
         }
@@ -138,17 +155,59 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         if (isDashScope()) {
             body.put("enable_thinking", false);
         }
-        return body;
+        // DeepSeek V4 思考模式默认开启：推理内容会挤占 max_tokens 预算（finish_reason=length），
+        // 甚至只返回 reasoning_content 而没有最终测试代码。结构化生成必须显式关闭。
+        if (isDeepSeek()) {
+            body.put("thinking", new JSONObject().put("type", "disabled"));
+        }
     }
 
     private boolean supportsJsonMode() {
         String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
-        return isDashScope() || url.contains("api.openai.com/");
+        return isDashScope() || isDeepSeek() || url.contains("api.openai.com/");
     }
 
     private boolean isDashScope() {
         String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
         return url.contains("dashscope.aliyuncs.com/");
+    }
+
+    private boolean isDeepSeek() {
+        String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
+        return url.contains("api.deepseek.com");
+    }
+
+    /** DeepSeek 旧模型名 deepseek-chat/deepseek-reasoner 已于 2026-07-24 下线，统一指向 V4-Flash。 */
+    private String modelName() {
+        String model = config.getModel() == null ? "" : config.getModel().trim();
+        if (isDeepSeek() && ("deepseek-chat".equals(model) || "deepseek-reasoner".equals(model))) {
+            return "deepseek-v4-flash";
+        }
+        return model;
+    }
+
+    /**
+     * 官方文档只给 base_url（如 https://api.deepseek.com），完整路径由 SDK 拼接；
+     * 本客户端直接 POST，因此为裸 base_url 自动补全 /chat/completions。
+     */
+    String endpointUrl() {
+        String url = config.getApiUrl() == null ? "" : config.getApiUrl().trim();
+        if (url.isEmpty()) {
+            return url;
+        }
+        int schemeEnd = url.indexOf("://");
+        int pathStart = schemeEnd < 0 ? 0 : url.indexOf('/', schemeEnd + 3);
+        if (pathStart < 0) {
+            return url + "/chat/completions";
+        }
+        String path = url.substring(pathStart);
+        if (path.matches("/+")) {
+            return url.substring(0, pathStart) + "/chat/completions";
+        }
+        if (path.matches("/v1/?")) {
+            return url.replaceAll("/+$", "") + "/chat/completions";
+        }
+        return url;
     }
 
     String extractMessageContent(String body) {
@@ -166,6 +225,12 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         if ("length".equalsIgnoreCase(finishReason)) {
             throw new LlmOutputTruncatedException("大模型输出达到 max_tokens 上限（"
                     + maxTokens + "），完整代码负载可能已被截断。");
+        }
+        if ("content_filter".equalsIgnoreCase(finishReason)) {
+            throw new LlmResponseFormatException("大模型输出被内容安全策略过滤，请调整提示词后重试。");
+        }
+        if ("insufficient_system_resource".equalsIgnoreCase(finishReason)) {
+            throw new LlmResponseFormatException("大模型服务推理资源不足，生成被打断，请稍后重试。");
         }
         JSONObject message = choice.optJSONObject("message");
         if (message == null) {

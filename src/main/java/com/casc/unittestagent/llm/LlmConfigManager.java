@@ -32,7 +32,7 @@ public final class LlmConfigManager {
         config.setEnabled(properties.getBoolean(ENABLED, false));
         config.setApiUrl(properties.getValue(API_URL, ""));
         config.setModel(properties.getValue(MODEL, "gpt-4o-mini"));
-        config.setTimeoutSeconds(parseInt(properties.getValue(TIMEOUT_SECONDS), 60));
+        config.setTimeoutSeconds(parseInt(properties.getValue(TIMEOUT_SECONDS), 180));
         config.setMaxTokens(parseInt(properties.getValue(MAX_TOKENS), 12000));
         config.setMaxCompileRepairRounds(parseInt(properties.getValue(MAX_COMPILE_REPAIR_ROUNDS), 5));
         config.setTemperature(parseDouble(properties.getValue(TEMPERATURE), 0.2));

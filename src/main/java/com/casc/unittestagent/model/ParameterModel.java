@@ -13,7 +13,7 @@ public class ParameterModel {
     private String name;
     /** 场景类型或 Java 类型，用于选择测试数据生成和代码拼装策略。 */
     private String type;
-    /** 参数是否允许使用 null 作为非法输入，非基本类型默认可空。 */
+    /** 是否有注解或源码正常路径证明参数允许 null；引用类型不会因此自动可空。 */
     private boolean nullable;
     /** 普通路径输入候选值，用于生成默认成功用例。 */
     private List<String> normalValues = new ArrayList<>();
@@ -71,7 +71,7 @@ public class ParameterModel {
     }
 
     /**
-     * 判断参数是否允许使用 null 作为非法输入，非基本类型默认可空。
+     * 判断是否有明确证据证明参数允许 null 输入。
      * 该判断封装在模型内部，避免调用方重复理解配置或参数规则。
      *
      * 异常情况：无主动抛出的受检异常；非法输入通常会通过空结果、告警或表格校验处理。
@@ -83,7 +83,7 @@ public class ParameterModel {
     }
 
     /**
-     * 更新参数是否允许使用 null 作为非法输入，非基本类型默认可空。
+     * 更新参数是否有明确证据允许 null 输入。
      * 通过统一入口写入模型状态，便于解析器、规划器和 UI 之间传递数据。
      *
      * 异常情况：无主动抛出的受检异常；非法输入通常会通过空结果、告警或表格校验处理。

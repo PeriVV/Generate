@@ -1,0 +1,1 @@
+{"id":"mock-002","scope":"METHOD","sourceKind":"SELF","difficulty":"EASY","branchBand":"NONE","targetSource":"src/main/java/eval/cases/mock002/AuditService.java","targetClass":"eval.cases.mock002.AuditService","targetMethod":"record(String)","sourceVersion":"v1","jdkVersion":"17","license":"Project","existingTests":false,"smoke":false,"tags":["mock","void-call","branch-none"]}

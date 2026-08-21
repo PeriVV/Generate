@@ -121,6 +121,35 @@ public class ProjectSymbolSnapshotBuilderTest extends LightJavaCodeInsightFixtur
         assertEquals("sample.OverloadedService#load(int)", snapshot.getTargetMethod().getId());
     }
 
+    public void testLocatesNestedConcreteMethodBySourceRangeWhenOuterHasSameSignature() {
+        String source = """
+                package sample;
+                abstract class QuietAppendable {
+                    abstract QuietAppendable append(char value);
+                    <caret>
+                    static final class StringBuilderAppendable extends QuietAppendable {
+                        @Override
+                        StringBuilderAppendable append(char value) {
+                            return this;
+                        }
+                    }
+                }
+                """;
+        PsiFile file = myFixture.configureByText("QuietAppendable.java", source);
+        String plain = source.replace("<caret>", "");
+        MethodModel nested = new JavaSourceAnalyzer().analyze(plain, "append", 7);
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), nested));
+
+        assertTrue(snapshot.getUnresolvedSymbols().toString(), snapshot.isUsable());
+        assertEquals("sample.QuietAppendable.StringBuilderAppendable", snapshot.getTargetType());
+        assertEquals("sample.QuietAppendable.StringBuilderAppendable",
+                snapshot.getTargetMethod().getOwnerQualifiedName());
+        assertEquals("sample.QuietAppendable.StringBuilderAppendable#append(char)",
+                snapshot.getTargetMethod().getId());
+    }
+
     public void testCollectsFixtureMethodsAndProjectSourceBodies() {
         String source = """
                 package sample;
@@ -145,6 +174,41 @@ public class ProjectSymbolSnapshotBuilderTest extends LightJavaCodeInsightFixtur
                 && method.isFixtureMethod()
                 && method.getSourceCode().contains("this.name = name")));
         assertTrue(snapshot.getTargetMethod().getSourceCode().contains("return pet.getName()"));
+    }
+
+    public void testCollectsRecordCanonicalConstructorAndConcreteFixtureSubtypes() {
+        String source = """
+                package sample;
+                class CommandService {
+                    int <caret>quantity(Item item, Animal animal, Command command) {
+                        return item.quantity() + animal.score();
+                    }
+                }
+                record Item(String sku, int quantity, int unitPrice) {}
+                abstract class Animal { abstract int score(); }
+                final class Dog extends Animal { Dog() {} int score() { return 1; } }
+                sealed interface Command permits Create, Delete {}
+                record Create(String name) implements Command {}
+                record Delete(long id) implements Command {}
+                """;
+        PsiFile file = myFixture.configureByText("CommandService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "quantity");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol item = typeEndingWith(snapshot, "Item");
+        assertEquals("record", item.getKind());
+        assertTrue(item.getConstructors().stream().anyMatch(constructor -> constructor.getParameterTypes().equals(
+                List.of("java.lang.String", "int", "int"))));
+        TypeSymbol animal = typeEndingWith(snapshot, "Animal");
+        assertTrue(animal.isAbstractType());
+        assertTrue(animal.getConcreteSubtypes().toString(),
+                animal.getConcreteSubtypes().stream().anyMatch(name -> name.endsWith("Dog")));
+        TypeSymbol command = typeEndingWith(snapshot, "Command");
+        assertTrue(command.isSealedType());
+        assertEquals(2, command.getPermittedSubtypes().size());
+        assertEquals(2, command.getConcreteSubtypes().size());
     }
 
     private TypeSymbol typeEndingWith(ProjectSymbolSnapshot snapshot, String name) {
