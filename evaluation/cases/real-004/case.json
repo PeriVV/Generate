@@ -1,0 +1,24 @@
+{
+  "id": "real-004",
+  "scope": "METHOD",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "MEDIUM",
+  "branchBand": "LOW",
+  "targetSource": "src/main/java/eval/oss/lang/real004/Fraction.java",
+  "targetClass": "eval.oss.lang.real004.Fraction",
+  "sourceVersion": "commons-lang3-3.14.0",
+  "jdkVersion": "17",
+  "license": "Apache-2.0",
+  "upstream": "https://github.com/apache/commons-lang",
+  "upstreamPath": "src/main/java/org/apache/commons/lang3/math/Fraction.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "commons-lang",
+    "math",
+    "exception-safety",
+    "branch-low"
+  ],
+  "targetMethod": "getFraction(int,int,int)"
+}

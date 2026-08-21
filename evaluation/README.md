@@ -6,9 +6,10 @@ tests and reports are written only below `build/reports/unitmind-eval`.
 
 ## Profiles
 
-- `smoke`: 12 representative targets, one attempt each.
-- `regular`: all 60 targets, one attempt each.
-- `release`: all 60 targets, three independent attempts each.
+- `smoke`: 15 representative targets, one attempt each.
+- `regular`: all 74 targets, one attempt each.
+- `real`: the 14 real-project targets only (`real-*`, `class-real-*`), one attempt each.
+- `release`: all 74 targets, three independent attempts each.
 
 ```bash
 UNITMIND_API_KEY=... \
@@ -28,10 +29,26 @@ evaluation task; generated-code quality is reported as a trend and does not fail
 
 ## Dataset contract
 
-The loader enforces 50 method targets and 10 class targets, exactly 12 smoke cases, difficulty
-distribution 18/30/12, branch bands 10/25/15, and 12 open-source-derived method fixtures.
+The loader enforces 60 method targets and 14 class targets, exactly 15 smoke cases, difficulty
+distribution 22/36/16, branch bands 10/30/20, and 22 open-source-derived method fixtures.
 Open-source fixtures retain upstream provenance in their manifest and are isolated into evaluation
 packages so all cases can coexist in one IntelliJ test module.
+
+## Real-project track (`real-*`, `class-real-*`)
+
+Fourteen cases are unmodified real production sources vendored from pinned upstream releases:
+
+- Apache Commons Lang `rel/commons-lang-3.14.0` (Apache-2.0)
+- jsoup `jsoup-1.17.2` (MIT), including its build-time-only `org.jspecify.annotations.Nullable`
+
+Vendoring rules: sources are copied verbatim from the pinned tag with only the package
+declaration (and same-closure imports/javadoc references) mechanically rewritten to
+`eval.oss.<project>.<caseDir>`; no logic changes. Each method case vendors the full
+compile closure of its target class, so cases such as `real-001` (Commons Lang
+`StringUtils`) carry 70+ real cooperating files (~49k lines), while leaf cases such as
+`real-004` (`math.Fraction`) stay single-file. Every vendored file records the upstream
+repository, tag, original path, and license in a header comment; license texts live in
+`evaluation/licenses/`.
 
 Every manifest records the immutable case ID, `METHOD`/`CLASS` scope, source kind, difficulty,
 branch band, target source and fully-qualified class, the complete parameter-type signature for

@@ -103,6 +103,33 @@ public class OpenAiCompatibleLlmClientTest extends TestCase {
         assertEquals("deepseek-v4-flash", body.getString("model"));
     }
 
+    public void testUserConfiguredMaxTokensIsHonoredVerbatim() {
+        // 用户在设置界面显式调小/调大输出上限时，请求体必须原样使用该值；
+        // 客户端曾用 Math.max(config, 12000) 硬底线覆盖用户配置，导致 UI 设置不生效。
+        LlmConfig small = new LlmConfig();
+        small.setApiUrl("https://api.deepseek.com");
+        small.setModel("deepseek-v4-flash");
+        small.setMaxTokens(4096);
+        assertEquals(4096, new OpenAiCompatibleLlmClient(small)
+                .requestBody("return JSON", "generate JSON").getInt("max_tokens"));
+
+        LlmConfig large = new LlmConfig();
+        large.setApiUrl("https://api.deepseek.com");
+        large.setModel("deepseek-v4-flash");
+        large.setMaxTokens(32768);
+        assertEquals(32768, new OpenAiCompatibleLlmClient(large)
+                .requestBody("return JSON", "generate JSON").getInt("max_tokens"));
+    }
+
+    public void testMaxTokensIsClampedToValidRange() {
+        LlmConfig config = new LlmConfig();
+        config.setMaxTokens(10);
+        assertEquals(256, config.getMaxTokens());
+        config.setMaxTokens(1_000_000);
+        assertEquals(LlmConfig.MAX_TOKENS_UPPER_BOUND, config.getMaxTokens());
+        assertEquals(LlmConfig.DEFAULT_MAX_TOKENS, new LlmConfig().getMaxTokens());
+    }
+
     public void testEndpointUrlAppendsChatCompletionsPath() {
         LlmConfig config = new LlmConfig();
         OpenAiCompatibleLlmClient client = new OpenAiCompatibleLlmClient(config);

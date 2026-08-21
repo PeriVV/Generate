@@ -5,12 +5,16 @@ package com.casc.unittestagent.llm;
  * API Key 不应硬编码；运行时优先从 UNITMIND_API_KEY 读取，其次从 IDEA PasswordSafe 读取。
  */
 public class LlmConfig {
+    /** 整类测试代码负载可能超过 12000 token（见 real track 的 class-real-004 截断），默认给足输出预算。 */
+    public static final int DEFAULT_MAX_TOKENS = 24000;
+    public static final int MAX_TOKENS_UPPER_BOUND = 65536;
+
     private boolean enabled;
     private String apiUrl;
     private String apiKey;
     private String model;
     private int timeoutSeconds = 180;
-    private int maxTokens = 12000;
+    private int maxTokens = DEFAULT_MAX_TOKENS;
     private int maxCompileRepairRounds = 5;
     private double temperature = 0.2;
     private boolean fallbackToRuleBased = true;
@@ -60,7 +64,7 @@ public class LlmConfig {
     }
 
     public void setMaxTokens(int maxTokens) {
-        this.maxTokens = maxTokens;
+        this.maxTokens = Math.max(256, Math.min(MAX_TOKENS_UPPER_BOUND, maxTokens));
     }
 
     public int getMaxCompileRepairRounds() {

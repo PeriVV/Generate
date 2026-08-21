@@ -1,0 +1,22 @@
+{
+  "id": "class-real-003",
+  "scope": "CLASS",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "EASY",
+  "branchBand": "NONE",
+  "targetSource": "src/main/java/eval/oss/lang/classreal003/MutableInt.java",
+  "targetClass": "eval.oss.lang.classreal003.MutableInt",
+  "sourceVersion": "commons-lang3-3.14.0",
+  "jdkVersion": "17",
+  "license": "Apache-2.0",
+  "upstream": "https://github.com/apache/commons-lang",
+  "upstreamPath": "src/main/java/org/apache/commons/lang3/mutable/MutableInt.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "commons-lang",
+    "mutable",
+    "comparable"
+  ]
+}

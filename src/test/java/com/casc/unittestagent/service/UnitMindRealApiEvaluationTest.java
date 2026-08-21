@@ -35,10 +35,13 @@ import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.projectRoots.JavaSdk;
 import com.intellij.openapi.projectRoots.Sdk;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.pom.java.LanguageLevel;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
+import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethod;
 import com.intellij.testFramework.IdeaTestUtil;
 import com.intellij.testFramework.LightProjectDescriptor;
@@ -255,15 +258,47 @@ public class UnitMindRealApiEvaluationTest extends LightJavaCodeInsightFixtureTe
 
     private Map<String, LoadedCase> loadSelectedCases(List<EvalCaseManifest> selected) throws Exception {
         Map<String, LoadedCase> result = new HashMap<>();
+        Path materializedRoot = Files.createTempDirectory("unitmind-eval-cases-");
+        materializedRoot.toFile().deleteOnExit();
         for (EvalCaseManifest item : selected) {
-            PsiFile target = null;
+            // Copy each case's full source tree onto real disk and register the
+            // src/main/java directory as a module source root. The compile sandbox
+            // resolves same-package collaborator classes from the javac sourcepath,
+            // which requires disk-backed, package-aligned roots; the in-memory
+            // temp:// fixture layout cannot serve that.
+            Path caseRoot = materializedRoot.resolve(item.getId());
             try (Stream<Path> paths = Files.walk(item.getCaseDirectory().resolve("src"))) {
                 for (Path file : paths.filter(path -> path.toString().endsWith(".java")).sorted().toList()) {
                     String relative = item.getCaseDirectory().relativize(file).toString().replace('\\', '/');
-                    PsiFile added = myFixture.addFileToProject(
-                            "evalcases/" + item.getId() + "/" + relative,
-                            Files.readString(file, StandardCharsets.UTF_8));
-                    if (file.normalize().equals(item.getTargetSourcePath())) target = added;
+                    Path diskFile = caseRoot.resolve(relative);
+                    Files.createDirectories(diskFile.getParent());
+                    Files.copy(file, diskFile);
+                }
+            }
+            Path productionRoot = caseRoot.resolve("src/main/java");
+            VirtualFile sourceRoot = LocalFileSystem.getInstance()
+                    .refreshAndFindFileByNioFile(productionRoot.toRealPath());
+            if (sourceRoot == null) {
+                throw new IllegalStateException(item.getId() + ": materialized source root not found");
+            }
+            PsiTestUtil.addSourceContentToRoots(getModule(), sourceRoot);
+            Path materializedTarget = caseRoot.resolve(item.getCaseDirectory()
+                    .relativize(item.getTargetSourcePath()).toString().replace('\\', '/'));
+            PsiFile target = null;
+            try (Stream<Path> paths = Files.walk(productionRoot)) {
+                for (Path file : paths.filter(path -> path.toString().endsWith(".java")).sorted().toList()) {
+                    String relative = productionRoot.relativize(file).toString().replace('\\', '/');
+                    VirtualFile virtualFile = sourceRoot.findFileByRelativePath(relative);
+                    if (virtualFile == null) {
+                        throw new IllegalStateException(item.getId() + ": VFS file missing for " + relative);
+                    }
+                    PsiFile added = PsiManager.getInstance(getProject()).findFile(virtualFile);
+                    if (added == null) {
+                        throw new IllegalStateException(item.getId() + ": PSI file missing for " + relative);
+                    }
+                    if (file.normalize().equals(materializedTarget.normalize())) {
+                        target = added;
+                    }
                 }
             }
             if (target == null) throw new IllegalStateException(item.getId() + ": target PSI file was not loaded");
@@ -334,7 +369,7 @@ public class UnitMindRealApiEvaluationTest extends LightJavaCodeInsightFixtureTe
         config.setApiUrl(apiUrl);
         config.setModel(model);
         config.setTimeoutSeconds(300);
-        config.setMaxTokens(12000);
+        config.setMaxTokens(LlmConfig.DEFAULT_MAX_TOKENS);
         config.setMaxCompileRepairRounds(5);
         config.setTemperature(0.2d);
         config.setFallbackToRuleBased(true);
@@ -355,7 +390,7 @@ public class UnitMindRealApiEvaluationTest extends LightJavaCodeInsightFixtureTe
 
     private String evaluationConfigHash(String apiUrl, String model) {
         return CodeFingerprint.sha256("java=17|api=" + apiUrl + "|model=" + model
-                + "|temperature=0.2|maxTokens=12000|compileRepair=5|coverageExplore=5"
+                + "|temperature=0.2|maxTokens=" + LlmConfig.DEFAULT_MAX_TOKENS + "|compileRepair=5|coverageExplore=5"
                 + "|coverageRepair=5|classRuntimeRepair=5|classCompileRepair=3"
                 + "|classRepairProtocol=full-class-monotonic-v1"
                 + "|executionTimeout=60|line=0.9|branch=0.8|fallback=true");

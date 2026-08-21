@@ -33,9 +33,12 @@ public class EvalInfrastructureTest extends TestCase {
         EvalDatasetContract.verify(cases);
         EvalPreflight.verifyAll(cases);
 
-        assertEquals(60, cases.size());
-        assertEquals(12, EvalCaseLoader.select(cases, "smoke", "").size());
-        assertEquals(60, EvalCaseLoader.select(cases, "regular", "").size());
+        assertEquals(74, cases.size());
+        assertEquals(15, EvalCaseLoader.select(cases, "smoke", "").size());
+        assertEquals(74, EvalCaseLoader.select(cases, "regular", "").size());
+        assertEquals(14, EvalCaseLoader.select(cases, "real", "").size());
+        assertTrue(EvalCaseLoader.select(cases, "real", "").stream().allMatch(
+                item -> item.getId().startsWith("real-") || item.getId().startsWith("class-real-")));
         assertEquals(1, EvalCaseLoader.select(cases, "regular", "mock-007").size());
         assertEquals(64, EvalCaseLoader.fingerprint(cases).length());
     }

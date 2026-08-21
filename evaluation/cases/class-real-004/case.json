@@ -1,0 +1,23 @@
+{
+  "id": "class-real-004",
+  "scope": "CLASS",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "HARD",
+  "branchBand": "NONE",
+  "targetSource": "src/main/java/eval/oss/jsoup/classreal004/TokenQueue.java",
+  "targetClass": "eval.oss.jsoup.classreal004.TokenQueue",
+  "sourceVersion": "jsoup-1.17.2",
+  "jdkVersion": "17",
+  "license": "MIT",
+  "upstream": "https://github.com/jhy/jsoup",
+  "upstreamPath": "src/main/java/org/jsoup/parser/TokenQueue.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "jsoup",
+    "parser",
+    "stateful",
+    "queue"
+  ]
+}

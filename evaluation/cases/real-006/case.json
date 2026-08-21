@@ -1,0 +1,23 @@
+{
+  "id": "real-006",
+  "scope": "METHOD",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "MEDIUM",
+  "branchBand": "HIGH",
+  "targetSource": "src/main/java/eval/oss/lang/real006/BitField.java",
+  "targetClass": "eval.oss.lang.real006.BitField",
+  "sourceVersion": "commons-lang3-3.14.0",
+  "jdkVersion": "17",
+  "license": "Apache-2.0",
+  "upstream": "https://github.com/apache/commons-lang",
+  "upstreamPath": "src/main/java/org/apache/commons/lang3/BitField.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "commons-lang",
+    "bitwise",
+    "branch-high"
+  ],
+  "targetMethod": "setValue(int,int)"
+}

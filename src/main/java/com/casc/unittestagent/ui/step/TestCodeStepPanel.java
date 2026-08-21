@@ -18,6 +18,7 @@ import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.EditorTextField;
+import com.intellij.ui.OnePixelSplitter;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.util.ui.JBUI;
@@ -31,6 +32,7 @@ import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.JTextArea;
 import java.awt.BorderLayout;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
@@ -41,6 +43,8 @@ import java.util.function.Consumer;
  * 成功状态下使用 IntelliJ EditorTextField 提供 Java 高亮、可编辑和滚动能力。
  */
 public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
+    private static final int MIN_CODE_AREA_HEIGHT = 180;
+
     /** 代码编辑器。 */
     private EditorTextField editorTextField;
     /** 原始生成代码。 */
@@ -52,6 +56,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     /** 当前覆盖率可视化组件。 */
     private JComponent coverageComponent;
     private JComponent classJUnitComponent;
+    /** 验证详情和代码编辑器的可调整分栏。 */
+    private OnePixelSplitter validationCodeSplitter;
 
     /**
      * 创建测试代码页。
@@ -170,8 +176,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (detailsPanel.getComponentCount() > 0) {
             statusPanel.add(detailsPanel, BorderLayout.SOUTH);
         }
-        statusPanel.setBorder(JBUI.Borders.emptyBottom(8));
-        add(statusPanel, BorderLayout.NORTH);
+        statusPanel.setBorder(JBUI.Borders.empty(0, 0, 8, 4));
 
         Document document = EditorFactory.getInstance().createDocument(currentCode == null ? "" : currentCode);
         editorTextField = new EditorTextField(document, project, JavaFileType.INSTANCE, false, false);
@@ -181,7 +186,26 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JScrollPane scrollPane = new JScrollPane(editorTextField);
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
-        add(scrollPane, BorderLayout.CENTER);
+
+        JPanel codePanel = new JPanel(new BorderLayout(0, 4));
+        JPanel codeHeader = new JPanel(new BorderLayout());
+        codeHeader.add(new JBLabel("测试代码（可编辑，拖动上方分隔线可调整高度）"), BorderLayout.WEST);
+        codePanel.add(codeHeader, BorderLayout.NORTH);
+        codePanel.add(scrollPane, BorderLayout.CENTER);
+        codePanel.setMinimumSize(new Dimension(0, JBUI.scale(MIN_CODE_AREA_HEIGHT)));
+
+        JScrollPane detailsScrollPane = new JScrollPane(statusPanel);
+        detailsScrollPane.setBorder(JBUI.Borders.empty());
+        detailsScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        detailsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        detailsScrollPane.setMinimumSize(new Dimension(0, 0));
+
+        validationCodeSplitter = new OnePixelSplitter(true, 0.25f);
+        validationCodeSplitter.setBorder(JBUI.Borders.empty());
+        validationCodeSplitter.setHonorComponentsMinimumSize(true);
+        validationCodeSplitter.setFirstComponent(detailsScrollPane);
+        validationCodeSplitter.setSecondComponent(codePanel);
+        add(validationCodeSplitter, BorderLayout.CENTER);
         document.addDocumentListener(new DocumentListener() {
             @Override
             public void documentChanged(DocumentEvent event) {

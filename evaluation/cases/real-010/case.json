@@ -1,0 +1,24 @@
+{
+  "id": "real-010",
+  "scope": "METHOD",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "EASY",
+  "branchBand": "LOW",
+  "targetSource": "src/main/java/eval/oss/jsoup/real010/Normalizer.java",
+  "targetClass": "eval.oss.jsoup.real010.Normalizer",
+  "sourceVersion": "jsoup-1.17.2",
+  "jdkVersion": "17",
+  "license": "MIT",
+  "upstream": "https://github.com/jhy/jsoup",
+  "upstreamPath": "src/main/java/org/jsoup/internal/Normalizer.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "jsoup",
+    "string",
+    "overload",
+    "branch-low"
+  ],
+  "targetMethod": "normalize(String,boolean)"
+}

@@ -76,12 +76,18 @@ public final class EvalCaseLoader {
                                                 String profile,
                                                 String caseFilter) {
         String normalizedProfile = profile == null ? "regular" : profile.trim().toLowerCase();
-        if (!List.of("smoke", "regular", "release").contains(normalizedProfile)) {
+        if (!List.of("smoke", "regular", "release", "real").contains(normalizedProfile)) {
             throw new IllegalArgumentException("Unknown evaluation profile: " + profile);
         }
         String filter = caseFilter == null ? "" : caseFilter.trim();
         return cases.stream()
-                .filter(item -> !normalizedProfile.equals("smoke") || item.isSmoke())
+                .filter(item -> switch (normalizedProfile) {
+                    case "smoke" -> item.isSmoke();
+                    // The real-project track: vendored production sources only.
+                    case "real" -> item.getSourceKind() == EvalCaseManifest.SourceKind.OPEN_SOURCE
+                            && (item.getId().startsWith("real-") || item.getId().startsWith("class-real-"));
+                    default -> true;
+                })
                 .filter(item -> filter.isBlank() || item.getId().equals(filter))
                 .toList();
     }

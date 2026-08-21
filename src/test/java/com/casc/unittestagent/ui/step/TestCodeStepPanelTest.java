@@ -9,6 +9,7 @@ import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
+import com.intellij.ui.OnePixelSplitter;
 import com.intellij.testFramework.LightPlatformTestCase;
 
 import javax.swing.JButton;
@@ -45,6 +46,20 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         restore.doClick();
 
         assertEquals(regenerated, panel.getCode());
+    }
+
+    public void testCodeEditorUsesThemeAwareDraggableSplitterWithoutControls() {
+        TestCodeStepPanel panel = panel(
+                "class SubjectTest { /* generated */ }",
+                "class SubjectTest { /* generated */ }");
+
+        OnePixelSplitter splitter = findComponent(panel, OnePixelSplitter.class);
+        assertNotNull(splitter);
+        assertTrue(splitter.isVertical());
+        assertEquals(1, splitter.getDividerWidth());
+        assertEquals(0, splitter.getDivider().getComponentCount());
+        assertTrue(splitter.getSecondComponent().getMinimumSize().height > 0);
+        assertNull(findButton(panel, "放大代码区"));
     }
 
     public void testCoverageCardShowsRuntimeDiagnosticForRepeatedRepair() {
@@ -184,6 +199,17 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
                 if (found != null) {
                     return found;
                 }
+            }
+        }
+        return null;
+    }
+
+    private <T extends Component> T findComponent(Container container, Class<T> type) {
+        for (Component component : container.getComponents()) {
+            if (type.isInstance(component)) return type.cast(component);
+            if (component instanceof Container) {
+                T found = findComponent((Container) component, type);
+                if (found != null) return found;
             }
         }
         return null;

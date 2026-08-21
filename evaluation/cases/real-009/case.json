@@ -1,0 +1,24 @@
+{
+  "id": "real-009",
+  "scope": "METHOD",
+  "sourceKind": "OPEN_SOURCE",
+  "difficulty": "HARD",
+  "branchBand": "HIGH",
+  "targetSource": "src/main/java/eval/oss/jsoup/real009/StringUtil.java",
+  "targetClass": "eval.oss.jsoup.real009.StringUtil",
+  "sourceVersion": "jsoup-1.17.2",
+  "jdkVersion": "17",
+  "license": "MIT",
+  "upstream": "https://github.com/jhy/jsoup",
+  "upstreamPath": "src/main/java/org/jsoup/internal/StringUtil.java",
+  "existingTests": false,
+  "smoke": false,
+  "tags": [
+    "real-project",
+    "jsoup",
+    "url",
+    "network-shaped",
+    "branch-high"
+  ],
+  "targetMethod": "resolve(String,String)"
+}

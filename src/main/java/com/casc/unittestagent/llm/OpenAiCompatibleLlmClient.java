@@ -36,25 +36,22 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         String systemPrompt = promptBuilder.systemPrompt();
         String userPrompt = promptBuilder.userPrompt(request);
-        return responseParser.parse(executeChat(systemPrompt, userPrompt,
-                Math.max(config.getMaxTokens(), 12000)));
+        return responseParser.parse(executeChat(systemPrompt, userPrompt, config.getMaxTokens()));
     }
 
     @Override
     public LlmGenerationResponse repairUnitTest(LlmGenerationRequest request) throws Exception {
         validateConfig();
         return responseParser.parse(executeChat(promptBuilder.repairSystemPrompt(), promptBuilder.repairPrompt(request),
-                Math.max(config.getMaxTokens(), 12000)));
+                config.getMaxTokens()));
     }
 
     @Override
     public LlmGenerationResponse improveCoverage(LlmGenerationRequest request) throws Exception {
         validateConfig();
-        boolean methodPatch = request.getRuntimeDiagnostics() != null && !request.getRuntimeDiagnostics().isEmpty()
-                && (request.getCompilerDiagnostics() == null || request.getCompilerDiagnostics().isEmpty());
-        int outputBudget = methodPatch ? config.getMaxTokens() : Math.max(config.getMaxTokens(), 12000);
         return responseParser.parseCoverage(executeChat(
-                promptBuilder.coverageSystemPrompt(), promptBuilder.coveragePrompt(request), outputBudget));
+                promptBuilder.coverageSystemPrompt(), promptBuilder.coveragePrompt(request),
+                config.getMaxTokens()));
     }
 
     @Override
@@ -62,7 +59,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         return responseParser.parse(executeChat(
                 promptBuilder.classRepairSystemPrompt(), promptBuilder.classRepairPrompt(request),
-                Math.max(config.getMaxTokens(), 12000)));
+                config.getMaxTokens()));
     }
 
     @Override
