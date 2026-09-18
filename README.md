@@ -22,7 +22,7 @@ UnitMind 是一个 IntelliJ IDEA 插件，用于在 Java 项目中为当前光�
 - org.json
 - JUnit 5 + Mockito 代码生成模板
 
-目标 IDE 平台配置在 [build.gradle.kts](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/build.gradle.kts)：
+目标 IDE 平台配置在 [build.gradle.kts](build.gradle.kts)：
 
 - IntelliJ IDEA Community `2022.2.5`
 - 插件兼容范围 `222` 到 `262.*`（IntelliJ IDEA 2022.2 至 2026.2）
@@ -44,7 +44,7 @@ src/main/java/com/casc/unittestagent
 └── writer       # 测试文件落盘与合并
 ```
 
-插件入口注册在 [plugin.xml](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/resources/META-INF/plugin.xml)，包含：
+插件入口注册在 [plugin.xml](src/main/resources/META-INF/plugin.xml)，包含：
 
 - Tool Window：`UnitMind`
 - 编辑器右键菜单：`UnitMind：生成单元测试`
@@ -59,7 +59,7 @@ src/main/java/com/casc/unittestagent
 
 整类模式按方法顺序调用大模型。每个方法候选会先独立编译并按诊断修复，然后作为一次事务加入当前已通过的 `<ClassName>Test`：每次 AST 聚合后都立即执行完整类编译门禁，通过后才成为下一个方法的基线。候选冲突、合并后不能编译或输出不符合类模式契约时，仅回退当前方法；规则草稿仍不能通过时剔除当前方法并回滚到上一可编译检查点，不把多组错误堆积到最终统一修复。常见的候选级 `@BeforeEach` 会被转换成只服务于本候选测试的 setup helper，避免污染其他方法。首期不在整类模式执行类级 JaCoCo 闭环，单方法覆盖率功能不变。
 
-[GenerateUnitTestMvpAction.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/action/GenerateUnitTestMvpAction.java) 负责：
+[GenerateUnitTestMvpAction.java](src/main/java/com/casc/unittestagent/action/GenerateUnitTestMvpAction.java) 负责：
 
 - 校验当前项目、编辑器和 PSI 文件。
 - 只在 Java 文件中展示菜单。
@@ -68,7 +68,7 @@ src/main/java/com/casc/unittestagent
 
 ### 2. Tool Window 状态编排
 
-[UnitMindToolWindowPanel.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/toolwindow/UnitMindToolWindowPanel.java) 是主 UI 编排类，负责：
+[UnitMindToolWindowPanel.java](src/main/java/com/casc/unittestagent/toolwindow/UnitMindToolWindowPanel.java) 是主 UI 编排类，负责：
 
 - 保存当前编辑器上下文。
 - 管理五个步骤的状态。
@@ -111,10 +111,10 @@ src/main/java/com/casc/unittestagent
 
 相关实现：
 
-- [UnitTestGenerationService.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/service/UnitTestGenerationService.java)
-- [JavaSourceAnalyzer.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/parser/JavaSourceAnalyzer.java)
-- [ConstraintExtractor.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/parser/ConstraintExtractor.java)
-- [DependencyExtractor.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/parser/DependencyExtractor.java)
+- [UnitTestGenerationService.java](src/main/java/com/casc/unittestagent/service/UnitTestGenerationService.java)
+- [JavaSourceAnalyzer.java](src/main/java/com/casc/unittestagent/parser/JavaSourceAnalyzer.java)
+- [ConstraintExtractor.java](src/main/java/com/casc/unittestagent/parser/ConstraintExtractor.java)
+- [DependencyExtractor.java](src/main/java/com/casc/unittestagent/parser/DependencyExtractor.java)
 
 ### 阶段二：场景、Mock 和测试代码生成
 
@@ -147,10 +147,10 @@ src/main/java/com/casc/unittestagent
 
 相关实现：
 
-- [TestScenarioPlanner.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/generator/TestScenarioPlanner.java)
-- [MockStrategyPlanner.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/generator/MockStrategyPlanner.java)
-- [JUnitMockitoTestGenerator.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/generator/JUnitMockitoTestGenerator.java)
-- [OpenAiCompatibleLlmClient.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/llm/OpenAiCompatibleLlmClient.java)
+- [TestScenarioPlanner.java](src/main/java/com/casc/unittestagent/generator/TestScenarioPlanner.java)
+- [MockStrategyPlanner.java](src/main/java/com/casc/unittestagent/generator/MockStrategyPlanner.java)
+- [JUnitMockitoTestGenerator.java](src/main/java/com/casc/unittestagent/generator/JUnitMockitoTestGenerator.java)
+- [OpenAiCompatibleLlmClient.java](src/main/java/com/casc/unittestagent/llm/OpenAiCompatibleLlmClient.java)
 
 ## 静态分析方案
 
@@ -192,7 +192,7 @@ API Key 读取顺序：
 
 普通配置保存到 IntelliJ `PropertiesComponent`，API Key 不写入普通配置项。
 
-请求内容由 [LlmPromptBuilder.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/llm/LlmPromptBuilder.java) 构建，核心上下文包括：
+请求内容由 [LlmPromptBuilder.java](src/main/java/com/casc/unittestagent/llm/LlmPromptBuilder.java) 构建，核心上下文包括：
 
 - 包名、类名、方法名、方法签名、返回类型。
 - 被测方法源码。
@@ -202,7 +202,7 @@ API Key 读取顺序：
 - 测试框架和 Mock 框架。
 - 用户补充要求。
 
-响应解析由 [LlmResponseParser.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/llm/LlmResponseParser.java) 完成，期望大模型返回结构化 JSON，主要字段为：
+响应解析由 [LlmResponseParser.java](src/main/java/com/casc/unittestagent/llm/LlmResponseParser.java) 完成，期望大模型返回结构化 JSON，主要字段为：
 
 ```json
 {
@@ -230,7 +230,13 @@ API Key 读取顺序：
 - 单独运行已有 `<被测类>Test` 作为参考基线，不把已有测试覆盖率计入生成质量。
 - 未达到默认行覆盖率 90%、分支覆盖率 80% 时，每轮选择一个主缺口和最多四个关联缺口反馈给大模型；无增益时自动轮换主目标，避免一次生成过多脆弱测试。
 - 覆盖率探索与编译/运行修复使用独立预算，默认各 5 轮，均可在设置中调整到 0–30。修复不会挤占探索机会；修复预算耗尽后仍可从最佳可运行版本换一种策略继续探索。
-- 运行失败修复使用通用的“测试意图锁定 → 堆栈路径定位 → 根因分类 → 最小修改 → 返回前自检”提示协议。运行异常仅作为失败证据；正常/成功场景不会被改写成异常断言，并会优先修复输入、fixture、前置条件与依赖 stub。
+- 运行失败修复使用通用的“测试意图锁定 → 堆栈路径定位 → 根因分类 → Oracle 仲裁 → 最小修改 → 返回前自检”协议。运行异常仅作为失败证据；正常/成功场景不会被改写成异常断言，并会优先修复输入、fixture、前置条件与依赖 stub。
+- Mock 接线在 Oracle 仲裁前执行确定性检查：若测试用 `@Mock Logger` 验证日志，而生产类实际使用 `@Slf4j` 或不可注入的 `static Logger`，则分类为 `MOCKITO_VERIFY_WRONG_INSTANCE`。插件自有且未编辑的候选若仍有其他业务断言，会删除必然无效的日志 `verify` 后重新执行；日志验证是唯一 Oracle、候选已被用户编辑或 Logger 可通过字段/参数注入时不会擅自修改。唯一 Oracle 情况记录 `TEST_DESIGN_ERROR`，提示改用业务断言或真实日志捕获器，不再误报为源码 Bug 或证据不足。
+- 构造依赖缺失同样在 Oracle 仲裁前使用确定性证据分类：只有生产源码确认该字段属于显式构造器或 Lombok required-args 构造器、测试声明中没有对应类型/变量，并且真实 NPE 明确指出该成员为 null 时，才标记 `FIXTURE_DEPENDENCY_MISSING`。此类失败允许 `REPAIR_TEST + KEEP + NONE` 补齐 `@Mock`/真实依赖和注入或显式构造；AST 门禁仍要求原断言、交互验证和期望异常完全不变。若同时存在独立的断言/交互不匹配，则不会借 Fixture 分类绕过 Oracle 保护。
+- 运行修复有硬性 Oracle 保护：模型必须返回 `REPAIR_TEST` / `SUSPECTED_SUT_BUG` / `INCONCLUSIVE` 之一。`KEEP` 补丁会通过 JavaParser AST 比对失败方法的断言、AssertJ 链、`verify`、期望异常、assumption 和控制流位置指纹；修改 Oracle 必须使用 `USER_REQUIREMENT` / `EXISTING_TEST` / `CONTRACT_FACT` 之一，并用 `oracleAuthorityRef` 引用本轮上下文中真实存在的证据条目。当前生产实现和 runtime actual 不能授权把断言改成当前错误结果。当失败已经是断言值或 Mockito 交互语义不匹配时，`KEEP` 也不得通过换 Arrange 输入绕过该失败。
+- 疑似真实 SUT Bug 或 Oracle 证据冲突时，覆盖率闭环和整类 JUnit 闭环都会立即停止，分别记录 `SUSPECTED_SUT_BUG` 或 `NEEDS_REVIEW`，保留原失败测试和 expected/actual/堆栈证据。普通写入会被阻止；用户仍可明确选择将原失败测试写入作为缺陷复现用例。
+- 只有严格门禁最终确认 `SUSPECTED_SUT_BUG` 时，才会额外执行一次只读的源码缺陷归因请求。该请求使用生产源码、独立契约、原失败测试和真实运行诊断，结构化返回置信度、可能位置、根因假设、证据与人工核查建议；协议拒绝 `testCode`、`methodPatches`、`edits` 或其他修改字段。归因失败不会改变疑似缺陷终态，也不会修改任何代码。
+- 测试代码页的诊断区和代码区使用可拖动分栏。测试失败、需人工确认或疑似生产缺陷时，诊断区默认占据至少一半高度，并提供“放大诊断区 / 恢复诊断比例”按钮；小尺寸工具窗口不再由代码区最小高度把上方诊断挤到不可见。诊断外层始终跟随 viewport 宽度，长路径、堆栈和固定宽度表格不会撑宽整个页面；只有表格自身在必要时提供局部横向滚动。
 - 达标、无覆盖增益、重复代码、轮次耗尽、环境错误、超时或取消时停止，并展示明确原因。
 
 覆盖率补测采用“最佳候选检查点”而不是始终保留最后一次模型输出：只有候选测试编译通过、全部运行成功，行与分支覆盖均不下降且至少一项增加时才会被接纳。后续候选发生编译错误、运行错误或无覆盖增益时会回滚到最佳可用版本；无增益且仍有预算时会从最佳版本尝试不同输入策略。
@@ -245,7 +251,7 @@ API Key 读取顺序：
 
 ## 测试文件写入方案
 
-写入逻辑位于 [TestFileWriter.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/writer/TestFileWriter.java)。
+写入逻辑位于 [TestFileWriter.java](src/main/java/com/casc/unittestagent/writer/TestFileWriter.java)。
 
 目标路径推导规则：
 
@@ -258,7 +264,7 @@ API Key 读取顺序：
 - 覆盖已有测试文件。
 - 追加到已有测试文件。
 
-追加时由 [TestClassMerger.java](/mnt/e/weiwei/AIGroup/GenerateTestCases/Generate/src/main/java/com/casc/unittestagent/writer/TestClassMerger.java) 合并：
+追加时由 [TestClassMerger.java](src/main/java/com/casc/unittestagent/writer/TestClassMerger.java) 合并：
 
 - 合并 import。
 - 合并字段。
@@ -284,7 +290,7 @@ API Key 读取顺序：
 插件包输出路径：
 
 ```text
-build/distributions/UnitMind-1.0.0.zip
+build/distributions/UnitMind-1.0.15.zip
 ```
 
 本地安装：
@@ -293,7 +299,7 @@ build/distributions/UnitMind-1.0.0.zip
 2. 进入 `Settings | Plugins`。
 3. 点击齿轮菜单。
 4. 选择 `Install Plugin from Disk...`。
-5. 选择 `build/distributions/UnitMind-1.0.0.zip`。
+5. 选择 `build/distributions/UnitMind-1.0.15.zip`。
 6. 重启 IDE。
 
 开发运行：

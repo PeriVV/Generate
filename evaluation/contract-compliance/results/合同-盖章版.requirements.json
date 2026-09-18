@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "doc_path": "/Users/wangleping/Desktop/财务/需求分析_软件所/确保/合同-盖章版.pdf",
+    "doc_type": "pdf",
+    "doc_sha256": "52485ec68c7168ba5f1bb60186b55f41bb3e7e95537d184312a2e673f44d29e4",
+    "extracted_at": "2026-08-24T10:10:47.209893",
+    "run_id": "RUN-20260824-101047",
+    "extractor": {
+      "method": "llm-hybrid",
+      "version": "0.1.0",
+      "model": "qwen3.5-flash",
+      "provider": "openai"
+    }
+  },
+  "requirements": [],
+  "stats": {
+    "blocks": 0,
+    "chunks": 0,
+    "fr_count": 0,
+    "avg_evidence_per_fr": 0.0,
+    "llm_calls": 0,
+    "repair_attempts": 0,
+    "dropped_no_evidence": 0,
+    "schema_validation_errors": 0
+  },
+  "warnings": [
+    {
+      "type": "no_blocks",
+      "message": "No content blocks found in document",
+      "requirement_ids": [],
+      "details": null
+    },
+    {
+      "type": "recall_skipped_single_chunk",
+      "message": "Recall pass skipped because only one chunk was produced",
+      "requirement_ids": [],
+      "details": null
+    },
+    {
+      "type": "validity_filter_skipped_low_volume",
+      "message": "Validity filter skipped: candidates=0, min_required=2",
+      "requirement_ids": [],
+      "details": null
+    }
+  ]
+}
