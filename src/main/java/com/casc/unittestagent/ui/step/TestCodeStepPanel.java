@@ -7,6 +7,9 @@ import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.ClassJUnitRepairReport;
 import com.casc.unittestagent.model.ClassJUnitStatus;
+import com.casc.unittestagent.model.CoverageStatus;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+import com.casc.unittestagent.model.SourceBugLocation;
 import com.casc.unittestagent.ui.component.CoverageReportPanel;
 import com.casc.unittestagent.ui.component.UnitMindEmptyStatePanel;
 import com.casc.unittestagent.ui.component.UnitMindErrorPanel;
@@ -29,11 +32,13 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.Scrollable;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.JTextArea;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Rectangle;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.util.function.Consumer;
@@ -44,6 +49,9 @@ import java.util.function.Consumer;
  */
 public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     private static final int MIN_CODE_AREA_HEIGHT = 180;
+    private static final float NORMAL_DETAILS_PROPORTION = 0.34f;
+    private static final float CRITICAL_DETAILS_PROPORTION = 0.52f;
+    private static final float EXPANDED_DETAILS_PROPORTION = 0.68f;
 
     /** 代码编辑器。 */
     private EditorTextField editorTextField;
@@ -58,6 +66,9 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     private JComponent classJUnitComponent;
     /** 验证详情和代码编辑器的可调整分栏。 */
     private OnePixelSplitter validationCodeSplitter;
+    private JButton detailsSizeButton;
+    private float defaultDetailsProportion = NORMAL_DETAILS_PROPORTION;
+    private boolean detailsExpanded;
 
     /**
      * 创建测试代码页。
@@ -159,7 +170,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
             return;
         }
 
-        JPanel statusPanel = new JPanel(new BorderLayout(0, 4));
+        JPanel statusPanel = new ViewportWidthPanel(new BorderLayout(0, 4));
         if (generationNote != null && !generationNote.isBlank()) {
             statusPanel.add(new JBLabel(generationNote), BorderLayout.NORTH);
         }
@@ -190,6 +201,10 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JPanel codePanel = new JPanel(new BorderLayout(0, 4));
         JPanel codeHeader = new JPanel(new BorderLayout());
         codeHeader.add(new JBLabel("测试代码（可编辑，拖动上方分隔线可调整高度）"), BorderLayout.WEST);
+        detailsSizeButton = new JButton("放大诊断区");
+        detailsSizeButton.setToolTipText("在诊断详情与测试代码之间切换显示比例");
+        detailsSizeButton.addActionListener(event -> toggleDetailsSize());
+        codeHeader.add(detailsSizeButton, BorderLayout.EAST);
         codePanel.add(codeHeader, BorderLayout.NORTH);
         codePanel.add(scrollPane, BorderLayout.CENTER);
         codePanel.setMinimumSize(new Dimension(0, JBUI.scale(MIN_CODE_AREA_HEIGHT)));
@@ -197,12 +212,18 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JScrollPane detailsScrollPane = new JScrollPane(statusPanel);
         detailsScrollPane.setBorder(JBUI.Borders.empty());
         detailsScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-        detailsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
-        detailsScrollPane.setMinimumSize(new Dimension(0, 0));
+        // 诊断区始终跟随工具窗口宽度；表格如需横向浏览，只在表格自己的滚动容器内进行。
+        detailsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        detailsScrollPane.setMinimumSize(new Dimension(0, JBUI.scale(96)));
 
-        validationCodeSplitter = new OnePixelSplitter(true, 0.25f);
+        defaultDetailsProportion = isCriticalReport(coverageReport, classJUnitReport)
+                ? CRITICAL_DETAILS_PROPORTION : NORMAL_DETAILS_PROPORTION;
+
+        validationCodeSplitter = new OnePixelSplitter(true, defaultDetailsProportion);
         validationCodeSplitter.setBorder(JBUI.Borders.empty());
-        validationCodeSplitter.setHonorComponentsMinimumSize(true);
+        // 小尺寸工具窗口中若同时尊重代码区最小高度，上方诊断会被挤到不可见。
+        // 比例和显式放大按钮负责可用性，分隔线仍可由用户自由拖动。
+        validationCodeSplitter.setHonorComponentsMinimumSize(false);
         validationCodeSplitter.setFirstComponent(detailsScrollPane);
         validationCodeSplitter.setSecondComponent(codePanel);
         add(validationCodeSplitter, BorderLayout.CENTER);
@@ -226,7 +247,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         feedbackPanel.add(new JScrollPane(feedbackArea), BorderLayout.CENTER);
         bottom.add(feedbackPanel, BorderLayout.CENTER);
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        JPanel buttons = new JPanel();
+        buttons.setLayout(new BoxLayout(buttons, BoxLayout.Y_AXIS));
         JButton copy = new JButton("复制代码");
         JButton restore = new JButton("恢复生成代码");
         JButton regenerate = new JButton(regenerationAllowed ? "再次生成" : "整类请重新分析后生成");
@@ -246,14 +268,20 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         runCoverage.addActionListener(event -> onRunCoverage.run());
         stopCoverage.setEnabled(coverageRunning);
         stopCoverage.addActionListener(event -> onStopCoverage.run());
-        buttons.add(copy);
-        buttons.add(restore);
-        buttons.add(regenerate);
-        buttons.add(validate);
-        buttons.add(runCoverage);
-        buttons.add(stopCoverage);
+        buttons.add(buttonRow(copy, restore));
+        buttons.add(buttonRow(regenerate, validate));
+        buttons.add(buttonRow(runCoverage, stopCoverage));
         bottom.add(buttons, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
+    }
+
+    /**
+     * 将操作按钮放进固定的一行，避免工具窗口较窄时 FlowLayout 换行后被父容器裁掉。
+     */
+    private JPanel buttonRow(JButton... rowButtons) {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        for (JButton button : rowButtons) row.add(button);
+        return row;
     }
 
     /**
@@ -299,6 +327,10 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         }
         detailsPanel.revalidate();
         detailsPanel.repaint();
+        ensureCriticalDetailsVisible(report != null
+                && (report.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
+                || report.getStatus() == CoverageStatus.NEEDS_REVIEW
+                || report.getStatus() == CoverageStatus.TEST_FAILED));
     }
 
     public void updateClassJUnitReport(ClassJUnitRepairReport report) {
@@ -308,6 +340,10 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (classJUnitComponent != null) detailsPanel.add(classJUnitComponent);
         detailsPanel.revalidate();
         detailsPanel.repaint();
+        ensureCriticalDetailsVisible(report != null
+                && (report.getStatus() == ClassJUnitStatus.SUSPECTED_SUT_BUG
+                || report.getStatus() == ClassJUnitStatus.NEEDS_REVIEW
+                || report.getStatus() == ClassJUnitStatus.TEST_FAILED));
     }
 
     private String validationText(ValidationResult result) {
@@ -363,17 +399,139 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
 
     private JComponent classJUnitPanel(ClassJUnitRepairReport report) {
         if (report == null || report.getStatus() == ClassJUnitStatus.NOT_RUN) return null;
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         JTextArea area = new JTextArea("整类 JUnit：" + report.getStatus()
                 + "；JUnit@1 " + executionText(report.getInitialExecution())
                 + "；最终 " + executionText(report.getFinalExecution())
                 + "；运行修复 " + report.getRuntimeRepairRounds() + " 轮"
+                + (report.getAttempts().size() > 1 ? "（按失败测试独立仲裁）" : "")
                 + "；停止原因 " + report.getStopReason()
                 + (report.getMessage().isBlank() ? "" : "\n" + report.getMessage()));
         area.setEditable(false);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);
         area.setRows(3);
-        return area;
+        panel.add(area);
+        if (!report.getAttempts().isEmpty()) {
+            panel.add(new JBLabel("分测试修复明细"));
+            StringBuilder attempts = new StringBuilder();
+            report.getAttempts().stream().limit(8).forEach(attempt -> {
+                if (attempts.length() > 0) attempts.append('\n');
+                attempts.append("第 ").append(attempt.getRound()).append(" 轮 ")
+                        .append(attempt.getFocusedTestIds().isEmpty()
+                                ? "[未定位测试]" : attempt.getFocusedTestIds())
+                        .append("：").append(attempt.getDiagnosis().isBlank()
+                                ? "未分类" : attempt.getDiagnosis())
+                        .append(attempt.isAccepted() ? " · 已接受" : " · 已保留/拒绝");
+                if (!attempt.isAccepted() && !attempt.getRejectionReason().isBlank()) {
+                    attempts.append(" · ").append(attempt.getRejectionReason());
+                }
+            });
+            JTextArea attemptArea = new JTextArea(attempts.toString());
+            attemptArea.setEditable(false);
+            attemptArea.setLineWrap(true);
+            attemptArea.setWrapStyleWord(true);
+            attemptArea.setRows(Math.min(8, Math.max(2, report.getAttempts().size())));
+            panel.add(attemptArea);
+        }
+        if (report.getSourceBugAnalysis() != null
+                && report.getSourceBugAnalysis().isAttempted()) {
+            panel.add(new JBLabel("疑似源码缺陷分析（只读假设，不是已确认事实）"));
+            JTextArea analysis = new JTextArea(sourceBugAnalysisText(report.getSourceBugAnalysis()));
+            analysis.setEditable(false);
+            analysis.setLineWrap(true);
+            analysis.setWrapStyleWord(true);
+            analysis.setRows(8);
+            panel.add(analysis);
+        }
+        return panel;
+    }
+
+    private boolean isCriticalReport(CoverageReport coverageReport,
+                                     ClassJUnitRepairReport classJUnitReport) {
+        return coverageReport != null && (coverageReport.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
+                || coverageReport.getStatus() == CoverageStatus.NEEDS_REVIEW
+                || coverageReport.getStatus() == CoverageStatus.TEST_FAILED)
+                || classJUnitReport != null && (classJUnitReport.getStatus() == ClassJUnitStatus.SUSPECTED_SUT_BUG
+                || classJUnitReport.getStatus() == ClassJUnitStatus.NEEDS_REVIEW
+                || classJUnitReport.getStatus() == ClassJUnitStatus.TEST_FAILED);
+    }
+
+    private void toggleDetailsSize() {
+        if (validationCodeSplitter == null) return;
+        detailsExpanded = !detailsExpanded;
+        validationCodeSplitter.setProportion(detailsExpanded
+                ? EXPANDED_DETAILS_PROPORTION : defaultDetailsProportion);
+        detailsSizeButton.setText(detailsExpanded ? "恢复诊断比例" : "放大诊断区");
+        revalidate();
+        repaint();
+    }
+
+    private void ensureCriticalDetailsVisible(boolean critical) {
+        if (!critical || validationCodeSplitter == null || detailsExpanded) return;
+        defaultDetailsProportion = CRITICAL_DETAILS_PROPORTION;
+        validationCodeSplitter.setProportion(CRITICAL_DETAILS_PROPORTION);
+    }
+
+    private String sourceBugAnalysisText(SourceBugAnalysis analysis) {
+        if (!analysis.isAvailable()) {
+            return analysis.getError().isBlank() ? "归因分析未返回结果。" : analysis.getError();
+        }
+        StringBuilder text = new StringBuilder("置信度：")
+                .append(analysis.getConfidence()).append('\n')
+                .append("结论：").append(analysis.getSummary());
+        if (!analysis.getSuspectedLocations().isEmpty()) {
+            text.append("\n可能位置：");
+            for (SourceBugLocation location : analysis.getSuspectedLocations()) {
+                text.append("\n- ").append(location.getFile());
+                if (location.getLine() > 0) text.append(":").append(location.getLine());
+                if (!location.getSymbol().isBlank()) text.append("  ").append(location.getSymbol());
+                if (!location.getReason().isBlank()) text.append("：").append(location.getReason());
+            }
+        }
+        appendItems(text, "根因假设", analysis.getHypotheses());
+        appendItems(text, "证据", analysis.getEvidence());
+        appendItems(text, "建议核查", analysis.getRecommendedChecks());
+        return text.toString();
+    }
+
+    private void appendItems(StringBuilder text, String heading, java.util.List<String> items) {
+        if (items == null || items.isEmpty()) return;
+        text.append('\n').append(heading).append('：');
+        for (String item : items) text.append("\n- ").append(item);
+    }
+
+    /** 让外层诊断视图始终收敛到 viewport 宽度，避免长路径或表格撑宽整个工具窗口。 */
+    private static final class ViewportWidthPanel extends JPanel implements Scrollable {
+        private ViewportWidthPanel(java.awt.LayoutManager layout) {
+            super(layout);
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return JBUI.scale(16);
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return Math.max(JBUI.scale(16), visibleRect.height - JBUI.scale(16));
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
     }
 
     private String executionText(com.casc.unittestagent.model.TestExecutionSummary execution) {

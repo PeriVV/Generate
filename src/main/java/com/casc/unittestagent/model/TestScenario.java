@@ -31,6 +31,27 @@ public class TestScenario {
     private String oracleEvidence = "STATIC_ANALYSIS";
     /** 断言可信度：HIGH / MEDIUM / LOW。 */
     private String oracleConfidence = "LOW";
+    /** 用户是否勾选该场景纳入测试代码生成；UI 表格编辑时回写，默认允许生成。 */
+    private boolean enabled = true;
+
+    /**
+     * 读取用户是否勾选该场景纳入测试代码生成。
+     * 场景表格的“生成”列取消勾选后，该场景仍保留在列表中但不参与代码生成。
+     *
+     * @return true 表示参与生成
+     */
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * 更新用户是否勾选该场景纳入测试代码生成。
+     *
+     * @param enabled true 表示参与生成
+     */
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
 
     /**
      * 读取场景名或参数名，生成测试方法名和参数映射时会使用。

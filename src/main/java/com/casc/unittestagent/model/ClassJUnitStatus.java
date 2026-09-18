@@ -6,6 +6,8 @@ public enum ClassJUnitStatus {
     RUNNING,
     PASSED,
     TEST_FAILED,
+    SUSPECTED_SUT_BUG,
+    NEEDS_REVIEW,
     ENVIRONMENT_ERROR,
     STALE,
     CANCELLED

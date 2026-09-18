@@ -16,6 +16,9 @@ public class LlmGenerationResponse {
     private String diagnosisRootCauseCategory = "";
     private List<String> diagnosisEvidence = new ArrayList<>();
     private String oracleDecision = "";
+    private String oracleAuthority = "";
+    private String oracleAuthorityRef = "";
+    private String repairDisposition = "";
     private List<LlmCodeEdit> edits = new ArrayList<>();
     private List<LlmMethodPatch> methodPatches = new ArrayList<>();
     private String repairScope = "METHOD_ONLY";
@@ -62,6 +65,12 @@ public class LlmGenerationResponse {
     }
     public String getOracleDecision() { return oracleDecision; }
     public void setOracleDecision(String value) { oracleDecision = value == null ? "" : value; }
+    public String getOracleAuthority() { return oracleAuthority; }
+    public void setOracleAuthority(String value) { oracleAuthority = value == null ? "" : value; }
+    public String getOracleAuthorityRef() { return oracleAuthorityRef; }
+    public void setOracleAuthorityRef(String value) { oracleAuthorityRef = value == null ? "" : value; }
+    public String getRepairDisposition() { return repairDisposition; }
+    public void setRepairDisposition(String value) { repairDisposition = value == null ? "" : value; }
     public List<LlmCodeEdit> getEdits() { return edits; }
     public void setEdits(List<LlmCodeEdit> value) { edits = value == null ? new ArrayList<>() : value; }
     public List<LlmMethodPatch> getMethodPatches() { return methodPatches; }

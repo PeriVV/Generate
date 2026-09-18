@@ -1,5 +1,8 @@
 package com.casc.unittestagent.llm;
 
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+
 /**
  * 大模型补全能力的抽象接口。
  * 默认流程不强依赖大模型，该接口用于把可选远程能力与本地生成管线解耦。
@@ -30,6 +33,15 @@ public interface LlmClient {
     /** 根据完整类的 JUnit 失败诊断修复最终测试类。 */
     default LlmGenerationResponse repairClassTest(LlmGenerationRequest request) throws Exception {
         return repairUnitTest(request);
+    }
+
+    /**
+     * 在严格门禁已经判定疑似生产代码缺陷后，执行一次只读归因。
+     * 返回值只能解释可能位置和证据，不得包含或应用代码修改。
+     */
+    default SourceBugAnalysis analyzeSuspectedSutBug(LlmGenerationRequest request,
+                                                     OracleAssessment assessment) throws Exception {
+        throw new UnsupportedOperationException("当前大模型客户端不支持疑似源码缺陷归因。");
     }
 
     /**

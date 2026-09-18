@@ -11,6 +11,8 @@ import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.TestExecutionSummary;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+import com.casc.unittestagent.model.SourceBugLocation;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
@@ -73,7 +75,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     }
 
     private JComponent header() {
-        JPanel panel = new JPanel(new BorderLayout(8, 0));
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setOpaque(false);
 
         JPanel title = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 0));
@@ -82,7 +85,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         heading.setFont(heading.getFont().deriveFont(Font.BOLD));
         title.add(heading);
         title.add(statusBadge());
-        panel.add(title, BorderLayout.WEST);
+        panel.add(title);
 
         StringBuilder summary = new StringBuilder();
         if (report.getStopReason() != null && report.getStopReason() != CoverageStopReason.NONE) {
@@ -110,9 +113,16 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         if (report.getDurationMillis() > 0) {
             summary.append("  ·  ").append(durationText(report.getDurationMillis()));
         }
-        JBLabel detail = new JBLabel(summary.toString());
+        JTextArea detail = new JTextArea(summary.toString());
+        detail.setEditable(false);
+        detail.setLineWrap(true);
+        detail.setWrapStyleWord(true);
+        detail.setOpaque(false);
+        detail.setRows(2);
+        detail.setBorder(JBUI.Borders.emptyTop(3));
         detail.setForeground(UIUtil.getContextHelpForeground());
-        panel.add(detail, BorderLayout.EAST);
+        detail.setMaximumSize(new Dimension(Integer.MAX_VALUE, detail.getPreferredSize().height));
+        panel.add(detail);
         return panel;
     }
 
@@ -126,7 +136,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     }
 
     private JComponent metricCards() {
-        JPanel cards = new JPanel(new java.awt.GridLayout(1, 2, JBUI.scale(8), 0));
+        // 纵向卡片在窄工具窗口中不会互相挤压或制造整页横向滚动。
+        JPanel cards = new JPanel(new java.awt.GridLayout(0, 1, 0, JBUI.scale(8)));
         cards.setOpaque(false);
         cards.add(metricCard("本次生成", report.getGenerated(), true));
         cards.add(metricCard("已有测试基线", report.getExisting(), false));
@@ -275,6 +286,11 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     }
 
     private void addOptionalDetails() {
+        if (report.getSourceBugAnalysis() != null
+                && report.getSourceBugAnalysis().isAttempted()) {
+            add(Box.createVerticalStrut(JBUI.scale(8)));
+            add(sourceBugAnalysisPanel(report.getSourceBugAnalysis()));
+        }
         if (!report.getHistory().isEmpty()) {
             add(Box.createVerticalStrut(JBUI.scale(7)));
             add(roundHistoryPanel());
@@ -297,6 +313,56 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             add(sectionTitle("未覆盖目标（" + report.getGaps().size() + "）"));
             add(gapTable(report.getGaps()));
         }
+    }
+
+    private JComponent sourceBugAnalysisPanel(SourceBugAnalysis analysis) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                JBUI.Borders.customLine(ERROR, 1), JBUI.Borders.empty(7, 9)));
+        panel.setBackground(UIUtil.getPanelBackground());
+        JBLabel title = new JBLabel("疑似源码缺陷分析（只读假设，不是已确认事实）");
+        title.setFont(title.getFont().deriveFont(Font.BOLD));
+        title.setForeground(ERROR);
+        panel.add(title);
+        panel.add(Box.createVerticalStrut(JBUI.scale(4)));
+
+        JTextArea body = new JTextArea(sourceBugAnalysisText(analysis));
+        body.setEditable(false);
+        body.setLineWrap(true);
+        body.setWrapStyleWord(true);
+        body.setOpaque(false);
+        body.setRows(Math.min(12, Math.max(3, body.getText().split("\\R").length)));
+        panel.add(body);
+        return panel;
+    }
+
+    private String sourceBugAnalysisText(SourceBugAnalysis analysis) {
+        if (!analysis.isAvailable()) {
+            return analysis.getError().isBlank() ? "归因分析未返回结果。" : analysis.getError();
+        }
+        StringBuilder text = new StringBuilder("置信度：")
+                .append(analysis.getConfidence()).append("\n结论：")
+                .append(analysis.getSummary());
+        if (!analysis.getSuspectedLocations().isEmpty()) {
+            text.append("\n可能位置：");
+            for (SourceBugLocation location : analysis.getSuspectedLocations()) {
+                text.append("\n- ").append(location.getFile());
+                if (location.getLine() > 0) text.append(":").append(location.getLine());
+                if (!location.getSymbol().isBlank()) text.append("  ").append(location.getSymbol());
+                if (!location.getReason().isBlank()) text.append("：").append(location.getReason());
+            }
+        }
+        appendItems(text, "根因假设", analysis.getHypotheses());
+        appendItems(text, "证据", analysis.getEvidence());
+        appendItems(text, "建议核查", analysis.getRecommendedChecks());
+        return text.toString();
+    }
+
+    private void appendItems(StringBuilder text, String heading, List<String> items) {
+        if (items == null || items.isEmpty()) return;
+        text.append('\n').append(heading).append('：');
+        for (String item : items) text.append("\n- ").append(item);
     }
 
     private JComponent sectionTitle(String text) {
@@ -500,6 +566,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             case PASSED -> "已达标";
             case BELOW_THRESHOLD -> "未达标";
             case TEST_FAILED -> "测试失败";
+            case SUSPECTED_SUT_BUG -> "疑似产品缺陷";
+            case NEEDS_REVIEW -> "需人工确认";
             case ENVIRONMENT_ERROR -> "环境错误";
             case STALE -> "已失效";
             case CANCELLED -> "已取消";
@@ -508,8 +576,9 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
 
     private Color statusColor(CoverageStatus status) {
         if (status == CoverageStatus.PASSED) return SUCCESS;
-        if (status == CoverageStatus.BELOW_THRESHOLD) return WARNING;
-        if (status == CoverageStatus.TEST_FAILED || status == CoverageStatus.ENVIRONMENT_ERROR) return ERROR;
+        if (status == CoverageStatus.BELOW_THRESHOLD || status == CoverageStatus.NEEDS_REVIEW) return WARNING;
+        if (status == CoverageStatus.TEST_FAILED || status == CoverageStatus.SUSPECTED_SUT_BUG
+                || status == CoverageStatus.ENVIRONMENT_ERROR) return ERROR;
         if (status == CoverageStatus.RUNNING) return INFO;
         return MUTED;
     }
@@ -524,6 +593,9 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             case REPEATED_CODE -> "返回了重复代码";
             case REPAIR_BUDGET_EXHAUSTED -> "修复预算已耗尽";
             case TEST_FAILURE -> "测试持续失败";
+            case TEST_DESIGN_ERROR -> "测试设计错误";
+            case SUSPECTED_SUT_BUG -> "疑似生产代码缺陷";
+            case ORACLE_INCONCLUSIVE -> "Oracle 证据不足";
             case MODEL_ERROR -> "大模型调用失败";
             case ENVIRONMENT_ERROR -> "覆盖率环境错误";
             case CANCELLED -> "用户取消";
@@ -543,19 +615,19 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     private static final class CoverageProcessTrack extends JComponent {
         private static final CoveragePhase[] PHASES = {
                 CoveragePhase.PREPARING, CoveragePhase.COMPILING, CoveragePhase.EXECUTING,
-                CoveragePhase.ANALYZING, CoveragePhase.IMPROVING, CoveragePhase.BASELINE,
-                CoveragePhase.VALIDATING, CoveragePhase.COMPLETED
+                CoveragePhase.ANALYZING, CoveragePhase.IMPROVING, CoveragePhase.DIAGNOSING_SUT_BUG,
+                CoveragePhase.BASELINE, CoveragePhase.VALIDATING, CoveragePhase.COMPLETED
         };
         private static final String[] LABELS = {
-                "准备", "编译", "执行", "分析", "补测", "基线", "校验", "完成"
+                "准备", "编译", "执行", "分析", "补测", "归因", "基线", "校验", "完成"
         };
         private final CoverageReport report;
 
         private CoverageProcessTrack(CoverageReport report) {
             this.report = report;
             setFont(UIUtil.getLabelFont());
-            setPreferredSize(new Dimension(JBUI.scale(500), JBUI.scale(39)));
-            setMinimumSize(new Dimension(JBUI.scale(260), JBUI.scale(39)));
+            setPreferredSize(new Dimension(JBUI.scale(420), JBUI.scale(39)));
+            setMinimumSize(new Dimension(0, JBUI.scale(39)));
             setToolTipText(report.getProgressMessage());
         }
 

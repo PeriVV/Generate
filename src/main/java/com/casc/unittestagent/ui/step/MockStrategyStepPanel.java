@@ -19,6 +19,7 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
+import java.util.List;
 
 /**
  * Mock 策略步骤面板。
@@ -115,6 +116,8 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
 
     /**
      * 构建统一 Mock 策略表格模型。
+     * 单元格编辑会实时回写 {@code strategy.getStrategyItems()}，确保后续测试代码生成
+     * 使用用户在表格中确认后的策略，而不是规划阶段的旧数据。
      */
     private DefaultTableModel model(MockStrategy strategy, boolean fromLlm) {
         DefaultTableModel model = new DefaultTableModel(new String[]{"生成", "依赖类型", "对象/类名", "方法", "来源", "Mockito策略", "备注"}, 0) {
@@ -142,6 +145,34 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
                     item.getMockitoStrategy(),
                     item.getRemark()});
         }
+        List<MockStrategyItem> items = strategy.getStrategyItems();
+        model.addTableModelListener(event -> {
+            if (event.getType() != javax.swing.event.TableModelEvent.UPDATE) {
+                return;
+            }
+            int row = event.getFirstRow();
+            if (row < 0 || row >= items.size()) {
+                return; // 占位行没有可回写的策略项。
+            }
+            MockStrategyItem item = items.get(row);
+            int column = event.getColumn();
+            Object value = model.getValueAt(row, column);
+            if (column == 0 && value instanceof Boolean) {
+                item.setGenerate((Boolean) value);
+            } else if (column == 1) {
+                item.setDependencyType(String.valueOf(value));
+            } else if (column == 2) {
+                item.setObjectName(String.valueOf(value));
+            } else if (column == 3) {
+                item.setMethodName(String.valueOf(value));
+            } else if (column == 4) {
+                item.setSource(String.valueOf(value));
+            } else if (column == 5) {
+                item.setMockitoStrategy(String.valueOf(value));
+            } else if (column == 6) {
+                item.setRemark(String.valueOf(value));
+            }
+        });
         return model;
     }
 

@@ -20,6 +20,7 @@ import com.casc.unittestagent.util.StringUtils;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
@@ -109,6 +110,8 @@ public class ClassUnitTestGenerationService {
             LOG.info("UnitMind: static class analysis completed, class=" + classModel.getQualifiedName()
                     + ", included=" + classModel.getMethods().size()
                     + ", skipped=" + classModel.getSkippedMethods().size());
+        } catch (ProcessCanceledException ex) {
+            throw ex;
         } catch (Exception ex) {
             String message = safeMessage(ex);
             result.getWarnings().add(message);
@@ -196,6 +199,8 @@ public class ClassUnitTestGenerationService {
                     item.setStatus(MethodGenerationStatus.SUCCESS);
                 }
                 addWarnings(result, generated.getWarnings());
+            } catch (ProcessCanceledException ex) {
+                throw ex;
             } catch (Exception ex) {
                 useRuleFallback(item, safeMessage(ex));
                 result.getWarnings().add(item.getSignature() + " 生成失败，已使用规则草稿：" + safeMessage(ex));
@@ -315,6 +320,8 @@ public class ClassUnitTestGenerationService {
                 }
             }
             rejectCurrentMethod(classResult, current, llmFailure);
+        } catch (ProcessCanceledException ex) {
+            throw ex;
         } catch (Exception ex) {
             rejectCurrentMethod(classResult, current, safeMessage(ex));
         }

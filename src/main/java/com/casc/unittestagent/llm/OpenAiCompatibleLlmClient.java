@@ -1,5 +1,8 @@
 package com.casc.unittestagent.llm;
 
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -16,15 +19,31 @@ import java.util.concurrent.TimeUnit;
  */
 public class OpenAiCompatibleLlmClient implements LlmClient {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
+    /**
+     * 源码缺陷归因是只读分析请求，只返回结构化结论，不应输出代码；
+     * 限制输出规模防止思考型模型把预算耗在长推理上。
+     */
+    private static final int SOURCE_BUG_ANALYSIS_MAX_TOKENS = 1800;
+    /**
+     * 全插件共享连接池：生成/修复/覆盖率各流程都会创建客户端实例，
+     * 若每个实例独立建池会重复维护到同一端点的 TLS 连接且从不释放。
+     * newBuilder 派生的客户端共享池与调度器，仅覆盖超时配置。
+     */
+    private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .build();
 
     private final LlmConfig config;
     private final LlmPromptBuilder promptBuilder = new LlmPromptBuilder();
     private final LlmResponseParser responseParser = new LlmResponseParser();
     private final OkHttpClient httpClient;
+    private boolean loggedModelRewrite;
 
     public OpenAiCompatibleLlmClient(LlmConfig config) {
         this.config = config;
-        this.httpClient = new OkHttpClient.Builder()
+        this.httpClient = SHARED_HTTP_CLIENT.newBuilder()
                 .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
@@ -57,9 +76,19 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     @Override
     public LlmGenerationResponse repairClassTest(LlmGenerationRequest request) throws Exception {
         validateConfig();
-        return responseParser.parse(executeChat(
+        return responseParser.parseClassRepair(executeChat(
                 promptBuilder.classRepairSystemPrompt(), promptBuilder.classRepairPrompt(request),
                 config.getMaxTokens()));
+    }
+
+    @Override
+    public SourceBugAnalysis analyzeSuspectedSutBug(LlmGenerationRequest request,
+                                                    OracleAssessment assessment) throws Exception {
+        validateConfig();
+        return responseParser.parseSourceBugAnalysis(executeChat(
+                promptBuilder.sourceBugAnalysisSystemPrompt(),
+                promptBuilder.sourceBugAnalysisPrompt(request, assessment),
+                Math.min(config.getMaxTokens(), SOURCE_BUG_ANALYSIS_MAX_TOKENS)));
     }
 
     @Override
@@ -174,10 +203,19 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         return url.contains("api.deepseek.com");
     }
 
-    /** DeepSeek 旧模型名 deepseek-chat/deepseek-reasoner 已于 2026-07-24 下线，统一指向 V4-Flash。 */
+    /**
+     * DeepSeek 旧模型名 deepseek-chat/deepseek-reasoner 已于 2026-07-24 下线，统一指向 V4-Flash。
+     * 改写必须留痕：用户可能通过代理端点自建同名模型，静默替换会掩盖配置问题。
+     */
     private String modelName() {
         String model = config.getModel() == null ? "" : config.getModel().trim();
         if (isDeepSeek() && ("deepseek-chat".equals(model) || "deepseek-reasoner".equals(model))) {
+            if (!loggedModelRewrite) {
+                loggedModelRewrite = true;
+                com.intellij.openapi.diagnostic.Logger.getInstance(OpenAiCompatibleLlmClient.class)
+                        .warn("UnitMind: DeepSeek 已下线模型 " + model + "，本次请求改用 deepseek-v4-flash。"
+                                + "如需使用其他模型，请在设置中修改模型名称。");
+            }
             return "deepseek-v4-flash";
         }
         return model;
@@ -212,7 +250,13 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private String extractMessageContent(String body, int maxTokens) {
-        JSONObject root = new JSONObject(body);
+        JSONObject root;
+        try {
+            root = new JSONObject(body);
+        } catch (org.json.JSONException ex) {
+            // 网关返回 200 + HTML 时不应抛裸 org.json 异常，统一按响应格式错误分类。
+            throw new LlmResponseFormatException("大模型响应不是合法 JSON：" + responseSnippet(body));
+        }
         JSONArray choices = root.optJSONArray("choices");
         if (choices == null || choices.length() == 0) {
             throw new LlmResponseFormatException("大模型响应中没有 choices。");

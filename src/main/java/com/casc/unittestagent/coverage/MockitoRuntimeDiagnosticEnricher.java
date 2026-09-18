@@ -53,7 +53,23 @@ public final class MockitoRuntimeDiagnosticEnricher {
                 .toLowerCase(Locale.ROOT);
         String actualType = diagnostic.getActualExceptionType() == null
                 ? "" : diagnostic.getActualExceptionType().toLowerCase(Locale.ROOT);
-        if ((actualType.contains("invocationtargetexception")
+        if ((evidence.contains("no interactions wanted")
+                || evidence.contains("nointeractionswanted"))
+                && MockitoNoInteractionsContradictionGuard.hasContradiction(
+                testCode, testMethodName(diagnostic))) {
+            diagnostic.setCategory("MOCKITO_NO_INTERACTIONS_CONTRADICTION");
+            diagnostic.setSuggestion("同一测试已经 verify(mock).方法，随后又对同一 mock 调用 "
+                    + "verifyNoInteractions(mock)，两个 Oracle 逻辑上自相矛盾。"
+                    + "改用 verifyNoMoreInteractions(mock)，或精确验证不应发生的写操作 never()。");
+        } else if (!diagnostic.getExpectedExceptionType().isBlank()
+                && diagnostic.getActualExceptionType().isBlank()
+                && evidence.contains("nothing was thrown")) {
+            diagnostic.setCategory("ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN");
+            diagnostic.setSuggestion("assertThrows 期望的异常路径没有被触发。必须结合完整生产类源码中的字段/常量定义、"
+                    + "分支条件和当前 stub 实参核对边界：若输入未达到明确阈值，只能标记为测试路径设置不一致；"
+                    + "若输入已达到阈值且真实依赖调用也已命中，则保留原异常 Oracle 并标记疑似被测代码缺陷。"
+                    + "不得归类为 Fixture 缺失，除非另有真实 NullPointerException 和缺失构造依赖证据。");
+        } else if ((actualType.contains("invocationtargetexception")
                 || evidence.contains("but was: <java.lang.reflect.invocationtargetexception>"))
                 && (!diagnostic.getExpectedExceptionType().isBlank()
                 || evidence.contains("unexpected exception type thrown"))) {
@@ -97,9 +113,9 @@ public final class MockitoRuntimeDiagnosticEnricher {
                     || diagnostic.getActualValue() != null && !diagnostic.getActualValue().isBlank();
             diagnostic.setCategory(hasValues ? "ASSERTION_VALUE_MISMATCH" : "ASSERTION_FAILURE");
             diagnostic.setSuggestion(hasValues
-                    ? "这是生成测试的断言值不一致。先用被测源码、已有测试和明确需求仲裁契约："
-                    + "若实际值与现有契约一致，精确修正生成断言；若期望值有权威依据，标记疑似被测代码缺陷；"
-                    + "证据不足时不得在 Arrange 与 Assert 之间盲目往返。"
+                    ? "这是生成测试的断言值不一致。先用明确用户需求、已有测试或独立合同事实仲裁契约："
+                    + "若它们证明原期望值正确，标记疑似被测代码缺陷；只有它们证明原期望值错误时才修改断言。"
+                    + "生产源码当前实现和 actualValue 本身不是独立契约；证据不足时必须保留失败并等待人工确认。"
                     : "先根据被测源码、已有测试和明确需求确认真实契约，再修正 Arrange 或精确断言；不得删除或弱化断言。");
         } else if (evidence.contains("illegalargumentexception")
                 || evidence.contains("illegalstateexception")) {
@@ -164,6 +180,18 @@ public final class MockitoRuntimeDiagnosticEnricher {
         if (hash >= 0) id = id.substring(0, hash);
         int dot = id.lastIndexOf('.');
         return dot < 0 ? id : id.substring(dot + 1);
+    }
+
+    private static String testMethodName(RuntimeDiagnostic diagnostic) {
+        if (diagnostic == null || diagnostic.getTestId() == null) return "";
+        String id = diagnostic.getTestId();
+        int hash = id.indexOf('#');
+        if (hash >= 0) id = id.substring(hash + 1);
+        int parenthesis = id.indexOf('(');
+        if (parenthesis >= 0) id = id.substring(0, parenthesis);
+        int bracket = id.indexOf('[');
+        if (bracket >= 0) id = id.substring(0, bracket);
+        return id.strip();
     }
 
     private static CompileDiagnostic relatedPreflight(List<CompileDiagnostic> diagnostics, int preferredLine) {

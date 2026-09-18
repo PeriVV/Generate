@@ -1,6 +1,5 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.8.21"
     id("org.jetbrains.intellij") version "1.13.3"
 }
 
@@ -36,15 +35,11 @@ intellij {
 }
 
 tasks {
-    // 设置 Java 与 Kotlin 编译产物的 JVM 兼容版本
+    // 设置 Java 编译产物的 JVM 兼容版本
     withType<JavaCompile> {
         sourceCompatibility = "17"
         targetCompatibility = "17"
         options.encoding = "UTF-8"
-    }
-    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
-        kotlinOptions.freeCompilerArgs += "-Xjsr305=strict"
     }
 
     patchPluginXml {
@@ -113,21 +108,8 @@ tasks {
     }
 }
 dependencies {
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
-    implementation("com.alibaba:fastjson:1.2.83")
-    implementation("org.eclipse.jgit:org.eclipse.jgit:6.1.0.202203080745-r"){
-        exclude("org.slf4j", "slf4j-api")
-    }
-    implementation("org.eclipse.jdt:org.eclipse.jdt.core:3.24.0")
-    implementation("org.eclipse.platform:org.eclipse.core.resources:3.14.0")
-    implementation("org.eclipse.platform:org.eclipse.equinox.common:3.14.100")
-    implementation("org.eclipse.platform:org.eclipse.core.runtime:3.20.100")
     // JavaParser 核心库，用于解析 Java 源码结构。
     implementation("com.github.javaparser:javaparser-core:3.25.10")
-    // JavaParser 符号求解库，为后续更复杂的类型分析预留依赖。
-    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.25.10")
-
-    implementation("org.apache.commons:commons-lang3:3.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation ("org.json:json:20210307")
     // UnitMind 自带覆盖率执行运行时，不要求修改被测项目的构建文件。
@@ -135,8 +117,13 @@ dependencies {
     implementation("org.jacoco:org.jacoco.agent:0.8.15")
     implementation("org.junit.platform:junit-platform-console-standalone:1.12.0")
     testImplementation("junit:junit:4.13.2")
+    // UnitMind validates generated tests against the IDE module's test compile classpath.
+    // The standalone console launcher bundles Jupiter only for runtime, so declare the
+    // Jupiter API directly to make JUnit 5 visible to IntelliJ and javac.
+    testImplementation("org.junit.jupiter:junit-jupiter-api:5.12.0")
     testImplementation("org.mockito:mockito-core:5.18.0")
     testImplementation("org.mockito:mockito-junit-jupiter:5.18.0")
+    testImplementation("org.projectlombok:lombok:1.18.36")
 }
 java {
     toolchain {

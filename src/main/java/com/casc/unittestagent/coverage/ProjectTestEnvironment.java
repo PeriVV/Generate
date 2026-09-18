@@ -6,8 +6,10 @@ import com.intellij.openapi.project.Project;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** 从 IntelliJ 项目模型解析出的候选测试编译、执行环境。 */
@@ -26,6 +28,11 @@ public class ProjectTestEnvironment {
     final Set<File> classpath = new LinkedHashSet<>();
     final Set<File> modulePath = new LinkedHashSet<>();
     final Set<File> sourcePath = new LinkedHashSet<>();
+    final Set<File> annotationProcessorPath = new LinkedHashSet<>();
+    final Set<String> annotationProcessors = new LinkedHashSet<>();
+    final Map<String, String> annotationProcessorOptions = new LinkedHashMap<>();
+    boolean processorsFromClasspath;
+    boolean processorModulePath;
     final List<CompileDiagnostic> diagnostics = new ArrayList<>();
 
     public Project getProject() { return project; }
@@ -42,6 +49,13 @@ public class ProjectTestEnvironment {
     public Set<File> getClasspath() { return new LinkedHashSet<>(classpath); }
     public Set<File> getModulePath() { return new LinkedHashSet<>(modulePath); }
     public Set<File> getSourcePath() { return new LinkedHashSet<>(sourcePath); }
+    public Set<File> getAnnotationProcessorPath() { return new LinkedHashSet<>(annotationProcessorPath); }
+    public Set<String> getAnnotationProcessors() { return new LinkedHashSet<>(annotationProcessors); }
+    public Map<String, String> getAnnotationProcessorOptions() {
+        return new LinkedHashMap<>(annotationProcessorOptions);
+    }
+    public boolean isProcessorsFromClasspath() { return processorsFromClasspath; }
+    public boolean isProcessorModulePath() { return processorModulePath; }
     public List<File> getRuntimeClasspath() {
         LinkedHashSet<File> result = new LinkedHashSet<>(classpath);
         result.addAll(modulePath);

@@ -6,6 +6,21 @@ import static org.junit.Assert.assertTrue;
 
 public class TestClassMergerTest {
     @Test
+    public void overloadedMethodsUseDistinctStableRegions() {
+        String existing = "package sample; class SubjectTest { }";
+        String generated = "package sample; class SubjectTest { @org.junit.jupiter.api.Test void generated() {} }";
+        TestClassMerger merger = new TestClassMerger();
+
+        String first = merger.merge(existing, generated,
+                GenerationTarget.method("sample.Subject#work(int)"), new MergeOptions());
+        String second = merger.merge(first, generated.replace("generated", "generatedString"),
+                GenerationTarget.method("sample.Subject#work(java.lang.String)"), new MergeOptions());
+
+        assertTrue(second.contains("sample.Subject#work(int)"));
+        assertTrue(second.contains("sample.Subject#work(java.lang.String)"));
+    }
+
+    @Test
     public void mergedContentIsTheFinalCompilableUnitToValidate() {
         String existing = "package sample;\n\nimport org.junit.jupiter.api.Test;\n\nclass SubjectTest {\n}\n";
         String generated = """

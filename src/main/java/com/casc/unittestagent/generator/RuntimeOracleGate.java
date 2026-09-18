@@ -1,0 +1,222 @@
+package com.casc.unittestagent.generator;
+
+import com.casc.unittestagent.llm.LlmGenerationResponse;
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.OracleAuthority;
+import com.casc.unittestagent.model.OracleDecision;
+import com.casc.unittestagent.model.RuntimeRepairDisposition;
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.ForEachStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
+import com.github.javaparser.ast.stmt.IfStmt;
+import com.github.javaparser.ast.stmt.ReturnStmt;
+import com.github.javaparser.ast.stmt.SwitchStmt;
+import com.github.javaparser.ast.stmt.TryStmt;
+import com.github.javaparser.ast.stmt.WhileStmt;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 运行修复的最后代码门禁。模型的文字承诺不足以保护 Oracle，
+ * 因此还会对修复前后失败测试的断言、交互验证和期望异常做 AST 指纹比较。
+ */
+public final class RuntimeOracleGate {
+    public OracleAssessment assessment(LlmGenerationResponse response) {
+        if (response == null) throw new IllegalArgumentException("运行修复响应为空。");
+        OracleAssessment assessment = new OracleAssessment();
+        try {
+            assessment.setDisposition(RuntimeRepairDisposition.valueOf(response.getRepairDisposition()));
+            assessment.setDecision(OracleDecision.valueOf(response.getOracleDecision()));
+            assessment.setAuthority(OracleAuthority.valueOf(response.getOracleAuthority()));
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("运行修复仲裁枚举无效。", ex);
+        }
+        assessment.setAuthorityRef(response.getOracleAuthorityRef());
+        assessment.setRootCauseCategory(response.getDiagnosisRootCauseCategory());
+        assessment.setEvidence(response.getDiagnosisEvidence());
+        return assessment;
+    }
+
+    public void validateRepair(OracleAssessment assessment,
+                               String currentCode,
+                               String proposedCode,
+                               Set<String> editableTestNames) {
+        if (assessment == null || assessment.getDisposition() != RuntimeRepairDisposition.REPAIR_TEST) {
+            throw new IllegalArgumentException("只有 REPAIR_TEST 可以产生代码补丁。");
+        }
+        if (assessment.getDecision() == OracleDecision.CORRECT) {
+            if (!assessment.getAuthority().permitsAutomaticOracleCorrection()) {
+                throw new UnsafeOracleCorrectionException(
+                        "禁止使用 " + assessment.getAuthority()
+                                + " 修改测试 Oracle；只有 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 可授权。");
+            }
+            return;
+        }
+        Map<String, List<String>> before = oracleFingerprints(currentCode);
+        Map<String, List<String>> after = oracleFingerprints(proposedCode);
+        Set<String> editable = editableTestNames == null ? Set.of() : editableTestNames;
+        for (String name : editable) {
+            List<String> original = before.getOrDefault(name, List.of());
+            List<String> replacement = after.getOrDefault(name, List.of());
+            if (!original.equals(replacement)) {
+                throw new UnsafeOracleCorrectionException(
+                        "oracleDecision=KEEP 但补丁修改了 " + name + " 的 Oracle：原="
+                                + original + "，新=" + replacement);
+            }
+        }
+    }
+
+    static Map<String, List<String>> oracleFingerprints(String code) {
+        CompilationUnit unit = StaticJavaParser.parse(code == null ? "" : code);
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
+            if (!isTest(method)) continue;
+            List<String> fingerprints = new ArrayList<>();
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                String fingerprint = oracleFingerprint(call);
+                if (!fingerprint.isBlank()) {
+                    fingerprints.add(fingerprint + "@" + ancestorPath(call, method));
+                    fingerprints.addAll(directOracleValueSources(call, method));
+                }
+            }
+            method.findAll(IfStmt.class).forEach(node -> fingerprints.add("control-if:" + normalize(node.toString())));
+            method.findAll(TryStmt.class).forEach(node -> fingerprints.add("control-try:" + normalize(node.toString())));
+            method.findAll(ReturnStmt.class).forEach(node -> fingerprints.add("control-return:" + normalize(node.toString())));
+            method.findAll(ForStmt.class).forEach(node -> fingerprints.add("control-for:" + normalize(node.toString())));
+            method.findAll(ForEachStmt.class).forEach(node -> fingerprints.add("control-foreach:" + normalize(node.toString())));
+            method.findAll(WhileStmt.class).forEach(node -> fingerprints.add("control-while:" + normalize(node.toString())));
+            method.findAll(DoStmt.class).forEach(node -> fingerprints.add("control-do:" + normalize(node.toString())));
+            method.findAll(SwitchStmt.class).forEach(node -> fingerprints.add("control-switch:" + normalize(node.toString())));
+            result.put(method.getNameAsString(), fingerprints);
+        }
+        return result;
+    }
+
+    /**
+     * Protect local values passed directly to an assertion. Comparing only the assertion text
+     * misses changes such as replacing {@code actual = sut.value()} with {@code actual = 2}.
+     * Receiver setup remains editable, so a repair may still change {@code subject = null} to a
+     * valid fixture when the assertion itself calls {@code subject.value()}.
+     */
+    private static List<String> directOracleValueSources(MethodCallExpr call, MethodDeclaration method) {
+        String lower = call.getNameAsString().toLowerCase(Locale.ROOT);
+        if (!(lower.startsWith("assert") || "fail".equals(lower))) return List.of();
+        List<String> result = new ArrayList<>();
+        for (Expression argument : call.getArguments()) {
+            if (!(argument instanceof NameExpr nameExpression)) continue;
+            String name = nameExpression.getNameAsString();
+            for (VariableDeclarator variable : method.findAll(VariableDeclarator.class)) {
+                if (name.equals(variable.getNameAsString()) && precedes(variable, call)) {
+                    result.add("oracle-source:" + name + "="
+                            + normalize(variable.getInitializer().map(Node::toString).orElse("<uninitialized>")));
+                }
+            }
+            for (AssignExpr assignment : method.findAll(AssignExpr.class)) {
+                if (assignment.getTarget().isNameExpr()
+                        && name.equals(assignment.getTarget().asNameExpr().getNameAsString())
+                        && precedes(assignment, call)) {
+                    result.add("oracle-assignment:" + name + "=" + normalize(assignment.getValue().toString()));
+                }
+            }
+        }
+        return result;
+    }
+
+    private static boolean precedes(Node candidate, Node reference) {
+        if (candidate.getBegin().isEmpty() || reference.getBegin().isEmpty()) return true;
+        com.github.javaparser.Position left = candidate.getBegin().get();
+        com.github.javaparser.Position right = reference.getBegin().get();
+        return left.line < right.line || (left.line == right.line && left.column <= right.column);
+    }
+
+    private static String oracleFingerprint(MethodCallExpr call) {
+        String name = call.getNameAsString();
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("assert") || "fail".equals(lower)) {
+            if ("assertthat".equals(lower) && isScopeOfParentCall(call)) return "";
+            // 保留整个断言调用，不只保留 expected 参数。否则模型可以把
+            // assertEquals(expected, sut.call()) 改成 assertEquals(expected, expected) 绕过门禁。
+            return lower + ":" + normalize(call);
+        }
+        if (lower.startsWith("assume")) return "assumption:" + normalize(call);
+        if (isFluentAssertion(call)) return "fluent:" + normalize(call);
+        if (isMockitoVerification(call)) return "verify:" + normalize(call);
+        return "";
+    }
+
+    private static boolean isFluentAssertion(MethodCallExpr call) {
+        Expression scope = call.getScope().orElse(null);
+        while (scope instanceof MethodCallExpr scopedCall) {
+            if ("assertThat".equals(scopedCall.getNameAsString())) return true;
+            scope = scopedCall.getScope().orElse(null);
+        }
+        return false;
+    }
+
+    private static String ancestorPath(MethodCallExpr call, MethodDeclaration method) {
+        List<String> path = new ArrayList<>();
+        Node current = call.getParentNode().orElse(null);
+        while (current != null && current != method) {
+            path.add(current.getClass().getSimpleName());
+            current = current.getParentNode().orElse(null);
+        }
+        return String.join("/", path);
+    }
+
+    private static boolean isMockitoVerification(MethodCallExpr call) {
+        if ("verify".equals(call.getNameAsString())) {
+            return !isScopeOfParentCall(call);
+        }
+        Expression scope = call.getScope().orElse(null);
+        while (scope instanceof MethodCallExpr scopedCall) {
+            String name = scopedCall.getNameAsString();
+            if ("verify".equals(name) || "should".equals(name)) return true;
+            scope = scopedCall.getScope().orElse(null);
+        }
+        return false;
+    }
+
+    private static boolean isScopeOfParentCall(MethodCallExpr call) {
+        return call.getParentNode().filter(parent -> parent instanceof MethodCallExpr outer
+                && outer.getScope().filter(scope -> scope == call).isPresent()).isPresent();
+    }
+
+    private static boolean isTest(MethodDeclaration method) {
+        return method.getAnnotations().stream().anyMatch(annotation -> {
+            String name = annotation.getName().getIdentifier();
+            return "Test".equals(name) || "ParameterizedTest".equals(name)
+                    || "RepeatedTest".equals(name) || "TestFactory".equals(name)
+                    || "TestTemplate".equals(name);
+        });
+    }
+
+    private static String normalize(Expression expression) {
+        return normalize(expression == null ? "" : expression.toString());
+    }
+
+    private static String normalize(MethodCallExpr expression) {
+        return normalize(expression == null ? "" : expression.toString());
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "").trim();
+    }
+
+    public static final class UnsafeOracleCorrectionException extends IllegalArgumentException {
+        public UnsafeOracleCorrectionException(String message) { super(message); }
+    }
+}

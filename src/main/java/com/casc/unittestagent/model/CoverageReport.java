@@ -46,6 +46,8 @@ public class CoverageReport {
     /** 模型有改动，但后处理/测试保护后被还原的响应数。 */
     private int discardedChanges;
     private String lastUnchangedStage = "";
+    private OracleAssessment oracleAssessment;
+    private SourceBugAnalysis sourceBugAnalysis = new SourceBugAnalysis();
 
     public static CoverageReport status(CoverageStatus status) {
         CoverageReport report = new CoverageReport();
@@ -126,6 +128,12 @@ public class CoverageReport {
         lastUnchangedStage = stage == null ? "" : stage;
         if ("MODEL_OUTPUT".equals(lastUnchangedStage)) modelUnchangedResponses++;
         else discardedChanges++;
+    }
+    public OracleAssessment getOracleAssessment() { return oracleAssessment; }
+    public void setOracleAssessment(OracleAssessment value) { oracleAssessment = value; }
+    public SourceBugAnalysis getSourceBugAnalysis() { return sourceBugAnalysis; }
+    public void setSourceBugAnalysis(SourceBugAnalysis value) {
+        sourceBugAnalysis = value == null ? new SourceBugAnalysis() : value;
     }
 
     /** 同步更新后台任务进度，供工具窗口实时渲染。 */

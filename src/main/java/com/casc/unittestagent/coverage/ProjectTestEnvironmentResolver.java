@@ -1,6 +1,8 @@
 package com.casc.unittestagent.coverage;
 
+import com.intellij.compiler.CompilerConfiguration;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.components.PathMacroManager;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.project.DumbService;
@@ -20,6 +22,7 @@ import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.util.PsiUtil;
+import org.jetbrains.jps.model.java.compiler.AnnotationProcessingConfiguration;
 
 import java.io.File;
 import java.util.ArrayDeque;
@@ -29,6 +32,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /** 解析模块 JDK、源码根、依赖和编译输出，供编译验证与覆盖率运行共用。 */
 public class ProjectTestEnvironmentResolver {
@@ -101,6 +105,23 @@ public class ProjectTestEnvironmentResolver {
                 addRoot(environment.classpath, extension.getCompilerOutputPathForTests());
             }
         }
+        // IntelliJ can resolve classes from a dependent module's source tree even when that
+        // module has not been compiled yet. javac cannot: a module output directory that is
+        // empty does not help it locate those sources. Add production source roots (including
+        // generated source roots) and outputs for every transitive module dependency so the
+        // temporary compile behaves like the IDE project model in a clean multi-module checkout.
+        List<Module> dependencyModules = transitiveDependencies(modules);
+        for (Module dependencyModule : dependencyModules) {
+            ModuleRootManager roots = ModuleRootManager.getInstance(dependencyModule);
+            addRoots(environment.sourcePath, roots.getSourceRoots(false));
+            CompilerModuleExtension extension = CompilerModuleExtension.getInstance(dependencyModule);
+            if (extension != null) {
+                addRoot(environment.classpath, extension.getCompilerOutputPath());
+            }
+        }
+        List<Module> compilationModules = new ArrayList<>(modules);
+        compilationModules.addAll(dependencyModules);
+        addAnnotationProcessing(environment, project, compilationModules);
         addRoots(environment.platformClasspath, sdk.getRootProvider().getFiles(OrderRootType.CLASSES));
         for (VirtualFile root : ModuleRootManager.getInstance(module).getSourceRoots(false)) {
             if (root.findChild("module-info.java") != null) {
@@ -122,6 +143,45 @@ public class ProjectTestEnvironmentResolver {
             if (candidate != sourceModule && moduleDependsOn(candidate, sourceModule)
                     && (hasTestSourceRoot(project, candidate) || looksLikeTestModule(candidate))) {
                 result.add(candidate);
+            }
+        }
+        return result;
+    }
+
+    private void addAnnotationProcessing(ProjectTestEnvironment environment,
+                                         Project project,
+                                         List<Module> modules) {
+        CompilerConfiguration compilerConfiguration = CompilerConfiguration.getInstance(project);
+        PathMacroManager macros = PathMacroManager.getInstance(project);
+        for (Module module : modules) {
+            AnnotationProcessingConfiguration configuration =
+                    compilerConfiguration.getAnnotationProcessingConfiguration(module);
+            if (configuration == null || !configuration.isEnabled()) continue;
+            environment.processorsFromClasspath |= configuration.isObtainProcessorsFromClasspath();
+            environment.processorModulePath |= configuration.isUseProcessorModulePath();
+            environment.annotationProcessors.addAll(configuration.getProcessors());
+            environment.annotationProcessorOptions.putAll(configuration.getProcessorOptions());
+            String processorPath = configuration.getProcessorPath();
+            if (processorPath == null || processorPath.isBlank()) continue;
+            for (String entry : processorPath.split(Pattern.quote(File.pathSeparator))) {
+                if (entry == null || entry.isBlank()) continue;
+                File processor = new File(macros.expandPath(entry));
+                if (processor.exists()) environment.annotationProcessorPath.add(processor);
+            }
+        }
+    }
+
+    private List<Module> transitiveDependencies(List<Module> roots) {
+        Set<Module> rootSet = new LinkedHashSet<>(roots);
+        Set<Module> visited = new LinkedHashSet<>(rootSet);
+        Deque<Module> pending = new ArrayDeque<>(roots);
+        List<Module> result = new ArrayList<>();
+        while (!pending.isEmpty()) {
+            Module current = pending.removeFirst();
+            for (Module dependency : ModuleRootManager.getInstance(current).getDependencies()) {
+                if (!visited.add(dependency)) continue;
+                pending.addLast(dependency);
+                if (!rootSet.contains(dependency)) result.add(dependency);
             }
         }
         return result;

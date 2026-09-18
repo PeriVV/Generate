@@ -82,6 +82,15 @@ public class TestSandboxCompiler {
             List<File> sourcePath = new ArrayList<>(environment.sourcePath);
             sourcePath.add(sourceRoot.toFile());
             List<File> sources = new ArrayList<>();
+            for (File dependency : ProjectSourceDependencyResolver.resolve(
+                    environment.sourcePath, environment.sourceText, testCode)) {
+                if (!ProjectSourceDependencyResolver.isSourceFile(dependency,
+                        environment.sourcePath, environment.sourcePackage, environment.sourceFileName)
+                        && !ProjectSourceDependencyResolver.isSourceFile(dependency,
+                        environment.sourcePath, testPackage, testFileName)) {
+                    sources.add(dependency);
+                }
+            }
             sources.add(targetSource.toFile());
             sources.add(testSource.toFile());
             try {
@@ -123,6 +132,13 @@ public class TestSandboxCompiler {
             return new CompiledTestArtifact(root, root == null ? null : root.resolve("classes"), "",
                     targetClassName, environment == null ? "" : environment.javaExecutable,
                     Collections.emptyList(), diagnostics);
+        } catch (RuntimeException | Error ex) {
+            // 取消（ProcessCanceledException）或 IDE 编译器异常发生时调用方拿不到 artifact，
+            // try-with-resources 无从清理；必须在此删除沙箱目录后原样抛出，避免 unitmind-coverage-* 泄漏。
+            if (root != null) {
+                CompiledTestArtifact.deleteRecursively(root);
+            }
+            throw ex;
         }
     }
 
@@ -161,6 +177,7 @@ public class TestSandboxCompiler {
             Collections.addAll(options, "-source", feature, "-target", feature);
         }
         if (environment.previewLanguage) options.add("--enable-preview");
+        appendAnnotationProcessorOptions(options, environment);
         if (environment.jpms && !environment.modulePath.isEmpty()) {
             Collections.addAll(options, "--add-modules", "ALL-MODULE-PATH");
         }
@@ -182,7 +199,8 @@ public class TestSandboxCompiler {
                                                  Path targetSource,
                                                  String targetClassName) {
         return runModuleJavac(environment, sourceRoot, classes,
-                Collections.singletonList(targetSource), Collections.singletonList(targetClassName), false);
+                explicitSources(environment, Collections.singletonList(targetSource)),
+                Collections.singletonList(targetClassName), false);
     }
 
     CompileDiagnostic compileSandboxWithModuleJdk(ProjectTestEnvironment environment,
@@ -192,13 +210,44 @@ public class TestSandboxCompiler {
                                                   Path testSource,
                                                   String targetClassName,
                                                   String testClassName) {
-        List<Path> sources = new ArrayList<>();
-        sources.add(targetSource);
-        sources.add(testSource);
+        List<Path> sources = explicitSources(environment, List.of(targetSource, testSource));
         List<String> expectedClasses = new ArrayList<>();
         expectedClasses.add(targetClassName);
         expectedClasses.add(testClassName);
         return runModuleJavac(environment, sourceRoot, classes, sources, expectedClasses, true);
+    }
+
+    private List<Path> explicitSources(ProjectTestEnvironment environment, List<Path> primarySources) {
+        List<String> texts = new ArrayList<>();
+        List<String> packages = new ArrayList<>();
+        for (Path source : primarySources) {
+            try {
+                String text = Files.readString(source, StandardCharsets.UTF_8);
+                texts.add(text);
+                packages.add(JavaTestSourceInspector.inspect(text).getPackageName());
+            } catch (IOException ignored) {
+                // javac will report an unreadable explicitly supplied source below.
+                packages.add("");
+            }
+        }
+        LinkedHashSet<Path> result = new LinkedHashSet<>();
+        result.addAll(primarySources);
+        for (File dependency : ProjectSourceDependencyResolver.resolve(
+                environment.sourcePath, texts.toArray(new String[0]))) {
+            boolean primary = false;
+            for (int index = 0; index < primarySources.size(); index++) {
+                if (ProjectSourceDependencyResolver.isSourceFile(dependency,
+                        environment.sourcePath, packages.get(index),
+                        primarySources.get(index).getFileName().toString())) {
+                    primary = true;
+                    break;
+                }
+            }
+            if (!primary) {
+                result.add(dependency.toPath());
+            }
+        }
+        return new ArrayList<>(result);
     }
 
     private CompileDiagnostic runModuleJavac(ProjectTestEnvironment environment,
@@ -222,6 +271,7 @@ public class TestSandboxCompiler {
             Collections.addAll(command, "-source", feature, "-target", feature);
         }
         if (environment.previewLanguage) command.add("--enable-preview");
+        appendAnnotationProcessorOptions(command, environment);
 
         LinkedHashSet<File> compileClasspath = new LinkedHashSet<>();
         compileClasspath.add(classes.toFile());
@@ -292,7 +342,7 @@ public class TestSandboxCompiler {
         }
     }
 
-    private void drain(Process process, ByteArrayOutputStream output) {
+    private static void drain(Process process, ByteArrayOutputStream output) {
         try (java.io.InputStream input = process.getInputStream()) {
             byte[] buffer = new byte[4096];
             int read;
@@ -313,6 +363,80 @@ public class TestSandboxCompiler {
         return String.join(File.pathSeparator, values);
     }
 
+    private void appendAnnotationProcessorOptions(List<String> options,
+                                                  ProjectTestEnvironment environment) {
+        LinkedHashSet<File> processors = new LinkedHashSet<>(environment.annotationProcessorPath);
+        if (!processors.isEmpty() && environment.processorsFromClasspath) {
+            processors.addAll(environment.classpath);
+            processors.addAll(environment.modulePath);
+        }
+        if (!processors.isEmpty()) {
+            Collections.addAll(options,
+                    environment.processorModulePath ? "--processor-module-path" : "-processorpath",
+                    joinPaths(processors));
+        }
+        if (!environment.annotationProcessors.isEmpty()) {
+            Collections.addAll(options, "-processor", String.join(",", environment.annotationProcessors));
+        } else if (!processors.isEmpty() && javacMajorVersion(environment) >= 23) {
+            // JDK 23 起默认禁用 classpath 隐式注解发现；Lombok 等依赖该机制的项目若不显式
+            // 声明 -proc:full，处理器不会运行，符号缺失会被误判为可修复的测试编译错误。
+            options.add("-proc:full");
+        }
+        for (java.util.Map.Entry<String, String> entry : environment.annotationProcessorOptions.entrySet()) {
+            options.add("-A" + entry.getKey()
+                    + (entry.getValue() == null || entry.getValue().isBlank() ? "" : "=" + entry.getValue()));
+        }
+    }
+
+    /** 每个 javac 路径只探测一次版本，避免每次沙箱编译都 fork 进程。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> JAVAC_VERSION_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private int javacMajorVersion(ProjectTestEnvironment environment) {
+        File java = new File(environment.javaExecutable);
+        File javac = new File(java.getParentFile(), isWindows() ? "javac.exe" : "javac");
+        if (!javac.isFile()) {
+            return 0;
+        }
+        return JAVAC_VERSION_CACHE.computeIfAbsent(javac.getAbsolutePath(),
+                TestSandboxCompiler::detectJavacMajorVersion);
+    }
+
+    /** 探测 javac 主版本；失败返回 0 表示未知，调用方按不支持处理。 */
+    private static int detectJavacMajorVersion(String javacPath) {
+        try {
+            Process process = new ProcessBuilder(javacPath, "-version")
+                    .redirectErrorStream(true)
+                    .start();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Thread drain = new Thread(() -> drain(process, output), "unitmind-javac-version");
+            drain.setDaemon(true);
+            drain.start();
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroy();
+                process.waitFor(2, TimeUnit.SECONDS);
+                return 0;
+            }
+            drain.join(1000);
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                    .compile("(?i)javac(?:\\s+version)?\\s+([0-9]+)(?:\\.([0-9]+))?")
+                    .matcher(output.toString(StandardCharsets.UTF_8));
+            if (!matcher.find()) {
+                return 0;
+            }
+            int first = Integer.parseInt(matcher.group(1));
+            if (first == 1 && matcher.group(2) != null) {
+                return Integer.parseInt(matcher.group(2));
+            }
+            return first;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return 0;
+        } catch (Exception ex) {
+            return 0;
+        }
+    }
+
     private boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
@@ -327,14 +451,31 @@ public class TestSandboxCompiler {
         if (text.contains("cannot find symbol") || text.contains("找不到符号")) return "CANNOT_FIND_SYMBOL";
         if (text.contains("no suitable method") || text.contains("不适用于") || text.contains("应用到给定类型")) return "NO_SUITABLE_METHOD";
         if (text.contains("incompatible types") || text.contains("不兼容的类型")) return "INCOMPATIBLE_TYPES";
-        if (text.contains("private access") || text.contains("has private access")) return "INACCESSIBLE_MEMBER";
-        if (text.contains("module") && text.contains("not found")) return "MODULE_PATH_ERROR";
+        if (text.contains("private access") || text.contains("has private access")
+                || text.contains("是 private 访问控制")) return "INACCESSIBLE_MEMBER";
+        if ((text.contains("reference to") && text.contains("is ambiguous"))
+                || text.contains("引用不明确")) return "AMBIGUOUS_REFERENCE";
+        if ((text.contains("non-static") && text.contains("static context"))
+                || text.contains("无法从静态上下文")) return "STATIC_CONTEXT";
+        if ((text.contains("package") && text.contains("does not exist"))
+                || (text.contains("程序包") && text.contains("不存在"))) return "PACKAGE_NOT_FOUND";
+        if (text.contains("module") && (text.contains("not found")
+                || text.contains("not in the module graph"))) return "MODULE_PATH_ERROR";
+        if (text.contains("invalid source release")
+                || (text.contains("source option") && text.contains("is no longer supported"))
+                || (text.contains("target option") && text.contains("is no longer supported"))
+                || (text.contains("release version") && text.contains("not supported"))
+                || text.contains("不再支持源选项") || text.contains("不再支持目标选项")) {
+            return "UNSUPPORTED_LANGUAGE_LEVEL";
+        }
         return "JAVA_COMPILE";
     }
 
     private boolean isRepairable(String message) {
         String code = diagnosticCode(message);
         return !"MODULE_PATH_ERROR".equals(code)
+                && !"UNSUPPORTED_LANGUAGE_LEVEL".equals(code)
+                && !value(message).toLowerCase(Locale.ROOT).contains("bad class file")
                 && !value(message).toLowerCase(Locale.ROOT).contains("unsupported class file");
     }
 

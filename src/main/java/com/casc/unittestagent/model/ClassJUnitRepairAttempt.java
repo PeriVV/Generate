@@ -15,6 +15,8 @@ public class ClassJUnitRepairAttempt {
     private boolean accepted;
     private String rejectionReason = "";
     private String diagnosis = "";
+    /** 本轮独立仲裁的失败测试；不包含同次回归中的其他失败。 */
+    private List<String> focusedTestIds = new ArrayList<>();
 
     public int getRound() { return round; }
     public void setRound(int value) { round = Math.max(0, value); }
@@ -44,4 +46,8 @@ public class ClassJUnitRepairAttempt {
     public void setRejectionReason(String value) { rejectionReason = value == null ? "" : value; }
     public String getDiagnosis() { return diagnosis; }
     public void setDiagnosis(String value) { diagnosis = value == null ? "" : value; }
+    public List<String> getFocusedTestIds() { return new ArrayList<>(focusedTestIds); }
+    public void setFocusedTestIds(List<String> value) {
+        focusedTestIds = value == null ? new ArrayList<>() : new ArrayList<>(value);
+    }
 }

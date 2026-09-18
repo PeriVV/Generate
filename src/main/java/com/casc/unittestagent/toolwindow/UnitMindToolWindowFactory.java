@@ -1,6 +1,8 @@
 package com.casc.unittestagent.toolwindow;
 
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowFactory;
 import com.intellij.ui.content.Content;
@@ -24,6 +26,15 @@ public class UnitMindToolWindowFactory implements ToolWindowFactory {
         UnitMindToolWindowRegistry.register(project, panel);
         ContentFactory contentFactory = ContentFactory.getInstance();
         Content content = contentFactory.createContent(panel, "", false);
+        // 面板强引用 Project/Editor/PSI，注册表条目必须在内容销毁或项目关闭时注销，
+        // 否则静态集合会在项目关闭后长期持有整个面板。
+        content.setDisposer(() -> UnitMindToolWindowRegistry.unregister(project));
         toolWindow.getContentManager().addContent(content);
+        Disposer.register(project, new Disposable() {
+            @Override
+            public void dispose() {
+                UnitMindToolWindowRegistry.unregister(project);
+            }
+        });
     }
 }

@@ -43,3 +43,7 @@ bin/
 
 ### Claude Code ###
 .claude/
+
+### Python 虚拟环境与本地临时目录 ###
+.venv/
+tmp/

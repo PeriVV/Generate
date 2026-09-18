@@ -780,10 +780,6 @@ public class JUnitMockitoTestGenerator {
     }
 
     /**
-     * 追加正常路径依赖调用验证。
-     * 正常场景期望依赖被调用一次，便于测试观察被测方法的协作行为。
-     */
-    /**
      * 为 private 被测方法追加通用反射调用辅助方法。
      * 用户直接右键 private 方法时不能生成 subject.privateMethod(...)，否则测试代码无法编译。
      */

@@ -56,7 +56,9 @@ public class LlmConfig {
     }
 
     public void setTimeoutSeconds(int timeoutSeconds) {
-        this.timeoutSeconds = timeoutSeconds;
+        // OkHttp 中 0 表示无限超时（连接挂死会拖满整轮生成），负数会在构造客户端时抛异常；
+        // 与 UI spinner 的 1-600 下限保持一致。
+        this.timeoutSeconds = Math.max(1, timeoutSeconds);
     }
 
     public int getMaxTokens() {

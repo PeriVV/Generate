@@ -1,6 +1,7 @@
 package com.casc.unittestagent.coverage;
 
 import com.casc.unittestagent.model.CoverageGap;
+import com.intellij.openapi.diagnostic.Logger;
 import com.casc.unittestagent.model.CoverageMetric;
 import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.MethodModel;
@@ -19,6 +20,7 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.util.PathUtil;
 
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -45,6 +47,7 @@ import java.util.function.BooleanSupplier;
 
 /** 在隔离 JVM 中运行一个测试类并用 JaCoCo 分析当前方法。 */
 public class JacocoCoverageExecutor {
+    private static final Logger LOG = Logger.getInstance(JacocoCoverageExecutor.class);
     private static final int MAX_OUTPUT_BYTES = 1024 * 1024;
     private static final int MAX_DIAGNOSTICS = 20;
     /**
@@ -54,6 +57,9 @@ public class JacocoCoverageExecutor {
     private static final Pattern ASSERTION_VALUE_MISMATCH = Pattern.compile(
             "expected:\\s*<(.*)>\\s*but was:\\s*<(.*)>",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern EXPECTED_EXCEPTION_NOT_THROWN = Pattern.compile(
+            "expected\\s+([\\w.$]+)\\s+to be thrown,?\\s*but nothing was thrown\\.?",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern CAUSED_BY = Pattern.compile("^Caused by:\\s*([\\w.$]+)");
 
     /** 只执行完整 JUnit 测试类，不计算任何方法或类级覆盖率。 */
@@ -88,6 +94,16 @@ public class JacocoCoverageExecutor {
             } else {
                 snapshot.setMessage("完整 JUnit 测试类执行通过。");
             }
+            return result;
+        } catch (ProcessCanceledException ex) {
+            // 用户取消不是环境错误，必须保持 CANCELLED 语义向上传递。
+            result.setCancelled(true);
+            snapshot.setMessage("JUnit 执行已取消。");
+            return result;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            result.setCancelled(true);
+            snapshot.setMessage("JUnit 执行被中断。");
             return result;
         } catch (Exception ex) {
             result.setEnvironmentError(true);
@@ -143,6 +159,16 @@ public class JacocoCoverageExecutor {
             analyze(artifact, method, sourceText, execFile, result);
             snapshot.setAvailable(true);
             snapshot.setMessage("覆盖率分析完成。");
+            return result;
+        } catch (ProcessCanceledException ex) {
+            // 用户取消不是环境错误，必须保持 CANCELLED 语义向上传递。
+            result.setCancelled(true);
+            snapshot.setMessage("覆盖率执行已取消。");
+            return result;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            result.setCancelled(true);
+            snapshot.setMessage("覆盖率执行被中断。");
             return result;
         } catch (Exception ex) {
             result.setEnvironmentError(true);
@@ -297,24 +323,21 @@ public class JacocoCoverageExecutor {
     private String runtimeClasspath(CompiledTestArtifact artifact) throws ClassNotFoundException, IOException {
         Set<String> paths = new LinkedHashSet<>();
         paths.add(artifact.getClasses().toAbsolutePath().toString());
+        // 用户项目的 JUnit/Mockito 运行时必须优先（classpath 首位优先），
+        // 让候选测试在贴近项目真实依赖版本的环境下执行；内置 console-standalone 垫底，
+        // 仅补齐用户环境缺失的部分并提供 ConsoleLauncher 入口。此前按文件名剔除用户全部
+        // JUnit jar 的做法会让 5.13+/6.x 项目在运行期出现版本错配并被误判为测试失败。
+        for (File file : artifact.getRuntimeClasspath()) {
+            if (file == null || !file.exists()) continue;
+            paths.add(file.getAbsolutePath());
+        }
         Class<?> console = Class.forName("org.junit.platform.console.ConsoleLauncher");
         String consolePath = PathUtil.getJarPathForClass(console);
         if (consolePath == null || consolePath.isBlank()) {
             throw new IOException("无法定位内置 JUnit Platform Console 运行时。");
         }
         paths.add(new File(consolePath).getAbsolutePath());
-        for (File file : artifact.getRuntimeClasspath()) {
-            if (file == null || !file.exists() || isDuplicateJunitRuntime(file.getName())) continue;
-            paths.add(file.getAbsolutePath());
-        }
         return String.join(File.pathSeparator, paths);
-    }
-
-    private boolean isDuplicateJunitRuntime(String name) {
-        String lower = name.toLowerCase(Locale.ROOT);
-        return lower.startsWith("junit-platform-") || lower.startsWith("junit-jupiter-")
-                || lower.startsWith("junit-vintage-") || lower.startsWith("opentest4j-")
-                || lower.startsWith("apiguardian-api-");
     }
 
     private void analyze(CompiledTestArtifact artifact, MethodModel method, String sourceText,
@@ -495,11 +518,22 @@ public class JacocoCoverageExecutor {
 
     private void readXmlReports(Path reports, TestExecutionSummary summary) {
         if (!Files.isDirectory(reports)) return;
+        List<Path> reportFiles = new ArrayList<>();
         try (java.util.stream.Stream<Path> files = Files.walk(reports)) {
             files.filter(path -> path.getFileName().toString().startsWith("TEST-")
                             && path.getFileName().toString().endsWith(".xml"))
-                    .forEach(path -> readXml(path, summary));
-        } catch (Exception ignored) { }
+                    .forEach(reportFiles::add);
+        } catch (Exception ex) {
+            LOG.warn("UnitMind: 读取 JUnit XML 报告目录失败：" + reports, ex);
+            return;
+        }
+        if (reportFiles.isEmpty()) {
+            LOG.warn("UnitMind: JUnit 已执行但报告目录中没有 TEST-*.xml，请检查子进程输出：" + reports);
+            return;
+        }
+        for (Path report : reportFiles) {
+            readXml(report, summary);
+        }
     }
 
     private void readXml(Path report, TestExecutionSummary summary) {
@@ -529,7 +563,11 @@ public class JacocoCoverageExecutor {
                     summary.getDiagnostics().add(runtimeDiagnostic(test, failure));
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ex) {
+            // 解析失败不能静默吞掉：此时 found 保持 0，上层会误判“未发现可执行测试”，
+            // 必须在日志里留下真实原因（文件被占用、编码、结构异常等）。
+            LOG.warn("UnitMind: 解析 JUnit XML 报告失败：" + report, ex);
+        }
     }
 
     private RuntimeDiagnostic runtimeDiagnostic(Element test, Element failure) {
@@ -560,6 +598,11 @@ public class JacocoCoverageExecutor {
                 diagnostic.setExpectedExceptionType(expected);
                 diagnostic.setActualExceptionType(actual);
             }
+        }
+        Matcher missingException = EXPECTED_EXCEPTION_NOT_THROWN.matcher(diagnostic.getMessage());
+        if (missingException.find()) {
+            diagnostic.setExpectedExceptionType(missingException.group(1));
+            diagnostic.setActualExceptionType("");
         }
         List<String> stack = new ArrayList<>();
         List<String> causes = new ArrayList<>();

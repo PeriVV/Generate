@@ -5,6 +5,8 @@ import com.casc.unittestagent.llm.LlmClientFactory;
 import com.casc.unittestagent.llm.LlmConfig;
 import com.casc.unittestagent.llm.LlmGenerationRequest;
 import com.casc.unittestagent.llm.LlmGenerationResponse;
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.SourceBugAnalysis;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -87,6 +89,21 @@ public final class EvalLlmTelemetry implements LlmClientFactory {
         @Override
         public LlmGenerationResponse repairClassTest(LlmGenerationRequest request) throws Exception {
             return call(Phase.CLASS_RUNTIME_REPAIR, () -> client.repairClassTest(request));
+        }
+
+        @Override
+        public SourceBugAnalysis analyzeSuspectedSutBug(LlmGenerationRequest request,
+                                                        OracleAssessment assessment) throws Exception {
+            requests.incrementAndGet();
+            long started = System.nanoTime();
+            try {
+                return client.analyzeSuspectedSutBug(request, assessment);
+            } catch (Exception ex) {
+                errors.incrementAndGet();
+                throw ex;
+            } finally {
+                durationMillis.addAndGet((System.nanoTime() - started) / 1_000_000L);
+            }
         }
 
         @Override

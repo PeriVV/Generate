@@ -16,6 +16,7 @@ import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.GenerationScope;
+import com.casc.unittestagent.model.OracleAssessment;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -31,6 +32,7 @@ public class LlmPromptBuilder {
                 + "断言依据优先级为：用户需求 > 已有测试 > 被测源码 > 高可信静态分析；"
                 + "LOW 可信场景名不是精确契约，不得据此编造返回值、异常或 verify 次数。"
                 + "交互验证只能在源码或已有测试明确证明调用本身是契约时使用；其余情况优先验证返回值、对外状态或精确异常。"
+                + "生产类使用 @Slf4j/static logger 时，禁止创建 @Mock Logger 并 verify 日志调用；该 mock 与生产 logger 不是同一实例。"
                 + "禁止创造 projectSymbolSnapshot 中不存在的项目符号；但已在被测源码、import、currentTestCode 或 existingTestExamples 中出现的符号可视为有效证据。";
     }
 
@@ -72,6 +74,8 @@ public class LlmPromptBuilder {
                 + "23. 不要生成空的 @AfterEach tearDown；try-with-resources 已管理静态 mock 时不需要 tearDown。\n"
                 + "24. 生成异常分支或边界分支测试时，必须先满足 branches.preconditions 和目标分支之前的 safeCondition，不能让测试提前失败在无关逻辑上。\n"
                 + "25. 如果 callContexts 中显示参数对象 getter、record accessor、字段读取或链式方法被当前方法或内部调用链使用，必须补齐这些 mock 返回值或构造真实对象；无法确认字段时生成 TODO，不要输出看似完整但会 NPE 的代码。\n"
+                + "25a. 被测类构造函数或 Lombok required-args 构造器中的依赖必须全部提供。使用 @InjectMocks 时，"
+                + "每个实际执行路径会访问的构造依赖都必须有类型匹配的 @Mock/真实对象；不得让 Mockito 以 null 填充缺失依赖。\n"
                 + "26. callContexts.INTERNAL_METHOD_CALL 的 sourceCode 是当前方法直接调用的一层本类内部方法源码；nestedCalls 至少说明该内部方法继续调用的项目方法签名或静态调用摘要，生成测试时必须考虑这些真实执行路径。\n"
                 + "27. scenarios.oracle.confidence=LOW 或 expectedAssertions 为空时，场景名只表示覆盖目标，不是精确 Oracle。必须先从 existingTestExamples 或源码确定可观测契约；证据不足时保留 TODO/warnings，不得编造精确值或交互次数。\n"
                 + "28. 优先使用真实对象和 public/package-visible 可观测行为；verify/times(n) 仅在源码或已有测试明确支持该交互契约时使用。\n"
@@ -81,6 +85,8 @@ public class LlmPromptBuilder {
                 + "31. projectSymbolSnapshot.unresolvedSymbols 中的表达式不得猜测返回类型或替代方法；无法生成可靠代码时添加 TODO，并采用不依赖该未知符号的最小测试结构。\n"
                 + "32. Mockito.when(...) 只能包裹对 @Mock/@Spy/Mockito.mock 创建对象的方法调用；"
                 + "不得 stub @InjectMocks 被测对象、new 出来的真实对象、静态方法、private/final/native/equals/hashCode。\n"
+                + "32a. 若生产源码使用 @Slf4j 或 static Logger，禁止生成 @Mock Logger、mock(Logger.class) 或 verify(logger).info/error/warn/debug/trace；"
+                + "日志不是默认业务 Oracle，应验证返回值、状态或真正可注入的业务协作者。只有用户需求明确把日志定义为契约时，才可使用真实日志捕获器验证。\n"
                 + classModeRules
                 + "以下是 UnitMind 静态分析上下文，参数约束必须以其中 constraints 和 branches 为准：\n"
                 + context.toString(2);
@@ -102,7 +108,7 @@ public class LlmPromptBuilder {
         repair.put("repairAttempt", request.getRepairAttempt());
         repair.put("compilerDiagnostics", compilerDiagnostics(request));
         repair.put("context", repairContext);
-        repair.put("currentTestCode", nullToEmpty(request.getExistingTestCodeSummary()));
+        repair.put("currentTestCode", boundedText(request.getExistingTestCodeSummary(), MAX_TEST_CODE_CHARS));
         repair.put("userInstruction", nullToEmpty(request.getUserInstruction()));
         return "请只返回 JSON，不要返回 Markdown。\n"
                 + "输出格式：{\"diagnosis\":{\"diagnosticCode\":\"\",\"evidence\":[]},"
@@ -128,11 +134,17 @@ public class LlmPromptBuilder {
         // context doubles the largest part of every repair request and dilutes coverage feedback.
         focusedContext.remove("existingTestCodeSummary");
         focusedContext.put("methodSourceCode", coverageFocusSource(request));
+        if ("RUNTIME_REPAIR".equals(taskMode)) {
+            // Method-only source omits class constants and field initializers that decide whether a
+            // guard is reachable. Runtime adjudication needs the complete production class so the
+            // model cannot guess values such as MAX_CONCURRENT_PROCESSES.
+            focusedContext.put("classSourceCode", boundedText(request.getClassSourceCode(), MAX_CLASS_SOURCE_CHARS));
+        }
         // ProjectSymbolSnapshotBuilder 已将快照限制为最多 40 个类型/每类型 40 个成员。
         // 修复阶段再截断会与“禁止使用快照外 API”形成无解冲突，因此发送已有快照全量。
         focusedContext.put("projectSymbolSnapshot", symbolSnapshot(request.getSymbolSnapshot()));
         payload.put("context", focusedContext);
-        payload.put("currentTestCode", nullToEmpty(request.getExistingTestCodeSummary()));
+        payload.put("currentTestCode", boundedText(request.getExistingTestCodeSummary(), MAX_TEST_CODE_CHARS));
         payload.put("coverage", coverage(request.getCoverageReport()));
         // A candidate that does not compile has no current runtime result. Never ask the model to
         // solve stale compile and runtime failures in the same response.
@@ -149,7 +161,10 @@ public class LlmPromptBuilder {
         payload.put("oracleEvidence", oracleEvidence(request));
         payload.put("previousAttempt", nullToEmpty(request.getPreviousAttemptSummary()));
         String outputSchema = "RUNTIME_REPAIR".equals(taskMode)
-                ? "输出格式：{\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"具体源码/已有测试/失败事实\"],\"oracleDecision\":\"KEEP|CORRECT\"},"
+                ? "输出格式：{\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"可定位的独立证据\"],"
+                + "\"oracleDecision\":\"KEEP|CORRECT\",\"oracleAuthority\":\"USER_REQUIREMENT|EXISTING_TEST|CONTRACT_FACT|PRODUCTION_SOURCE|SCENARIO|RUNTIME_ACTUAL|NONE\","
+                + "\"oracleAuthorityRef\":\"oracleEvidence.authorityItems 中的精确 ref；无权威证据时为 NONE\","
+                + "\"repairDisposition\":\"REPAIR_TEST|SUSPECTED_SUT_BUG|INCONCLUSIVE\"},"
                 + "\"edits\":[{\"targetMethod\":\"失败测试方法名\",\"reason\":\"\",\"expectedEffect\":\"\"}],"
                 + "\"methodPatches\":[{\"methodName\":\"失败测试方法名\",\"methodCode\":\"带@Test的完整方法声明\"}],\"warnings\":[]}。\n"
                 : "输出格式：{\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[],\"oracleDecision\":\"NOT_APPLICABLE\"},"
@@ -166,49 +181,119 @@ public class LlmPromptBuilder {
     public String classRepairSystemPrompt() {
         return systemPrompt()
                 + "你正在修复一个已成功编译但完整 JUnit 回归失败的最终测试类。"
-                + "必须保护已通过测试，只有真实生产源码、已有测试和运行诊断可以决定 Oracle。";
+                + "必须保护已通过测试。生产源码和运行诊断只能说明当前实现与路径；"
+                + "只有可验证的用户需求、已有测试或独立合同事实可以授权修改 Oracle。";
     }
 
     public String classRepairPrompt(LlmGenerationRequest request) {
         JSONObject payload = new JSONObject();
         JSONObject focusedContext = context(request);
         focusedContext.remove("existingTestCodeSummary");
-        focusedContext.put("classSourceCode", nullToEmpty(request.getClassSourceCode()));
+        focusedContext.put("classSourceCode", boundedText(request.getClassSourceCode(), MAX_CLASS_SOURCE_CHARS));
         payload.put("context", focusedContext);
-        payload.put("currentTestCode", nullToEmpty(request.getExistingTestCodeSummary()));
+        payload.put("currentTestCode", boundedText(request.getExistingTestCodeSummary(), MAX_TEST_CODE_CHARS));
         payload.put("runtimeDiagnostics", runtimeDiagnostics(request));
         payload.put("iteration", request.getRepairAttempt());
         payload.put("focusTestIds", request.getFocusTestIds());
         payload.put("allFailingTestIds", request.getFailingTestIds());
         payload.put("passedTestIds", request.getPassedTestIds());
+        payload.put("oracleEvidence", oracleEvidence(request));
         payload.put("previousAttempt", nullToEmpty(request.getPreviousAttemptSummary()));
         payload.put("userInstruction", nullToEmpty(request.getUserInstruction()));
         return "请只返回 JSON，不要返回 Markdown。\n"
                 + "输出格式：{\"repairScope\":\"METHOD_ONLY|SHARED_FIXTURE\","
-                + "\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"\"],\"oracleDecision\":\"KEEP|CORRECT\"},"
+                + "\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"可定位的独立证据\"],\"oracleDecision\":\"KEEP|CORRECT\","
+                + "\"oracleAuthority\":\"USER_REQUIREMENT|EXISTING_TEST|CONTRACT_FACT|PRODUCTION_SOURCE|SCENARIO|RUNTIME_ACTUAL|NONE\","
+                + "\"oracleAuthorityRef\":\"oracleEvidence.authorityItems 中的精确 ref；无权威证据时为 NONE\","
+                + "\"repairDisposition\":\"REPAIR_TEST|SUSPECTED_SUT_BUG|INCONCLUSIVE\"},"
                 + "\"edits\":[{\"targetMethod\":\"\",\"reason\":\"\",\"expectedEffect\":\"\"}],"
                 + "\"testCode\":\"修复后的完整 Java 测试类\",\"warnings\":[]}。\n"
                 + "规则：\n"
-                + "1. 必须返回完整测试类，类名、package 和现有测试方法集合保持不变。\n"
+                + "1. repairDisposition=REPAIR_TEST 时必须返回完整测试类，类名、package 和现有测试方法集合保持不变。\n"
                 + "2. passedTestIds 对应的测试已经真实通过，严禁修改、删除、改名或禁用。\n"
                 + "3. 局部输入、断言、stub 或 verify 错误选择 METHOD_ONLY；共享字段、@BeforeEach、@InjectMocks/@Mock 或 helper 错误选择 SHARED_FIXTURE。\n"
-                + "4. 允许依据生产源码修正低可信生成断言；不得把正常场景的意外异常改成 assertThrows，不得删除或弱化测试以伪造成功。\n"
+                + "3a. 本请求一次只仲裁 focusTestIds 中的一个失败测试。runtimeDiagnostics 只包含该测试的证据；"
+                + "allFailingTestIds 中其他失败不得修改、不得混入 diagnosis，它们会在后续请求中独立处理。\n"
+                + "4. 生产源码可用于路径定位，但不得单独用于修正生成断言；"
+                + "不得把正常场景的意外异常改成 assertThrows，不得删除或弱化测试以伪造成功。\n"
                 + "5. 不得添加 @Disabled、无条件 assumption、吞异常的 try/catch 或空测试；不得修改生产源码。\n"
                 + "6. Mockito stubbing 必须与真实调用参数一致；UnnecessaryStubbingException 应删除对应测试内无用 stub，不要全局改成 lenient。\n"
                 + "7. SHARED_FIXTURE 修改后仍必须保证所有 passedTestIds 全量回归通过。\n"
+                + "8. repairDisposition=SUSPECTED_SUT_BUG 或 INCONCLUSIVE 时，必须省略 testCode 且 edits 为空，保留失败测试等待用户处理。\n"
+                + "9. repairDisposition=REPAIR_TEST 时必须返回 testCode。oracleDecision=KEEP 不得修改断言/verify/expected exception 语义。"
+                + "oracleDecision=CORRECT 只能在 oracleAuthority 为 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 时修改 Oracle；"
+                + "PRODUCTION_SOURCE 和 RUNTIME_ACTUAL 都不是独立契约，不得据此把当前错误实现写成新期望。\n"
+                + "10. oracleAuthorityRef 必须精确引用 oracleEvidence.authorityItems 中同类型 ref。不得自己编造 ref 或将修复指令冒充用户业务需求。\n"
+                + "11. MOCKITO_VERIFY_WRONG_INSTANCE 表示测试验证了不可注入的 @Mock Logger，而生产代码使用 @Slf4j/static logger。"
+                + "不得尝试通过 matcher、times 或 Arrange 修复；若还有业务断言，删除该无效日志 verify；若它是唯一 Oracle，保留失败并说明应改用业务断言或真实日志捕获器。\n"
+                + "12. FIXTURE_DEPENDENCY_MISSING 只有在 runtimeDiagnostics 已明确给出该分类时才可使用。"
+                + "选择 SHARED_FIXTURE，补充缺失的构造依赖 @Mock/真实对象并确保 @InjectMocks 或显式构造实际注入；"
+                + "只修复 fixture，必须返回 oracleDecision=KEEP、oracleAuthority=NONE、oracleAuthorityRef=NONE，严禁修改任何原断言或 verify。\n"
                 + "以下 JSON 是本轮唯一有效事实上下文：\n" + payload.toString(2);
+    }
+
+    /** 疑似生产代码缺陷终态后的只读归因协议。 */
+    public String sourceBugAnalysisSystemPrompt() {
+        return "你是 Java 失败路径与生产代码缺陷归因分析器。严格门禁已经决定保留失败测试；"
+                + "你的任务是在给定源码、契约证据和真实运行诊断中，"
+                + "比较测试路径未命中（常量边界、stub 值、调用链）与生产代码缺陷两类可能原因。"
+                + "不得修改、重写或建议弱化测试，不得输出补丁、代码块、diff、testCode、methodPatches 或 edits。"
+                + "结论必须保持为可核查的假设，不能把模型判断描述成已确认事实。";
+    }
+
+    public String sourceBugAnalysisPrompt(LlmGenerationRequest request, OracleAssessment assessment) {
+        JSONObject payload = new JSONObject();
+        JSONObject focusedContext = context(request);
+        focusedContext.remove("existingTestCodeSummary");
+        payload.put("context", focusedContext);
+        payload.put("sourceCode", !nullToEmpty(request.getClassSourceCode()).isBlank()
+                ? request.getClassSourceCode() : nullToEmpty(request.getMethodSourceCode()));
+        payload.put("currentFailingTestCode", nullToEmpty(request.getExistingTestCodeSummary()));
+        payload.put("runtimeDiagnostics", runtimeDiagnostics(request));
+        payload.put("oracleEvidence", oracleEvidence(request));
+        JSONObject oracle = new JSONObject();
+        if (assessment != null) {
+            oracle.put("disposition", assessment.getDisposition().name());
+            oracle.put("decision", assessment.getDecision().name());
+            oracle.put("authority", assessment.getAuthority().name());
+            oracle.put("authorityRef", assessment.getAuthorityRef());
+            oracle.put("rootCauseCategory", assessment.getRootCauseCategory());
+            oracle.put("evidence", assessment.getEvidence());
+        }
+        payload.put("oracleAssessment", oracle);
+        return "请只返回 JSON，不要返回 Markdown。\n"
+                + "输出格式：{\"summary\":\"一句话说明最可能原因，并标明更偏向测试路径设置还是生产源码\","
+                + "\"confidence\":\"HIGH|MEDIUM|LOW\","
+                + "\"suspectedLocations\":[{\"file\":\"源码文件或类名\",\"line\":1,"
+                + "\"symbol\":\"方法或符号\",\"reason\":\"为什么这里可疑\"}],"
+                + "\"hypotheses\":[\"按可能性排序的根因假设\"],"
+                + "\"evidence\":[\"逐条引用输入中的契约、诊断、期望/实际值或栈帧\"],"
+                + "\"recommendedChecks\":[\"无需修改测试即可执行的人工核查步骤\"]}。\n"
+                + "规则：\n"
+                + "1. 这是门禁之后的只读解释步骤，不得重新裁决或改变 oracleAssessment 终态。\n"
+                + "2. 只能依据 payload 中可见事实；行号不确定时用 -1，禁止虚构文件、行号或调用链。\n"
+                + "3. 明确区分独立契约期望、运行实际值和推断；至少给出一条证据及一条可执行核查建议。\n"
+                + "3a. 对 ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN，必须显式引用 sourceCode 中定义阈值的常量声明、"
+                + "完整分支谓词和 currentFailingTestCode 中的实际 stub/输入值；任一缺失时必须降低置信度。\n"
+                + "4. 不得建议删除、禁用、弱化或改写当前失败测试，不得返回任何可应用的代码修改字段。\n"
+                + "5. suspectedLocations、hypotheses 各最多 5 项，evidence、recommendedChecks 各最多 8 项。\n"
+                + "以下 JSON 是唯一有效上下文：\n" + payload.toString(2);
     }
 
     private String coverageCommonRules(String taskMode) {
         String codeContract = "RUNTIME_REPAIR".equals(taskMode)
-                ? "C1. 只返回 methodPatches，不得返回 testCode。每个补丁只是完整的失败 @Test 方法，不得包含类/import/fixture/helper。\n"
+                ? "C1. REPAIR_TEST 只返回非空 methodPatches，不得返回 testCode。每个补丁只是完整的失败 @Test 方法，不得包含类/import/fixture/helper。"
+                + "SUSPECTED_SUT_BUG/INCONCLUSIVE 时 methodPatches 必须为空。\n"
                 : "C1. 测试类必须命名为 context.expectedTestClassName，package 必须等于 context.packageName，必须返回完整测试类而不是 diff。\n";
         return "公共契约：\n"
                 + codeContract
                 + "C2. compilerDiagnostics/runtimeDiagnostics 只是当前活动错误；previousAttempt 只用于避免重复已被拒绝的修改。\n"
                 + "C3. 只有 repairScope.passedTestIds 是已证明通过的测试，必须保持不变；allFailingTestIds 中的测试不得误当为已通过测试。\n"
                 + "C4. 严格遵守 context.mockUsagePolicy；FORBIDDEN 时不得新建 mock/spy/verify；"
-                + "PRESERVE_EXISTING 时只可调整已有 mock/spy 对象的 stub/verify，不得新建被 mock 类型、对象或字段。\n";
+                + "PRESERVE_EXISTING 时只可调整已有 mock/spy 对象的 stub/verify，不得新建被 mock 类型、对象或字段。\n"
+                + "C5. 生产源码使用 @Slf4j/static Logger 时，@Mock Logger 与生产 logger 不是同一实例；"
+                + "禁止新增或保留 verify(mockLogger).info/error/warn/debug/trace。日志不是默认业务 Oracle，"
+                + "应验证返回值、状态或真正可注入的协作者。\n";
     }
 
     private String coverageModeRules(LlmGenerationRequest request) {
@@ -227,22 +312,43 @@ public class LlmPromptBuilder {
 
     private String runtimeRepairRules() {
         return "当前模式：RUNTIME_REPAIR。执行通用运行修复协议：\n"
-                + "R1. 意图仲裁：方法名和 LOW 可信 scenario 只是线索，不是权威契约。按用户需求 > existingTestExamples > methodSourceCode > HIGH/MEDIUM scenario 确定 Oracle。"
-                + "runtimeDiagnostics 只描述实际发生了什么，不得把意外失败直接改写成新期望。\n"
+                + "R1. 意图仲裁：方法名和 LOW 可信 scenario 只是线索，不是权威契约。"
+                + "只有 oracleEvidence.authorityItems 中的 USER_REQUIREMENT > EXISTING_TEST > CONTRACT_FACT 可以授权修改 Oracle。"
+                + "methodSourceCode、HIGH/MEDIUM scenario 和 runtimeDiagnostics 只用于解释当前路径，不得把意外失败直接改写成新期望。\n"
                 + "R2. 路径定位：优先使用 testFrame/productionFrame/rootCauseFrame/failureDetails，再结合完整 stackTrace、branches、constraints、callContexts 还原 Arrange 到失败点的路径，不得只猜异常消息。\n"
                 + "R3. 根因分类：选择最早能解释失败的输入/fixture/stub、Act 调用、低可信 Oracle 错误或不可修环境错误。\n"
+                + "R3a. runtimeDiagnostics.category=FIXTURE_DEPENDENCY_MISSING 时，源码构造依赖、测试声明和真实 NPE 已共同证明 fixture 缺失。"
+                + "返回 REPAIR_TEST + KEEP + NONE；方法级补丁必须在失败测试内创建缺失 mock/真实依赖、按真实构造函数重建被测对象并补充必要 stub，"
+                + "不得修改断言、verify、期望异常或换掉触发失败的业务输入。\n"
                 + "R4. 按证据修复：成功/正常/有效输入场景意外抛异常时，修复 Arrange、输入、fixture、前置条件或依赖 stub，禁止改成 assertThrows、捕获忽略异常、删除或弱化断言。"
                 + "但若 methodSourceCode/branches 明确证明当前输入本就命中 action=throw 的异常契约，则该场景被错分为正常路径："
-                + "应优先把输入改为满足所有 safeCondition 的有效输入；仅在测试名和场景证据都是异常路径时才允许改为精确 assertThrows。"
+                + "应优先把输入改为满足所有 safeCondition 的有效输入；只有独立契约证据证明该场景本就是异常路径时才允许改为精确 assertThrows。"
                 + "确保测试输入、被测调用实参及 Mockito stub 的参数和值一致。\n"
-                + "R5. 修改范围：必须为每个 focusTestIds 中需要修复的失败测试返回同名 methodPatch；严禁修改 passedTestIds，严禁新增 import/fixture/helper。\n"
+                + "R5. 修改范围：仅当 repairDisposition=REPAIR_TEST 时，必须为每个 focusTestIds 中需要修复的失败测试返回同名 methodPatch；"
+                + "严禁修改 passedTestIds，严禁新增 import/fixture/helper。\n"
                 + "R6. 返回前自检：methodCode 是可解析、带测试注解的完整方法；diagnosis/edits/methodPatches 目标逐项对应；Mockito 调用合法。\n"
+                + "R7. 先决定 repairDisposition：有独立契约支持原测试但 SUT 违反时返回 SUSPECTED_SUT_BUG；证据冲突或不足时返回 INCONCLUSIVE；"
+                + "只有确认是测试输入/fixture/stub 或生成 Oracle 错误时才返回 REPAIR_TEST。"
+                + "SUSPECTED_SUT_BUG/INCONCLUSIVE 时 methodPatches 和 edits 必须为空。\n"
+                + "R8. oracleDecision=KEEP 时代码门禁会比对断言、verify 和期望异常指纹，只允许修改 Arrange/Act。"
+                + "oracleDecision=CORRECT 只能使用 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 作为 oracleAuthority；"
+                + "当前生产实现、actualValue、失败消息和模型自身猜测不能授权改 Oracle。\n"
+                + "R9. oracleAuthorityRef 必须精确来自 oracleEvidence.authorityItems；当没有对应条目时必须用 NONE，不得虚构。\n"
+                + "R10. runtimeDiagnostics 已是 ASSERTION_VALUE_MISMATCH / ASSERTION_FAILURE / Mockito verify 语义不匹配时，"
+                + "不得返回 oracleDecision=KEEP 的 REPAIR_TEST 后通过改 Arrange 换掉触发 Bug 的输入。"
+                + "没有独立契约授权 CORRECT 时必须返回 INCONCLUSIVE 或 SUSPECTED_SUT_BUG。\n"
+                + "R11. ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN 表示 assertThrows 的目标异常未发生，不是 Fixture 缺失。"
+                + "必须使用 context.classSourceCode 中的真实常量/字段定义、分支谓词和 currentTestCode 中的 stub 值核对路径；"
+                + "常量缺失或边界无法确定时返回 INCONCLUSIVE，严禁改期望异常类型。\n"
                 + "专项规则：MOCKITO_MISSING_METHOD_INVOCATION 删除或替换非法 when，禁止继续 when(@InjectMocks/真实对象/静态/不可覆盖方法)；"
                 + "MOCKITO_VOID_STUB_MISUSE 必须删除对非 void 方法的 doNothing，按真实返回类型使用 when/thenReturn 或直接真实调用；"
-                + "MOCKITO_ARGUMENT_MISMATCH 对照源码真实调用序列和 existingTestExamples，修正低可信 verify 参数或改用对外输出断言；"
+                + "MOCKITO_ARGUMENT_MISMATCH 对照源码定位真实调用序列；没有独立契约授权时不得修改 verify 参数或换掉该交互 Oracle；"
                 + "ASSERT_THROWS_WRAPPED_BY_REFLECTION 保留 expectedExceptionType，解包 InvocationTargetException.getCause()；"
-                + "ASSERTION_VALUE_MISMATCH 的生成断言是待验证假设，若 actualValue 与源码/已有测试一致，精确修正期望值，若期望值有权威证据则标记 POTENTIAL_SUT_BUG；"
-                + "MOCKITO_INVOCATION_COUNT_MISMATCH 中 expectedInvocationCount/actualInvocationCount 是 verify 次数，根据源码仲裁后可精确修改 times(n)/once/atLeast，不得用 atLeast(0)/anyTimes 伪造成功。\n";
+                + "ASSERTION_VALUE_MISMATCH 的生成断言是待验证假设；只有 authorityItems 中的独立契约证明它错误时才能精确修正，"
+                + "生产源码当前实现或 actualValue 一致不能单独授权改期望值；"
+                + "若原期望值有独立契约证据则标记 POTENTIAL_SUT_BUG，证据不足则 INCONCLUSIVE；"
+                + "MOCKITO_INVOCATION_COUNT_MISMATCH 中 expectedInvocationCount/actualInvocationCount 是 verify 次数；"
+                + "只有独立契约授权时可精确修改 times(n)/once/atLeast，否则必须保留失败；不得用 atLeast(0)/anyTimes 伪造成功。\n";
     }
 
     private String coverageExplorationRules() {
@@ -345,7 +451,7 @@ public class LlmPromptBuilder {
                     .put("productionFrame", nullToEmpty(diagnostic.getProductionFrame()))
                     .put("rootCauseFrame", nullToEmpty(diagnostic.getRootCauseFrame()))
                     .put("failureDetails", limitText(diagnostic.getFailureDetails(), 6000))
-                    .put("stackTrace", diagnostic.getStackTrace()));
+                    .put("stackTrace", boundedStackTrace(diagnostic.getStackTrace())));
         }
         return array;
     }
@@ -394,7 +500,7 @@ public class LlmPromptBuilder {
         context.put("knownTypes", request.getKnownTypes());
         context.put("chainedCallReturnTypes", request.getChainedCallReturnTypes());
         context.put("filesystemTestingPolicy", "文件系统逻辑默认使用 @TempDir、真实 Path、真实 Files 临时文件；不要默认 mock Files、Paths 或 Path 目录变量。");
-        context.put("methodSourceCode", nullToEmpty(request.getMethodSourceCode()));
+        context.put("methodSourceCode", boundedText(request.getMethodSourceCode(), MAX_METHOD_SOURCE_CHARS));
         context.put("parameters", parameters(request));
         context.put("constraints", constraints(request));
         context.put("branches", branches(request));
@@ -403,7 +509,7 @@ public class LlmPromptBuilder {
         context.put("projectSymbolSnapshot", symbolSnapshot(request.getSymbolSnapshot()));
         context.put("usages", usages(request));
         context.put("scenarios", scenarios(request));
-        context.put("existingTestCodeSummary", nullToEmpty(request.getExistingTestCodeSummary()));
+        context.put("existingTestCodeSummary", boundedText(request.getExistingTestCodeSummary(), MAX_TEST_CODE_CHARS));
         context.put("userInstruction", nullToEmpty(request.getUserInstruction()));
         context.put("testFramework", nullToEmpty(request.getTestFramework()));
         context.put("mockFramework", nullToEmpty(request.getMockFramework()));
@@ -414,11 +520,8 @@ public class LlmPromptBuilder {
         return context;
     }
 
+    /** 快照全量序列化：ProjectSymbolSnapshotBuilder 已在构建期限制类型与成员数量。 */
     private JSONObject symbolSnapshot(ProjectSymbolSnapshot snapshot) {
-        return symbolSnapshot(snapshot, Integer.MAX_VALUE, Integer.MAX_VALUE);
-    }
-
-    private JSONObject symbolSnapshot(ProjectSymbolSnapshot snapshot, int maxTypes, int maxMembersPerType) {
         JSONObject json = new JSONObject();
         if (snapshot == null) {
             json.put("available", false);
@@ -433,7 +536,7 @@ public class LlmPromptBuilder {
         json.put("existingTestExamples", snapshot.getTestExamples());
         json.put("contractFacts", snapshot.getContractFacts());
         JSONArray types = new JSONArray();
-        int typeCount = Math.min(Math.max(0, maxTypes), snapshot.getTypes().size());
+        int typeCount = snapshot.getTypes().size();
         for (int typeIndex = 0; typeIndex < typeCount; typeIndex++) {
             TypeSymbol type = snapshot.getTypes().get(typeIndex);
             JSONObject item = new JSONObject();
@@ -445,12 +548,12 @@ public class LlmPromptBuilder {
             item.put("permittedSubtypes", type.getPermittedSubtypes());
             item.put("concreteSubtypes", type.getConcreteSubtypes());
             JSONArray constructors = new JSONArray();
-            int constructorCount = Math.min(Math.max(0, maxMembersPerType), type.getConstructors().size());
+            int constructorCount = type.getConstructors().size();
             for (int index = 0; index < constructorCount; index++) {
                 constructors.put(callable(type.getConstructors().get(index)));
             }
             JSONArray methods = new JSONArray();
-            int methodCount = Math.min(Math.max(0, maxMembersPerType), type.getMethods().size());
+            int methodCount = type.getMethods().size();
             for (int index = 0; index < methodCount; index++) {
                 methods.put(callable(type.getMethods().get(index)));
             }
@@ -468,9 +571,38 @@ public class LlmPromptBuilder {
     private JSONObject oracleEvidence(LlmGenerationRequest request) {
         JSONObject evidence = new JSONObject();
         ProjectSymbolSnapshot snapshot = request.getSymbolSnapshot();
-        evidence.put("authorityOrder", List.of("userInstruction", "existingTests", "productionSource",
-                "HIGH_OR_MEDIUM_scenario", "runtimeActualValue"));
+        evidence.put("authorityOrder", List.of("USER_REQUIREMENT", "EXISTING_TEST", "CONTRACT_FACT",
+                "PRODUCTION_SOURCE", "SCENARIO", "RUNTIME_ACTUAL"));
         evidence.put("contractFacts", snapshot == null ? List.of() : snapshot.getContractFacts());
+        JSONArray authorityItems = new JSONArray();
+        if (request.getScenarios() != null) {
+            for (int index = 0; index < request.getScenarios().size(); index++) {
+                TestScenario scenario = request.getScenarios().get(index);
+                if (scenario == null || !"USER_REQUIREMENT".equalsIgnoreCase(scenario.getOracleEvidence())
+                        || scenario.getExpectedAssertions() == null
+                        || scenario.getExpectedAssertions().isEmpty()) continue;
+                authorityItems.put(new JSONObject()
+                        .put("ref", "USER_REQUIREMENT:" + index)
+                        .put("type", "USER_REQUIREMENT")
+                        .put("content", scenario.getExpectedAssertions()));
+            }
+        }
+        if (snapshot != null) {
+            for (int index = 0; index < snapshot.getTestExamples().size(); index++) {
+                authorityItems.put(new JSONObject()
+                        .put("ref", "EXISTING_TEST:" + index)
+                        .put("type", "EXISTING_TEST")
+                        .put("content", snapshot.getTestExamples().get(index)));
+            }
+            for (int index = 0; index < snapshot.getContractFacts().size(); index++) {
+                if (!isIndependentContractFact(snapshot.getContractFacts().get(index))) continue;
+                authorityItems.put(new JSONObject()
+                        .put("ref", "CONTRACT_FACT:" + index)
+                        .put("type", "CONTRACT_FACT")
+                        .put("content", snapshot.getContractFacts().get(index)));
+            }
+        }
+        evidence.put("authorityItems", authorityItems);
         JSONArray sourceBranches = new JSONArray();
         if (request.getBranches() != null) {
             for (BranchModel branch : request.getBranches()) {
@@ -484,8 +616,15 @@ public class LlmPromptBuilder {
             }
         }
         evidence.put("sourceBranches", sourceBranches);
-        evidence.put("rule", "actualValue 只是失败事实；只有当它与已有测试或生产源码一致时才能纠正低可信 Oracle。");
+        evidence.put("rule", "actualValue 和当前生产实现只是失败事实，不是改 Oracle 的独立契约。"
+                + "自动修改 Oracle 必须引用 authorityItems 中的 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT。");
         return evidence;
+    }
+
+    private boolean isIndependentContractFact(String value) {
+        String fact = value == null ? "" : value.strip().toUpperCase(java.util.Locale.ROOT);
+        return fact.startsWith("CONTRACT:") || fact.startsWith("REQUIREMENT:")
+                || fact.startsWith("EXISTING_TEST_ORACLE:");
     }
 
     private String coverageFocusSource(LlmGenerationRequest request) {
@@ -493,7 +632,7 @@ public class LlmPromptBuilder {
         // Runtime repair needs the complete control flow. A coverage-focused excerpt can omit the
         // guard or dependency call that actually threw, forcing the model to guess from the message.
         if ("RUNTIME_REPAIR".equals(coverageTaskMode(request))) {
-            return source;
+            return boundedText(source, MAX_METHOD_SOURCE_CHARS);
         }
         if (source.length() <= 12_000 || request.getCoverageReport() == null
                 || request.getCoverageReport().getGaps().isEmpty()) {
@@ -689,5 +828,48 @@ public class LlmPromptBuilder {
     private String limitText(String value, int maxLength) {
         String text = nullToEmpty(value);
         return text.length() <= maxLength ? text : text.substring(0, maxLength) + "\n...";
+    }
+
+    /**
+     * 超长文本的保底截断：保留头尾并标注省略规模。
+     * 常规场景远达不到这些上限；命中的都是原本就会超出供应商上下文窗口、
+     * 直接得到 400 的请求，标记式截断至少让请求可解析并让模型知道有省略。
+     */
+    private static final int MAX_METHOD_SOURCE_CHARS = 40_000;
+    private static final int MAX_CLASS_SOURCE_CHARS = 150_000;
+    private static final int MAX_TEST_CODE_CHARS = 150_000;
+    private static final int MAX_STACK_TRACE_CHARS = 6_000;
+
+    private String boundedText(String value, int maxLength) {
+        String text = nullToEmpty(value);
+        if (text.length() <= maxLength) {
+            return text;
+        }
+        int headLength = Math.max(1, maxLength * 4 / 5);
+        int tailLength = Math.max(1, maxLength - headLength);
+        return text.substring(0, headLength)
+                + "\n// UnitMind: 内容过长，已省略中间 "
+                + (text.length() - headLength - tailLength) + " 字符。\n"
+                + text.substring(text.length() - tailLength);
+    }
+
+    /** 堆栈按总字符数封顶，保留抛出点附近的头部帧，并标注省略的行数。 */
+    private java.util.List<String> boundedStackTrace(java.util.List<String> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<String> bounded = new java.util.ArrayList<>();
+        int total = 0;
+        for (String line : lines) {
+            int length = line == null ? 0 : line.length();
+            if (total + length > MAX_STACK_TRACE_CHARS) {
+                bounded.add("...（堆栈过长，已省略剩余 "
+                        + (lines.size() - bounded.size()) + " 行）");
+                break;
+            }
+            bounded.add(nullToEmpty(line));
+            total += length;
+        }
+        return bounded;
     }
 }

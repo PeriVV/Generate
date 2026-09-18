@@ -2,6 +2,8 @@ package com.casc.unittestagent.llm;
 
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+import com.casc.unittestagent.model.SourceBugLocation;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -49,7 +51,8 @@ public class LlmResponseParser {
             throw new LlmResponseFormatException("大模型返回了空内容。");
         }
         JSONObject root = findJsonObject(rawText, null);
-        if (root == null || (!root.has("testCode") && !root.has("methodPatches"))) {
+        if (root == null || (!root.has("testCode") && !root.has("methodPatches")
+                && !hasTerminalRuntimeDisposition(root))) {
             throw new LlmResponseFormatException("覆盖率修复未返回 testCode 或 methodPatches。");
         }
         LlmGenerationResponse response = new LlmGenerationResponse();
@@ -61,11 +64,108 @@ public class LlmResponseParser {
         response.setEdits(edits(root.optJSONArray("edits")));
         response.setMethodPatches(methodPatches(root.optJSONArray("methodPatches")));
         if ((response.getTestCode() == null || response.getTestCode().isBlank())
-                && response.getMethodPatches().isEmpty()) {
+                && response.getMethodPatches().isEmpty()
+                && !isTerminalRuntimeDisposition(response.getRepairDisposition())) {
             throw new LlmResponseFormatException("覆盖率修复的代码负载为空。");
         }
-        if (response.hasMethodPatches()) validateCoveragePatchContract(response);
+        if (response.hasMethodPatches() || !response.getRepairDisposition().isBlank()) {
+            validateCoverageRuntimeContract(response);
+        }
         return response;
+    }
+
+    /** 整类运行修复专用协议，允许疑似 SUT Bug 时只返回诊断而不改代码。 */
+    public LlmGenerationResponse parseClassRepair(String rawText) {
+        if (rawText == null || rawText.isBlank()) {
+            throw new LlmResponseFormatException("大模型返回了空内容。");
+        }
+        JSONObject root = findJsonObject(rawText, null);
+        if (root == null || (!root.has("testCode") && !hasTerminalRuntimeDisposition(root))) {
+            throw new LlmResponseFormatException("整类运行修复未返回 testCode 或终止诊断。");
+        }
+        LlmGenerationResponse response = new LlmGenerationResponse();
+        response.setRawResponse(rawText);
+        response.setTestCode(root.optString("testCode", ""));
+        response.setWarnings(warnings(root.optJSONArray("warnings")));
+        response.setRepairScope(root.optString("repairScope", "METHOD_ONLY"));
+        parseDiagnosis(root.optJSONObject("diagnosis"), response);
+        response.setEdits(edits(root.optJSONArray("edits")));
+        validateRuntimeDiagnosis(response);
+        if ("REPAIR_TEST".equals(response.getRepairDisposition())
+                && response.getTestCode().isBlank()) {
+            throw new LlmResponseFormatException("REPAIR_TEST 必须返回完整 testCode。");
+        }
+        if (isTerminalRuntimeDisposition(response.getRepairDisposition())
+                && !response.getTestCode().isBlank()) {
+            throw new LlmResponseFormatException("终止诊断不得携带 testCode 修改。");
+        }
+        return response;
+    }
+
+    /** 严格解析只读的疑似源码缺陷归因响应。 */
+    public SourceBugAnalysis parseSourceBugAnalysis(String rawText) {
+        if (rawText == null || rawText.isBlank()) {
+            throw new LlmResponseFormatException("源码缺陷归因返回了空内容。");
+        }
+        JSONObject root = findJsonObject(rawText, null);
+        if (root == null) {
+            throw new LlmResponseFormatException("源码缺陷归因未返回 JSON 对象。");
+        }
+        java.util.Set<String> allowed = java.util.Set.of("summary", "confidence",
+                "suspectedLocations", "hypotheses", "evidence", "recommendedChecks");
+        for (String key : root.keySet()) {
+            if (!allowed.contains(key)) {
+                throw new LlmResponseFormatException("源码缺陷归因包含禁止字段：" + key);
+            }
+        }
+        String summary = root.optString("summary", "").strip();
+        String confidence = root.optString("confidence", "").strip().toUpperCase(java.util.Locale.ROOT);
+        List<String> evidence = limitedStrings(root.optJSONArray("evidence"), 8);
+        List<String> recommendedChecks = limitedStrings(root.optJSONArray("recommendedChecks"), 8);
+        if (summary.isBlank() || !java.util.Set.of("HIGH", "MEDIUM", "LOW").contains(confidence)
+                || evidence.isEmpty() || recommendedChecks.isEmpty()) {
+            throw new LlmResponseFormatException("源码缺陷归因缺少 summary、合法 confidence、evidence 或 recommendedChecks。");
+        }
+        List<SourceBugLocation> locations = new ArrayList<>();
+        JSONArray locationArray = root.optJSONArray("suspectedLocations");
+        if (locationArray != null) {
+            for (int index = 0; index < Math.min(5, locationArray.length()); index++) {
+                JSONObject item = locationArray.optJSONObject(index);
+                if (item == null) continue;
+                for (String key : item.keySet()) {
+                    if (!java.util.Set.of("file", "line", "symbol", "reason").contains(key)) {
+                        throw new LlmResponseFormatException("源码缺陷位置包含禁止字段：" + key);
+                    }
+                }
+                SourceBugLocation location = new SourceBugLocation();
+                location.setFile(item.optString("file", ""));
+                location.setLine(item.optInt("line", -1));
+                location.setSymbol(item.optString("symbol", ""));
+                location.setReason(item.optString("reason", ""));
+                if (!location.getFile().isBlank() || !location.getSymbol().isBlank()
+                        || !location.getReason().isBlank()) locations.add(location);
+            }
+        }
+        SourceBugAnalysis analysis = new SourceBugAnalysis();
+        analysis.setAttempted(true);
+        analysis.setAvailable(true);
+        analysis.setSummary(summary);
+        analysis.setConfidence(confidence);
+        analysis.setSuspectedLocations(locations);
+        analysis.setHypotheses(limitedStrings(root.optJSONArray("hypotheses"), 5));
+        analysis.setEvidence(evidence);
+        analysis.setRecommendedChecks(recommendedChecks);
+        return analysis;
+    }
+
+    private List<String> limitedStrings(JSONArray array, int limit) {
+        List<String> values = new ArrayList<>();
+        if (array == null) return values;
+        for (int index = 0; index < Math.min(limit, array.length()); index++) {
+            String value = array.optString(index, "").strip();
+            if (!value.isBlank()) values.add(value);
+        }
+        return values;
     }
 
     private void parseDiagnosis(JSONObject diagnosis, LlmGenerationResponse response) {
@@ -74,6 +174,9 @@ public class LlmResponseParser {
                 diagnosis.optString("diagnosticCode", "")));
         response.setDiagnosisEvidence(warnings(diagnosis.optJSONArray("evidence")));
         response.setOracleDecision(diagnosis.optString("oracleDecision", ""));
+        response.setOracleAuthority(diagnosis.optString("oracleAuthority", ""));
+        response.setOracleAuthorityRef(diagnosis.optString("oracleAuthorityRef", ""));
+        response.setRepairDisposition(diagnosis.optString("repairDisposition", ""));
     }
 
     private List<LlmCodeEdit> edits(JSONArray array) {
@@ -105,12 +208,57 @@ public class LlmResponseParser {
         return values;
     }
 
-    private void validateCoveragePatchContract(LlmGenerationResponse response) {
+    private void validateCoverageRuntimeContract(LlmGenerationResponse response) {
+        validateRuntimeDiagnosis(response);
+        boolean terminal = isTerminalRuntimeDisposition(response.getRepairDisposition());
+        if (terminal && response.hasMethodPatches()) {
+            throw new LlmResponseFormatException("终止诊断不得携带 methodPatches。");
+        }
+        if ("REPAIR_TEST".equals(response.getRepairDisposition()) && !response.hasMethodPatches()) {
+            throw new LlmResponseFormatException("REPAIR_TEST 必须返回非空 methodPatches。");
+        }
+        if (!response.hasMethodPatches()) return;
+        validateCoveragePatchContract(response);
+    }
+
+    private void validateRuntimeDiagnosis(LlmGenerationResponse response) {
         if (response.getDiagnosisRootCauseCategory().isBlank()
                 || response.getOracleDecision().isBlank()
+                || response.getOracleAuthority().isBlank()
+                || response.getOracleAuthorityRef().isBlank()
+                || response.getRepairDisposition().isBlank()
                 || response.getDiagnosisEvidence().isEmpty()) {
-            throw new LlmResponseFormatException("运行修复缺少完整 diagnosis（rootCauseCategory/evidence/oracleDecision）。");
+            throw new LlmResponseFormatException("运行修复缺少完整 diagnosis（rootCauseCategory/evidence/"
+                    + "oracleDecision/oracleAuthority/oracleAuthorityRef/repairDisposition）。");
         }
+        if (!java.util.Set.of("KEEP", "CORRECT").contains(response.getOracleDecision())) {
+            throw new LlmResponseFormatException("oracleDecision 只能是 KEEP 或 CORRECT。");
+        }
+        if (!java.util.Set.of("USER_REQUIREMENT", "EXISTING_TEST", "CONTRACT_FACT",
+                "PRODUCTION_SOURCE", "SCENARIO", "RUNTIME_ACTUAL", "NONE")
+                .contains(response.getOracleAuthority())) {
+            throw new LlmResponseFormatException("oracleAuthority 不在允许枚举中。");
+        }
+        if (!java.util.Set.of("REPAIR_TEST", "SUSPECTED_SUT_BUG", "INCONCLUSIVE")
+                .contains(response.getRepairDisposition())) {
+            throw new LlmResponseFormatException("repairDisposition 不在允许枚举中。");
+        }
+        if (isTerminalRuntimeDisposition(response.getRepairDisposition())
+                && !"KEEP".equals(response.getOracleDecision())) {
+            throw new LlmResponseFormatException("终止诊断必须 KEEP 原 Oracle。");
+        }
+        if ("SUSPECTED_SUT_BUG".equals(response.getRepairDisposition())
+                && !java.util.Set.of("USER_REQUIREMENT", "EXISTING_TEST", "CONTRACT_FACT")
+                .contains(response.getOracleAuthority())) {
+            throw new LlmResponseFormatException("SUSPECTED_SUT_BUG 必须有独立契约权威来源。");
+        }
+        if ("CORRECT".equals(response.getOracleDecision())
+                && !"REPAIR_TEST".equals(response.getRepairDisposition())) {
+            throw new LlmResponseFormatException("CORRECT 只能与 REPAIR_TEST 一起返回。");
+        }
+    }
+
+    private void validateCoveragePatchContract(LlmGenerationResponse response) {
         java.util.Set<String> patched = new java.util.LinkedHashSet<>();
         for (LlmMethodPatch patch : response.getMethodPatches()) {
             if (patch.getMethodName().isBlank() || patch.getMethodCode().isBlank()) {
@@ -131,6 +279,16 @@ public class LlmResponseParser {
         if (!edited.containsAll(patched)) {
             throw new LlmResponseFormatException("每个 methodPatch 都必须有同名 edits 项。");
         }
+    }
+
+    private boolean hasTerminalRuntimeDisposition(JSONObject root) {
+        JSONObject diagnosis = root == null ? null : root.optJSONObject("diagnosis");
+        return diagnosis != null && isTerminalRuntimeDisposition(
+                diagnosis.optString("repairDisposition", ""));
+    }
+
+    private boolean isTerminalRuntimeDisposition(String value) {
+        return "SUSPECTED_SUT_BUG".equals(value) || "INCONCLUSIVE".equals(value);
     }
 
     public LlmGenerationResponse parseMockStrategyOnly(String rawText) {

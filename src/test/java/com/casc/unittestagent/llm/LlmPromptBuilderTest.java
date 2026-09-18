@@ -10,6 +10,10 @@ import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.CoverageMetric;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.TestScenario;
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.OracleAuthority;
+import com.casc.unittestagent.model.OracleDecision;
+import com.casc.unittestagent.model.RuntimeRepairDisposition;
 import org.junit.Test;
 
 import java.util.List;
@@ -19,6 +23,71 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 
 public class LlmPromptBuilderTest {
+    @Test
+    public void runtimeRepairIncludesCompleteClassConstantsForExceptionPathAdjudication() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setCategory("ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN");
+        diagnostic.setExpectedExceptionType("java.lang.IllegalStateException");
+        diagnostic.setMessage("Expected java.lang.IllegalStateException to be thrown, but nothing was thrown.");
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setMethodSourceCode("void validateConcurrentLimit() { if (runningCount >= MAX_CONCURRENT_PROCESSES) throw new IllegalStateException(); }");
+        request.setClassSourceCode("class ProcessService { private static final long MAX_CONCURRENT_PROCESSES = 20L; }");
+        request.setExistingTestCodeSummary("when(repository.countRunningAssociations()).thenReturn(10L);");
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("\"classSourceCode\""));
+        assertTrue(prompt.contains("MAX_CONCURRENT_PROCESSES = 20L"));
+        assertTrue(prompt.contains("ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN"));
+        assertTrue(prompt.contains("不是 Fixture 缺失"));
+    }
+
+    @Test
+    public void sourceBugAnalysisPromptIsReadOnlyAndContainsFailureEvidence() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("SubjectTest#valueFollowsContract");
+        diagnostic.setExpectedValue("2");
+        diagnostic.setActualValue("1");
+        diagnostic.setProductionFrame("at sample.Subject.value(Subject.java:3)");
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setClassSourceCode("class Subject { int value() { return 1; } }");
+        request.setExistingTestCodeSummary("assertEquals(2, new Subject().value());");
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        OracleAssessment assessment = new OracleAssessment();
+        assessment.setDisposition(RuntimeRepairDisposition.SUSPECTED_SUT_BUG);
+        assessment.setDecision(OracleDecision.KEEP);
+        assessment.setAuthority(OracleAuthority.CONTRACT_FACT);
+        assessment.setAuthorityRef("CONTRACT_FACT:0");
+        assessment.setEvidence(List.of("R-17 expects 2"));
+
+        LlmPromptBuilder builder = new LlmPromptBuilder();
+        String prompt = builder.sourceBugAnalysisPrompt(request, assessment);
+
+        assertTrue(builder.sourceBugAnalysisSystemPrompt().contains("不得输出补丁"));
+        assertTrue(prompt.contains("Subject.java:3"));
+        assertTrue(prompt.contains("\"expectedValue\": \"2\""));
+        assertTrue(prompt.contains("CONTRACT_FACT:0"));
+        assertTrue(prompt.contains("只读"));
+        assertTrue(prompt.contains("不得返回任何可应用的代码修改字段"));
+    }
+
+    @Test
+    public void generationAndRepairPromptsRejectMockingSlf4jLogger() {
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setMethodSourceCode("@Slf4j class Subject { void run() { log.info(\"started\"); } }");
+
+        LlmPromptBuilder builder = new LlmPromptBuilder();
+        String generation = builder.systemPrompt() + builder.userPrompt(request);
+        String coverage = builder.coveragePrompt(request);
+        String classRepair = builder.classRepairPrompt(request);
+
+        assertTrue(generation.contains("禁止创建 @Mock Logger"));
+        assertTrue(generation.contains("verify(logger).info/error/warn/debug/trace"));
+        assertTrue(coverage.contains("@Mock Logger 与生产 logger 不是同一实例"));
+        assertTrue(classRepair.contains("MOCKITO_VERIFY_WRONG_INSTANCE"));
+    }
+
     @Test
     public void generationPromptContainsResolvedCallableCatalog() {
         LlmGenerationRequest request = new LlmGenerationRequest();
@@ -108,7 +177,7 @@ public class LlmPromptBuilderTest {
         assertTrue(prompt.contains("mockito-core-4.11.0"));
         assertTrue(prompt.contains("\"taskMode\": \"RUNTIME_REPAIR\""));
         assertTrue(prompt.contains("意图仲裁"));
-        assertTrue(prompt.contains("runtimeDiagnostics 只描述实际发生了什么"));
+        assertTrue(prompt.contains("runtimeDiagnostics 只用于解释当前路径"));
         assertTrue(prompt.contains("禁止改成 assertThrows"));
         assertTrue(prompt.contains("确保测试输入、被测调用实参及 Mockito stub 的参数和值一致"));
         assertTrue(prompt.contains("返回前自检"));
@@ -198,6 +267,31 @@ public class LlmPromptBuilderTest {
         assertTrue(prompt.contains("\"actualInvocationCount\": 2"));
         assertTrue(prompt.contains("times(n)/once/atLeast"));
         assertTrue(prompt.contains("不得用 atLeast(0)/anyTimes 伪造成功"));
+    }
+
+    @Test
+    public void runtimeRepairPromptAssignsVerifiableAuthorityReferences() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("SubjectTest#value()");
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        request.setCoverageReport(new CoverageReport());
+        ProjectSymbolSnapshot snapshot = new ProjectSymbolSnapshot();
+        snapshot.setTestExamples(List.of("@Test void contractExample() { assertEquals(2, subject.value()); }"));
+        snapshot.setContractFacts(List.of("CONTRACT: R-17 says value is 2"));
+        request.setSymbolSnapshot(snapshot);
+        TestScenario scenario = new TestScenario();
+        scenario.setOracleEvidence("USER_REQUIREMENT");
+        scenario.setExpectedAssertions(List.of("assertEquals(2, result)"));
+        request.setScenarios(List.of(scenario));
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        assertTrue(prompt.contains("USER_REQUIREMENT:0"));
+        assertTrue(prompt.contains("EXISTING_TEST:0"));
+        assertTrue(prompt.contains("CONTRACT_FACT:0"));
+        assertTrue(prompt.contains("oracleAuthorityRef"));
+        assertTrue(prompt.contains("actualValue 和当前生产实现"));
     }
 
     @Test

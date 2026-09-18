@@ -253,10 +253,7 @@ public class MockStrategyPlanner {
                 || simple.endsWith("Param")
                 || simple.endsWith("Profile")
                 || simple.endsWith("Form")
-                || simple.endsWith("Result")
-                || simple.endsWith("Request")
-                || simple.endsWith("Entity")
-                || simple.endsWith("DTO");
+                || simple.endsWith("Result");
     }
 
     private boolean looksLikePathType(String type) {

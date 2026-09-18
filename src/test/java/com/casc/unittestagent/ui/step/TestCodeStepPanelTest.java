@@ -8,17 +8,27 @@ import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
+import com.casc.unittestagent.model.ClassJUnitRepairAttempt;
+import com.casc.unittestagent.model.ClassJUnitRepairReport;
+import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
+import com.casc.unittestagent.model.SourceBugAnalysis;
+import com.casc.unittestagent.model.SourceBugLocation;
 import com.intellij.ui.OnePixelSplitter;
 import com.intellij.testFramework.LightPlatformTestCase;
 
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JProgressBar;
+import javax.swing.JScrollPane;
+import javax.swing.Scrollable;
+import javax.swing.SwingUtilities;
 import javax.swing.JTable;
 import javax.swing.text.JTextComponent;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Dimension;
+import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -83,6 +93,107 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         assertTrue(componentContainsText(panel, "expected true but was false"));
         assertTrue(componentContainsText(panel, "补测 2 轮"));
         assertTrue(componentContainsText(panel, "返回了重复代码"));
+    }
+
+    public void testSuspectedBugKeepsUpperDiagnosticsVisibleAndExpandable() {
+        CoverageReport report = CoverageReport.status(CoverageStatus.SUSPECTED_SUT_BUG);
+        report.setStopReason(CoverageStopReason.SUSPECTED_SUT_BUG);
+        SourceBugLocation location = new SourceBugLocation();
+        location.setFile("Subject.java");
+        location.setLine(42);
+        location.setSymbol("calculate()");
+        location.setReason("返回值与独立契约冲突");
+        SourceBugAnalysis analysis = new SourceBugAnalysis();
+        analysis.setAttempted(true);
+        analysis.setAvailable(true);
+        analysis.setConfidence("HIGH");
+        analysis.setSummary("边界分支可能返回了错误结果");
+        analysis.setSuspectedLocations(List.of(location));
+        analysis.setEvidence(List.of("期望 2，实际 1"));
+        analysis.setRecommendedChecks(List.of("核对第 42 行边界条件"));
+        report.setSourceBugAnalysis(analysis);
+
+        TestCodeStepPanel panel = new TestCodeStepPanel(
+                getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
+                "", "", null, report, false, ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
+
+        OnePixelSplitter splitter = findComponent(panel, OnePixelSplitter.class);
+        assertNotNull(splitter);
+        assertTrue("critical details should receive at least half of the view",
+                splitter.getProportion() >= 0.50f);
+        assertTrue(componentContainsText(panel, "疑似源码缺陷分析"));
+        assertTrue(componentContainsText(panel, "Subject.java:42"));
+        assertTrue(componentContainsText(panel, "边界分支可能返回了错误结果"));
+        JButton expand = findButton(panel, "放大诊断区");
+        assertNotNull(expand);
+        expand.doClick();
+        assertTrue(splitter.getProportion() >= 0.65f);
+        assertNotNull(findButton(panel, "恢复诊断比例"));
+    }
+
+    public void testClassRepairShowsEachFocusedFailureSeparately() {
+        ClassJUnitRepairReport report = ClassJUnitRepairReport.status(ClassJUnitStatus.NEEDS_REVIEW);
+        ClassJUnitRepairAttempt repaired = new ClassJUnitRepairAttempt();
+        repaired.setRound(1);
+        repaired.setFocusedTestIds(List.of("returnsEarly"));
+        repaired.setDiagnosis("MOCKITO_NO_INTERACTIONS_CONTRADICTION");
+        repaired.setAccepted(true);
+        ClassJUnitRepairAttempt kept = new ClassJUnitRepairAttempt();
+        kept.setRound(2);
+        kept.setFocusedTestIds(List.of("marksStopped"));
+        kept.setDiagnosis("TEST_RUNTIME_FAILURE");
+        kept.setRejectionReason("契约证据不足");
+        report.setAttempts(List.of(repaired, kept));
+
+        TestCodeStepPanel panel = new TestCodeStepPanel(
+                getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
+                "", "", null, null, report, false, true, true, true,
+                ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
+
+        assertTrue(componentContainsText(panel, "分测试修复明细"));
+        assertTrue(componentContainsText(panel, "returnsEarly"));
+        assertTrue(componentContainsText(panel, "已接受"));
+        assertTrue(componentContainsText(panel, "marksStopped"));
+        assertTrue(componentContainsText(panel, "契约证据不足"));
+    }
+
+    public void testDiagnosticViewportTracksNarrowWindowWidthWithoutOuterHorizontalScroll() {
+        CoverageReport report = CoverageReport.status(CoverageStatus.SUSPECTED_SUT_BUG);
+        report.setMessage("/very/long/project/path/without/spaces/that/must/not/stretch/the/whole/tool/window/Subject.java");
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("sample.SubjectTest#veryLongDiagnosticNameThatMustStayInsideTheViewport");
+        diagnostic.setMessage("x".repeat(600));
+        report.getGenerated().getExecution().getDiagnostics().add(diagnostic);
+
+        TestCodeStepPanel panel = new TestCodeStepPanel(
+                getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
+                "", "", null, report, false, ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
+
+        JScrollPane diagnosticScroll = findViewportTrackingScrollPane(panel);
+        assertNotNull(diagnosticScroll);
+        assertEquals(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER,
+                diagnosticScroll.getHorizontalScrollBarPolicy());
+        assertTrue(((Scrollable) diagnosticScroll.getViewport().getView())
+                .getScrollableTracksViewportWidth());
+    }
+
+    public void testCoverageActionsRemainVisibleInNarrowToolWindow() {
+        TestCodeStepPanel panel = new TestCodeStepPanel(
+                getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
+                "", "", null, null, false,
+                ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
+
+        panel.setSize(new Dimension(320, 720));
+        layoutRecursively(panel);
+
+        JButton runCoverage = findButton(panel, "运行覆盖率并自动补测");
+        JButton stopCoverage = findButton(panel, "停止");
+        assertNotNull(runCoverage);
+        assertNotNull(stopCoverage);
+        assertFullyInsideParent(runCoverage);
+        assertFullyInsideParent(stopCoverage);
+        assertTrue(SwingUtilities.convertRectangle(runCoverage.getParent(), runCoverage.getBounds(), panel).y
+                < panel.getHeight());
     }
 
     public void testCoverageCardVisualizesMetricsAndGaps() {
@@ -209,6 +320,39 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
             if (type.isInstance(component)) return type.cast(component);
             if (component instanceof Container) {
                 T found = findComponent((Container) component, type);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private void layoutRecursively(Container container) {
+        container.doLayout();
+        for (Component component : container.getComponents()) {
+            if (component instanceof Container) layoutRecursively((Container) component);
+        }
+    }
+
+    private void assertFullyInsideParent(Component component) {
+        Rectangle bounds = component.getBounds();
+        assertTrue(bounds.width > 0);
+        assertTrue(bounds.height > 0);
+        assertTrue(bounds.x >= 0);
+        assertTrue(bounds.y >= 0);
+        assertTrue(bounds.x + bounds.width <= component.getParent().getWidth());
+        assertTrue(bounds.y + bounds.height <= component.getParent().getHeight());
+    }
+
+    private JScrollPane findViewportTrackingScrollPane(Container container) {
+        for (Component component : container.getComponents()) {
+            if (component instanceof JScrollPane scroll
+                    && scroll.getViewport().getView() instanceof Scrollable view
+                    && view.getScrollableTracksViewportWidth()
+                    && scroll.getHorizontalScrollBarPolicy() == JScrollPane.HORIZONTAL_SCROLLBAR_NEVER) {
+                return scroll;
+            }
+            if (component instanceof Container) {
+                JScrollPane found = findViewportTrackingScrollPane((Container) component);
                 if (found != null) return found;
             }
         }

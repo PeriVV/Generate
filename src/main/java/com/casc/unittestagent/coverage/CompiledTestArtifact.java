@@ -57,6 +57,11 @@ public class CompiledTestArtifact implements AutoCloseable {
 
     @Override
     public void close() {
+        deleteRecursively(root);
+    }
+
+    /** 递归删除目录；删除失败静默忽略，与 close 的清理语义一致。 */
+    static void deleteRecursively(Path root) {
         if (root == null || !Files.exists(root)) return;
         try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
             paths.sorted(Comparator.reverseOrder()).forEach(path -> {

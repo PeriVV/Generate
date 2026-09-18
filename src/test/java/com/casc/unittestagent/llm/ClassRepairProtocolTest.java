@@ -33,14 +33,30 @@ public class ClassRepairProtocolTest extends TestCase {
     public void testParserPreservesClassRepairScope() {
         String response = """
                 {"repairScope":"SHARED_FIXTURE",
-                 "diagnosis":{"rootCauseCategory":"FIXTURE","evidence":["field is null"],"oracleDecision":"KEEP"},
+                 "diagnosis":{"rootCauseCategory":"FIXTURE","evidence":["field is null"],"oracleDecision":"KEEP",
+                 "oracleAuthority":"NONE","oracleAuthorityRef":"NONE","repairDisposition":"REPAIR_TEST"},
                  "testCode":"package sample; class SubjectTest {}","warnings":[]}
                 """;
 
-        LlmGenerationResponse parsed = new LlmResponseParser().parse(response);
+        LlmGenerationResponse parsed = new LlmResponseParser().parseClassRepair(response);
 
         assertEquals("SHARED_FIXTURE", parsed.getRepairScope());
         assertTrue(parsed.getTestCode().contains("SubjectTest"));
         assertEquals("FIXTURE", parsed.getDiagnosisRootCauseCategory());
+    }
+
+    public void testClassRepairParserAllowsTerminalDiagnosisWithoutTestCode() {
+        String response = """
+                {"repairScope":"METHOD_ONLY",
+                 "diagnosis":{"rootCauseCategory":"POTENTIAL_SUT_BUG","evidence":["contract fact"],
+                 "oracleDecision":"KEEP","oracleAuthority":"CONTRACT_FACT",
+                 "oracleAuthorityRef":"CONTRACT_FACT:0",
+                 "repairDisposition":"SUSPECTED_SUT_BUG"},"edits":[],"warnings":[]}
+                """;
+
+        LlmGenerationResponse parsed = new LlmResponseParser().parseClassRepair(response);
+
+        assertEquals("SUSPECTED_SUT_BUG", parsed.getRepairDisposition());
+        assertTrue(parsed.getTestCode().isBlank());
     }
 }

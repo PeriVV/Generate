@@ -11,15 +11,19 @@ import com.casc.unittestagent.coverage.JavaTestSourceInspector;
 import com.casc.unittestagent.coverage.JavaBinaryName;
 import com.casc.unittestagent.coverage.MockitoStaticMockSupport;
 import com.casc.unittestagent.coverage.MockitoRuntimeDiagnosticEnricher;
+import com.casc.unittestagent.coverage.MockitoNoInteractionsContradictionGuard;
 import com.casc.unittestagent.coverage.ProjectTestEnvironment;
 import com.casc.unittestagent.coverage.ProjectTestEnvironmentResolver;
 import com.casc.unittestagent.coverage.ReflectiveAssertionNormalizer;
 import com.casc.unittestagent.coverage.TestSandboxCompiler;
+import com.casc.unittestagent.coverage.Slf4jMockVerificationGuard;
+import com.casc.unittestagent.coverage.MissingFixtureDependencyDetector;
 import com.casc.unittestagent.generator.GeneratedTestCodePostProcessor;
 import com.casc.unittestagent.generator.CoverageTestClassStabilizer;
 import com.casc.unittestagent.generator.ClassRuntimeRepairStabilizer;
 import com.casc.unittestagent.generator.JUnitMockitoTestGenerator;
 import com.casc.unittestagent.generator.MockStrategyPlanner;
+import com.casc.unittestagent.generator.RuntimeOracleGate;
 import com.casc.unittestagent.generator.TestDataGenerator;
 import com.casc.unittestagent.generator.TestScenarioPlanner;
 import com.casc.unittestagent.llm.DefaultLlmClientFactory;
@@ -53,6 +57,10 @@ import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.MethodUsageModel;
 import com.casc.unittestagent.model.MockStrategy;
 import com.casc.unittestagent.model.MockStrategyItem;
+import com.casc.unittestagent.model.OracleAssessment;
+import com.casc.unittestagent.model.OracleDecision;
+import com.casc.unittestagent.model.RuntimeRepairDisposition;
+import com.casc.unittestagent.model.SourceBugAnalysis;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
@@ -76,6 +84,7 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.util.Computable;
 import com.intellij.psi.PsiCallExpression;
 import com.intellij.psi.PsiClass;
@@ -154,6 +163,7 @@ public class UnitTestGenerationService {
     private final CoverageTestClassStabilizer coverageTestClassStabilizer = new CoverageTestClassStabilizer();
     private final ClassRuntimeRepairStabilizer classRuntimeRepairStabilizer =
             new ClassRuntimeRepairStabilizer();
+    private final RuntimeOracleGate runtimeOracleGate = new RuntimeOracleGate();
     /** PSI 真实符号快照构建器。 */
     private final ProjectSymbolSnapshotBuilder symbolSnapshotBuilder;
     /** 项目编译验证器。 */
@@ -404,8 +414,6 @@ public class UnitTestGenerationService {
                 result.setValidationResult(ValidationResult.status(ValidationStatus.NOT_RUN));
             }
             result.setMethodModel(methodModel);
-            result.setScenarios(result.getScenarios());
-            result.setMockStrategy(result.getMockStrategy());
             result.setGeneratedTestFile(generatedTestFile);
         } catch (Exception ex) {
             LOG.warn("UnitMind: generate test code failed, errorType=" + ex.getClass().getSimpleName());
@@ -790,6 +798,10 @@ public class UnitTestGenerationService {
             if (scenario.getType() == null || scenario.getType().endsWith("_REASON")) {
                 continue;
             }
+            // 用户在场景表格取消勾选的场景保留展示，但不再进入生成。
+            if (!scenario.isEnabled()) {
+                continue;
+            }
             executable.add(scenario);
         }
         return executable;
@@ -915,6 +927,24 @@ public class UnitTestGenerationService {
             GeneratedTestFile template = result.getGeneratedTestFile();
             String acceptedCode = currentCode == null || currentCode.isBlank()
                     ? template.getContent() : currentCode;
+            boolean pluginOwnedCandidate = testCodeFingerprint(acceptedCode)
+                    .equals(testCodeFingerprint(template.getContent()));
+            Slf4jMockVerificationGuard.Result loggerPreflight =
+                    Slf4jMockVerificationGuard.inspectAndRepair(
+                            sourceText, acceptedCode, List.of(), pluginOwnedCandidate);
+            if (loggerPreflight.isChanged()) {
+                acceptedCode = loggerPreflight.getCode();
+                result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+                addWarnings(result, List.of(loggerPreflight.repairMessage()));
+            }
+            MockitoNoInteractionsContradictionGuard.Result interactionPreflight =
+                    MockitoNoInteractionsContradictionGuard.inspectAndRepair(
+                            acceptedCode, pluginOwnedCandidate);
+            if (interactionPreflight.isChanged()) {
+                acceptedCode = interactionPreflight.getCode();
+                result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+                addWarnings(result, List.of(interactionPreflight.message()));
+            }
             String targetClassName = targetClassName(result);
             listener.update("正在执行整类初始 JUnit...", 0.08d);
             ClassRunCandidate initial = executeClassCandidate(environment, template, acceptedCode,
@@ -934,6 +964,13 @@ public class UnitTestGenerationService {
             }
             TestExecutionSummary acceptedExecution = initial.execution;
             ValidationResult acceptedValidation = initial.validation;
+            MockitoRuntimeDiagnosticEnricher.enrich(
+                    acceptedExecution.getDiagnostics(), acceptedCode);
+            MissingFixtureDependencyDetector.inspect(
+                    sourceText, acceptedCode, acceptedExecution.getDiagnostics());
+            Slf4jMockVerificationGuard.Result loggerFailure =
+                    Slf4jMockVerificationGuard.inspectAndRepair(
+                            sourceText, acceptedCode, acceptedExecution.getDiagnostics(), false);
             report.setInitialExecution(acceptedExecution);
             report.setFinalExecution(acceptedExecution);
             if (acceptedExecution.isSuccessful()) {
@@ -945,6 +982,13 @@ public class UnitTestGenerationService {
                         ? ClassJUnitStopReason.TIMEOUT : ClassJUnitStopReason.NO_TESTS_FOUND;
                 return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED, reason,
                         initial.message);
+            }
+            if (loggerFailure.hasBlockedMethods()
+                    && hasRuntimeCategory(acceptedExecution.getDiagnostics(),
+                    "MOCKITO_VERIFY_WRONG_INSTANCE")) {
+                result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                        ClassJUnitStopReason.TEST_DESIGN_ERROR, loggerFailure.blockedMessage());
             }
 
             LlmConfig llmConfig = LlmConfigManager.load();
@@ -965,37 +1009,134 @@ public class UnitTestGenerationService {
                 }
                 Set<String> passedIds = passedTestNames(acceptedExecution);
                 Set<String> failingIds = failingTestNames(acceptedExecution);
-                ClassJUnitRepairScope suggestedScope = suggestedClassRepairScope(
-                        acceptedExecution, round, previousAttempt);
+                List<RuntimeDiagnostic> focusedDiagnostics = focusRuntimeDiagnostics(
+                        acceptedExecution.getDiagnostics());
+                Set<String> focusedFailingIds = failingTestNames(focusedDiagnostics);
+                if (focusedFailingIds.isEmpty() && !failingIds.isEmpty()) {
+                    focusedFailingIds = Set.of(failingIds.iterator().next());
+                }
+                ClassJUnitRepairScope suggestedScope = focusedDiagnostics.stream()
+                        .anyMatch(item -> "FIXTURE_DEPENDENCY_MISSING".equals(item.getCategory()))
+                        ? ClassJUnitRepairScope.SHARED_FIXTURE : ClassJUnitRepairScope.METHOD_ONLY;
                 listener.update("正在修复整类 JUnit 失败（" + round + " / "
-                        + maxRuntimeRepairs + "）...", 0.12d + 0.78d * round / Math.max(1, maxRuntimeRepairs));
+                        + maxRuntimeRepairs + "，当前测试 " + focusedFailingIds + "）...",
+                        0.12d + 0.78d * round / Math.max(1, maxRuntimeRepairs));
                 LlmGenerationRequest request = classRepairRequest(project, psiFile, result, sourceText,
-                        acceptedCode, acceptedExecution, passedIds, failingIds, round,
+                        acceptedCode, focusedDiagnostics, passedIds, failingIds, focusedFailingIds, round,
                         suggestedScope, previousAttempt);
-                LlmGenerationResponse response;
-                report.incrementModelRequests();
-                try {
-                    response = client.repairClassTest(request);
-                } catch (Exception ex) {
-                    return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
-                            ClassJUnitStopReason.MODEL_ERROR,
-                            "整类 JUnit 修复模型调用失败：" + safeMessage(ex));
+                LlmGenerationResponse response = null;
+                // 与覆盖率闭环对齐：瞬时网络失败（429/超时等）做有界重试，重试不消耗修复轮次。
+                for (int transportAttempt = 0; ; transportAttempt++) {
+                    report.incrementModelRequests();
+                    try {
+                        response = client.repairClassTest(request);
+                        break;
+                    } catch (ProcessCanceledException ex) {
+                        throw ex;
+                    } catch (Exception ex) {
+                        if (transportAttempt < MAX_COVERAGE_TRANSPORT_RETRIES
+                                && isRetryableCoverageFailure(ex)) {
+                            LOG.warn("UnitMind class repair: transient model failure, runtimeRound=" + round
+                                    + ", transportRetry=" + (transportAttempt + 1)
+                                    + ", errorType=" + ex.getClass().getSimpleName());
+                            try {
+                                Thread.sleep(250L * (transportAttempt + 1));
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                                        ClassJUnitStopReason.MODEL_ERROR,
+                                        "整类 JUnit 修复模型调用被中断：" + safeMessage(interrupted));
+                            }
+                            continue;
+                        }
+                        return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                                ClassJUnitStopReason.MODEL_ERROR,
+                                "整类 JUnit 修复模型调用失败：" + safeMessage(ex));
+                    }
                 }
                 report.incrementRuntimeRepairRounds();
+                OracleAssessment oracleAssessment;
+                try {
+                    oracleAssessment = runtimeOracleGate.assessment(response);
+                } catch (IllegalArgumentException ex) {
+                    return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                            ClassJUnitStopReason.MODEL_ERROR,
+                            "整类运行修复缺少合法 Oracle 仲裁结果：" + safeMessage(ex));
+                }
+                report.setOracleAssessment(oracleAssessment);
+                if (oracleAssessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                        && !oracleAssessment.getAuthority().permitsAutomaticOracleCorrection()) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "疑似 SUT Bug 缺少独立契约证据。"));
+                }
+                if (!oracleAuthorityReferenceSupported(request, oracleAssessment)) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "oracleAuthorityRef 未引用本轮上下文中真实存在的同类型证据："
+                                    + oracleAssessment.getAuthorityRef()));
+                }
+                normalizeUnsupportedFixtureClassification(
+                        oracleAssessment, focusedDiagnostics);
+                if (oracleAssessment.getDisposition() == RuntimeRepairDisposition.REPAIR_TEST
+                        && oracleAssessment.getDecision() == OracleDecision.KEEP
+                        && hasOracleSensitiveFailure(focusedDiagnostics)
+                        && !isProvenFixtureRepair(
+                        oracleAssessment, focusedDiagnostics)) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "断言或交互 Oracle 已经真实不匹配；禁止通过改 Arrange 把特定输入上的失败绕过。"));
+                }
                 ClassJUnitRepairScope scope = classRepairScope(response.getRepairScope(), suggestedScope);
+                if (scope == ClassJUnitRepairScope.SHARED_FIXTURE
+                        && !isProvenFixtureRepair(oracleAssessment, focusedDiagnostics)) {
+                    scope = ClassJUnitRepairScope.METHOD_ONLY;
+                }
                 if (scope == ClassJUnitRepairScope.SHARED_FIXTURE) report.incrementFixtureRepairRounds();
                 ClassJUnitRepairAttempt attempt = new ClassJUnitRepairAttempt();
                 attempt.setRound(round);
                 attempt.setRepairScope(scope);
+                attempt.setFocusedTestIds(new ArrayList<>(focusedFailingIds));
                 attempt.setDiagnosis(response.getDiagnosisRootCauseCategory());
+                if (oracleAssessment.getDisposition() != RuntimeRepairDisposition.REPAIR_TEST) {
+                    attempt.setRejectionReason(oracleStopMessage(oracleAssessment));
+                    report.getAttempts().add(attempt);
+                    result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+                    report.setFinalExecution(acceptedExecution);
+                    if (shouldAnalyzePossibleSourceFailure(oracleAssessment)) {
+                        listener.update("正在分析疑似生产代码缺陷的可能位置...", 0.94d);
+                        report.incrementModelRequests();
+                        report.setSourceBugAnalysis(analyzeSuspectedSutBug(
+                                client, request, oracleAssessment));
+                    }
+                    return stopClassJUnit(result, report,
+                            classStatusForOracle(oracleAssessment), classStopReasonForOracle(oracleAssessment),
+                            oracleStopMessage(oracleAssessment));
+                }
+                if (oracleAssessment.getDecision() == OracleDecision.CORRECT
+                        && !oracleAssessment.getAuthority().permitsAutomaticOracleCorrection()) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    attempt.setRejectionReason(unsafeAuthorityMessage(oracleAssessment));
+                    report.getAttempts().add(attempt);
+                    result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+                    report.setFinalExecution(acceptedExecution);
+                    return stopClassJUnit(result, report, ClassJUnitStatus.NEEDS_REVIEW,
+                            ClassJUnitStopReason.ORACLE_INCONCLUSIVE,
+                            unsafeAuthorityMessage(oracleAssessment));
+                }
                 try {
                     GeneratedTestCodePostProcessor.ProcessedCode processed =
                             generatedCodePostProcessor.process(response.getTestCode(), result.getMethodModel());
                     addWarnings(result, response.getWarnings());
                     addWarnings(result, processed.getWarnings());
                     ClassRuntimeRepairStabilizer.Result stabilized = classRuntimeRepairStabilizer.stabilize(
-                            acceptedCode, processed.getCode(), scope, passedIds, failingIds);
+                            acceptedCode, processed.getCode(), scope, passedIds, focusedFailingIds);
                     String candidateCode = stabilized.getCode();
+                    if (!isProvenNoInteractionsContradictionRepair(
+                            acceptedCode, candidateCode, focusedDiagnostics)) {
+                        runtimeOracleGate.validateRepair(oracleAssessment, acceptedCode, candidateCode,
+                                methodNames(focusedFailingIds));
+                    }
                     attempt.setChangedTestIds(stabilized.getChangedTestIds());
                     attempt.setFixtureChanged(stabilized.isFixtureChanged());
                     String hash = testCodeFingerprint(candidateCode);
@@ -1019,8 +1160,13 @@ public class UnitTestGenerationService {
                     if (compileRepaired != null && !testCodeFingerprint(candidateCode)
                             .equals(testCodeFingerprint(compileRepaired.getContent()))) {
                         stabilized = classRuntimeRepairStabilizer.stabilize(
-                                acceptedCode, compileRepaired.getContent(), scope, passedIds, failingIds);
+                                acceptedCode, compileRepaired.getContent(), scope, passedIds, focusedFailingIds);
                         candidateCode = stabilized.getCode();
+                        if (!isProvenNoInteractionsContradictionRepair(
+                                acceptedCode, candidateCode, focusedDiagnostics)) {
+                            runtimeOracleGate.validateRepair(oracleAssessment, acceptedCode, candidateCode,
+                                    methodNames(focusedFailingIds));
+                        }
                         attempt.setChangedTestIds(stabilized.getChangedTestIds());
                         attempt.setFixtureChanged(stabilized.isFixtureChanged());
                         attempt.setCandidateHash(testCodeFingerprint(candidateCode));
@@ -1047,6 +1193,10 @@ public class UnitTestGenerationService {
                         result.setValidationResult(acceptedValidation);
                         continue;
                     }
+                    MockitoRuntimeDiagnosticEnricher.enrich(
+                            candidate.execution.getDiagnostics(), candidateCode);
+                    MissingFixtureDependencyDetector.inspect(
+                            sourceText, candidateCode, candidate.execution.getDiagnostics());
                     Set<String> newPassed = passedTestNames(candidate.execution);
                     Set<String> newFailed = failingTestNames(candidate.execution);
                     if (!newPassed.containsAll(passedIds) || !failingIds.containsAll(newFailed)) {
@@ -1081,6 +1231,8 @@ public class UnitTestGenerationService {
                                 ClassJUnitStopReason.REPAIRED,
                                 "完整测试类已在 " + round + " 轮 JUnit 修复后通过。");
                     }
+                } catch (ProcessCanceledException ex) {
+                    throw ex;
                 } catch (Exception ex) {
                     attempt.setRejectionReason("整类修复候选被范围或编译门禁拒绝：" + safeMessage(ex));
                     report.getAttempts().add(attempt);
@@ -1096,6 +1248,9 @@ public class UnitTestGenerationService {
                             : ClassJUnitStopReason.NO_PROGRESS,
                     acceptedAnyRepair ? "整类 JUnit 修复预算已用完，已保留最佳可编译候选。"
                             : "整类 JUnit 修复未取得单调进展，已保留初始可编译候选。");
+        } catch (ProcessCanceledException ex) {
+            // 用户取消必须按取消语义向上传递给 Task.Backgroundable，不能误报环境错误。
+            throw ex;
         } catch (Exception ex) {
             return stopClassJUnit(result, report, ClassJUnitStatus.ENVIRONMENT_ERROR,
                     ClassJUnitStopReason.ENVIRONMENT_ERROR, safeMessage(ex));
@@ -1109,9 +1264,10 @@ public class UnitTestGenerationService {
                                                     ClassGenerationResult result,
                                                     String sourceText,
                                                     String currentCode,
-                                                    TestExecutionSummary execution,
+                                                    List<RuntimeDiagnostic> focusedDiagnostics,
                                                     Set<String> passedIds,
-                                                    Set<String> failingIds,
+                                                    Set<String> allFailingIds,
+                                                    Set<String> focusedFailingIds,
                                                     int round,
                                                     ClassJUnitRepairScope suggestedScope,
                                                     String previousAttempt) {
@@ -1122,16 +1278,17 @@ public class UnitTestGenerationService {
         applyGenerationScope(request, result, contextMethod);
         request.setClassSourceCode(sourceText);
         request.setExistingTestCodeSummary(currentCode);
-        request.setRuntimeDiagnostics(execution == null
-                ? List.of() : new ArrayList<>(execution.getDiagnostics()));
-        request.setFocusTestIds(new ArrayList<>(failingIds));
-        request.setFailingTestIds(new ArrayList<>(failingIds));
+        request.setRuntimeDiagnostics(focusedDiagnostics == null
+                ? List.of() : new ArrayList<>(focusedDiagnostics));
+        request.setFocusTestIds(new ArrayList<>(focusedFailingIds));
+        request.setFailingTestIds(new ArrayList<>(allFailingIds));
         request.setPassedTestIds(new ArrayList<>(passedIds));
         request.setRepairAttempt(round);
         request.setPreviousAttemptSummary(previousAttempt);
         request.setMockUsagePolicy(mockPolicyForExistingCode(currentCode));
-        request.setUserInstruction("建议修复范围=" + suggestedScope.name()
-                + "。优先最小修改；只有共享初始化、字段依赖或 helper 是共同根因时才使用 SHARED_FIXTURE。");
+        request.setUserInstruction("本轮已按失败测试隔离：只处理 focusTestIds="
+                + focusedFailingIds + "，不得修改 allFailingTestIds 中的其他测试。建议修复范围="
+                + suggestedScope.name() + "。只有确定证明的共享 fixture 缺失才可使用 SHARED_FIXTURE。");
         configureMockitoSupport(request, project, psiFile);
         return request;
     }
@@ -1294,12 +1451,32 @@ public class UnitTestGenerationService {
             List<RuntimeDiagnostic> runtimeDiagnosticHistory = new ArrayList<>();
             LlmConfig llmConfig = LlmConfigManager.load();
             LlmClient coverageClient = llmConfig.isEnabled() ? llmClientFactory.create(llmConfig) : null;
+            boolean pluginOwnedCandidate = testCodeFingerprint(candidateCode)
+                    .equals(testCodeFingerprint(template.getContent()));
 
             while (true) {
                 if (isCancelled(cancelled)) {
                     restoreAcceptedCandidate(result, report, template, bestAccepted);
                     return stopCoverage(result, report, CoverageStatus.CANCELLED,
                             CoverageStopReason.CANCELLED, "覆盖率执行已取消。");
+                }
+                Slf4jMockVerificationGuard.Result loggerPreflight =
+                        Slf4jMockVerificationGuard.inspectAndRepair(
+                                sourceText, candidateCode, List.of(), pluginOwnedCandidate);
+                if (loggerPreflight.isChanged()) {
+                    candidateCode = loggerPreflight.getCode();
+                    seenCode.add(testCodeFingerprint(candidateCode));
+                    result.setGeneratedTestFile(copyWithContent(template, candidateCode));
+                    addWarnings(result, List.of(loggerPreflight.repairMessage()));
+                }
+                MockitoNoInteractionsContradictionGuard.Result interactionPreflight =
+                        MockitoNoInteractionsContradictionGuard.inspectAndRepair(
+                                candidateCode, pluginOwnedCandidate);
+                if (interactionPreflight.isChanged()) {
+                    candidateCode = interactionPreflight.getCode();
+                    seenCode.add(testCodeFingerprint(candidateCode));
+                    result.setGeneratedTestFile(copyWithContent(template, candidateCode));
+                    addWarnings(result, List.of(interactionPreflight.message()));
                 }
                 updateCoverageProgress(report, listener, config, CoveragePhase.COMPILING,
                         attemptBudget.totalCalls() + 1,
@@ -1356,7 +1533,7 @@ public class UnitTestGenerationService {
                             CoverageImprovement improvement = improveCoverageCandidate(project, result, report, candidateCode,
                                     compilerDiagnosticHistory, runtimeDiagnosticHistory, Set.of(), Set.of(), attemptBudget,
                                     CoverageAttemptKind.REPAIR, config, coverageClient,
-                                    mockitoSupport, compileRepairInstruction);
+                                    mockitoSupport, sourceText, compileRepairInstruction);
                             String improved = improvement.code;
                             String improvedHash = testCodeFingerprint(improved);
                             if (improvement.unchanged) {
@@ -1424,6 +1601,7 @@ public class UnitTestGenerationService {
                             CoverageImprovement alternative = improveCoverageCandidate(project, result, report,
                                     bestAccepted.code, new ArrayList<>(), new ArrayList<>(), Set.of(), Set.of(), attemptBudget,
                                     CoverageAttemptKind.EXPLORATION, config, coverageClient, mockitoSupport,
+                                    sourceText,
                                     "上一覆盖候选无法编译（" + message + "），不要修补或复用该候选。"
                                             + "从 currentTestCode 重新追加一个更小、不同构造方式的测试，命中主 coverage gap。");
                             String alternativeHash = testCodeFingerprint(alternative.code);
@@ -1467,13 +1645,31 @@ public class UnitTestGenerationService {
                         report.incrementRuntimeFailures();
                         MockitoRuntimeDiagnosticEnricher.enrich(
                                 run.getSnapshot().getExecution().getDiagnostics(), candidateCode);
+                        MissingFixtureDependencyDetector.inspect(
+                                sourceText, candidateCode,
+                                run.getSnapshot().getExecution().getDiagnostics());
+                        Slf4jMockVerificationGuard.Result loggerFailure =
+                                Slf4jMockVerificationGuard.inspectAndRepair(
+                                        sourceText, candidateCode,
+                                        run.getSnapshot().getExecution().getDiagnostics(), false);
+                        if (loggerFailure.hasBlockedMethods()
+                                && hasRuntimeCategory(
+                                run.getSnapshot().getExecution().getDiagnostics(),
+                                "MOCKITO_VERIFY_WRONG_INSTANCE")) {
+                            result.setGeneratedTestFile(copyWithContent(template, candidateCode));
+                            return stopCoverage(result, report, CoverageStatus.TEST_FAILED,
+                                    CoverageStopReason.TEST_DESIGN_ERROR,
+                                    loggerFailure.blockedMessage());
+                        }
                         candidateFailureMemory.put(testCodeFingerprint(candidateCode),
                                 runtimeFailureSummary(run.getSnapshot().getExecution().getDiagnostics()));
                         // Compilation succeeded, so older compile diagnostics are resolved. Sending them
                         // together with the current runtime failure makes the model repair obsolete code.
                         compilerDiagnosticHistory.clear();
-                        Set<String> focusedFailingTestNames = rememberRuntimeDiagnostics(runtimeDiagnosticHistory,
+                        List<RuntimeDiagnostic> focusedRuntimeDiagnostics = focusRuntimeDiagnostics(
                                 run.getSnapshot().getExecution().getDiagnostics());
+                        Set<String> focusedFailingTestNames = rememberRuntimeDiagnostics(
+                                runtimeDiagnosticHistory, focusedRuntimeDiagnostics);
                         Set<String> runtimeFailingTestNames = failingTestNames(run.getSnapshot().getExecution());
                         if (runtimeFailingTestNames.isEmpty()) runtimeFailingTestNames = focusedFailingTestNames;
                         Set<String> runtimePassedTestNames = passedTestNames(run.getSnapshot().getExecution());
@@ -1508,7 +1704,8 @@ public class UnitTestGenerationService {
                                     attemptBudget.totalCalls() + 1,
                                     "正在根据测试运行失败修复候选测试...", 0.65d);
                             String runtimeRepairInstruction =
-                                    "执行通用运行修复协议，只修复 runtimeDiagnostics 对应的失败测试。"
+                                    "执行通用运行修复协议。本请求已按 testId 隔离，只诊断和修复 "
+                                            + focusedFailingTestNames + "；其他失败测试将在后续请求中独立处理。"
                                             + "实际异常只是失败证据，不是新的期望；必须保持测试原意。"
                                             + "成功/正常/有效场景意外抛异常时，修复 Arrange、输入、fixture、前置条件或依赖 stub，"
                                             + "不得改成 assertThrows、捕获异常、删除或弱化断言。"
@@ -1520,9 +1717,35 @@ public class UnitTestGenerationService {
                             pendingRuntimeCycleInstruction = "";
                             CoverageImprovement improvement = improveCoverageCandidate(project, result, report, runtimeRepairBase,
                                     compilerDiagnosticHistory, runtimeDiagnosticHistory,
-                                    runtimeFailingTestNames, runtimePassedTestNames, attemptBudget, CoverageAttemptKind.REPAIR,
+                                    focusedFailingTestNames, runtimePassedTestNames, attemptBudget, CoverageAttemptKind.REPAIR,
                                     config, coverageClient, mockitoSupport,
+                                    sourceText,
                                     runtimeRepairInstruction);
+                            if (improvement.oracleAssessment != null
+                                    && improvement.oracleAssessment.getDisposition()
+                                    != RuntimeRepairDisposition.REPAIR_TEST) {
+                                report.setOracleAssessment(improvement.oracleAssessment);
+                                // restoreReportCheckpoint 只用于继续自动探索。一旦疑似 SUT Bug，
+                                // UI 必须保留真正失败的快照和诊断，不能展示上一个绿色检查点。
+                                report.setGenerated(run.getSnapshot());
+                                report.setGaps(run.getGaps());
+                                report.setCodeHash(testCodeFingerprint(candidateCode));
+                                result.setGeneratedTestFile(copyWithContent(template, candidateCode));
+                                if (shouldAnalyzePossibleSourceFailure(improvement.oracleAssessment)) {
+                                    updateCoverageProgress(report, listener, config,
+                                            CoveragePhase.DIAGNOSING_SUT_BUG,
+                                            attemptBudget.totalCalls(),
+                                            "正在分析疑似生产代码缺陷的可能位置...", 0.94d);
+                                    report.incrementModelRequests();
+                                    report.setSourceBugAnalysis(analyzeSuspectedSutBug(
+                                            coverageClient, improvement.analysisRequest,
+                                            improvement.oracleAssessment));
+                                }
+                                return stopCoverage(result, report,
+                                        coverageStatusForOracle(improvement.oracleAssessment),
+                                        coverageStopReasonForOracle(improvement.oracleAssessment),
+                                        oracleStopMessage(improvement.oracleAssessment));
+                            }
                             String improved = improvement.code;
                             String improvedHash = testCodeFingerprint(improved);
                             if (improvement.unchanged) {
@@ -1588,6 +1811,7 @@ public class UnitTestGenerationService {
                             CoverageImprovement alternative = improveCoverageCandidate(project, result, report,
                                     bestAccepted.code, new ArrayList<>(), new ArrayList<>(), Set.of(), Set.of(), attemptBudget,
                                     CoverageAttemptKind.EXPLORATION, config, coverageClient, mockitoSupport,
+                                    sourceText,
                                     "上一覆盖候选运行失败，不要修补或复用该候选。"
                                             + "从 currentTestCode 使用不同输入、fixture 或 stub 策略重新命中主 coverage gap。");
                             String alternativeHash = testCodeFingerprint(alternative.code);
@@ -1647,6 +1871,7 @@ public class UnitTestGenerationService {
                                     bestAccepted.code, new ArrayList<>(), new ArrayList<>(), Set.of(), Set.of(), attemptBudget,
                                     CoverageAttemptKind.EXPLORATION, config,
                                     coverageClient, mockitoSupport,
+                                    sourceText,
                                     "上一候选编译和运行成功但覆盖率没有任何增量，已被回滚。"
                                             + "必须保留 currentTestCode，并针对尚未覆盖的单个分支采用不同输入/fixture策略；"
                                             + "不要重复上一种反射、Mock 或参数构造方案。");
@@ -1694,6 +1919,7 @@ public class UnitTestGenerationService {
                     CoverageImprovement improvement = improveCoverageCandidate(project, result, report, candidateCode,
                             new ArrayList<>(), new ArrayList<>(), Set.of(), Set.of(), attemptBudget,
                             CoverageAttemptKind.EXPLORATION, config, coverageClient, mockitoSupport,
+                            sourceText,
                             "只新增命中 coverage.gaps 的测试，保持当前已通过且有覆盖贡献的测试不变。");
                     String improved = improvement.code;
                     String improvedHash = testCodeFingerprint(improved);
@@ -1732,6 +1958,9 @@ public class UnitTestGenerationService {
                     ? CoverageStatus.BELOW_THRESHOLD : CoverageStatus.TEST_FAILED;
             CoverageStatus status = coverageStatusForBest(bestAccepted, config, fallback);
             return stopCoverage(result, report, status, CoverageStopReason.MODEL_ERROR, ex.getMessage());
+        } catch (ProcessCanceledException ex) {
+            // 用户取消必须按取消语义向上传递给 Task.Backgroundable，不能误报环境错误。
+            throw ex;
         } catch (Exception ex) {
             restoreAcceptedCandidate(result, report, coverageTemplate, bestAccepted);
             LOG.warn("UnitMind coverage: loop failed", ex);
@@ -1756,6 +1985,7 @@ public class UnitTestGenerationService {
                                                          CoverageConfig config,
                                                          LlmClient client,
                                                          MockitoStaticMockSupport mockitoSupport,
+                                                         String productionClassSource,
                                                          String instruction) throws CoverageModelException {
         MethodModel method = result.getMethodModel();
         LlmResponseFormatException previousFormatFailure = null;
@@ -1770,6 +2000,7 @@ public class UnitTestGenerationService {
             int iteration = attemptBudget.totalCalls() + 1;
             LlmGenerationRequest request = ReadAction.compute(() -> buildLlmRequest(project, method,
                     executableScenarios(result.getScenarios()), method.getMethodBodyText(), result.getSymbolSnapshot()));
+            request.setClassSourceCode(productionClassSource);
             request.setExistingTestCodeSummary(currentCode);
             request.setCompilerDiagnostics(compilerDiagnostics);
             request.setRuntimeDiagnostics(runtimeDiagnostics);
@@ -1813,6 +2044,47 @@ public class UnitTestGenerationService {
                 report.incrementModelRequests();
                 LlmGenerationResponse response = client.improveCoverage(request);
                 boolean runtimeRepair = runtimeDiagnostics != null && !runtimeDiagnostics.isEmpty();
+                OracleAssessment oracleAssessment = runtimeRepair
+                        ? runtimeOracleGate.assessment(response) : null;
+                if (oracleAssessment != null) report.setOracleAssessment(oracleAssessment);
+                if (oracleAssessment != null
+                        && oracleAssessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                        && !oracleAssessment.getAuthority().permitsAutomaticOracleCorrection()) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "疑似 SUT Bug 缺少独立契约证据。"));
+                }
+                if (oracleAssessment != null
+                        && !oracleAuthorityReferenceSupported(request, oracleAssessment)) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "oracleAuthorityRef 未引用本轮上下文中真实存在的同类型证据："
+                                    + oracleAssessment.getAuthorityRef()));
+                }
+                if (oracleAssessment != null) {
+                    normalizeUnsupportedFixtureClassification(oracleAssessment, runtimeDiagnostics);
+                }
+                if (oracleAssessment != null
+                        && oracleAssessment.getDisposition() == RuntimeRepairDisposition.REPAIR_TEST
+                        && oracleAssessment.getDecision() == OracleDecision.KEEP
+                        && hasOracleSensitiveFailure(runtimeDiagnostics)
+                        && !isProvenFixtureRepair(oracleAssessment, runtimeDiagnostics)) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            "断言或交互 Oracle 已经真实不匹配；禁止通过改 Arrange 把特定输入上的失败绕过。"));
+                }
+                if (oracleAssessment != null
+                        && oracleAssessment.getDisposition() != RuntimeRepairDisposition.REPAIR_TEST) {
+                    return CoverageImprovement.terminal(currentCode, oracleAssessment, request);
+                }
+                if (oracleAssessment != null
+                        && oracleAssessment.getDecision() == OracleDecision.CORRECT
+                        && !oracleAssessment.getAuthority().permitsAutomaticOracleCorrection()) {
+                    oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                    oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
+                            unsafeAuthorityMessage(oracleAssessment)));
+                    return CoverageImprovement.terminal(currentCode, oracleAssessment, request);
+                }
                 Set<String> editableTests = runtimeFailingTestNames == null || runtimeFailingTestNames.isEmpty()
                         ? failingTestNames(runtimeDiagnostics) : runtimeFailingTestNames;
                 if (runtimeRepair && !response.hasMethodPatches()) {
@@ -1843,6 +2115,13 @@ public class UnitTestGenerationService {
                     nextCode = normalization.getCode();
                     addWarnings(result, List.of("已自动解包 " + normalization.getChanges()
                             + " 处 Method.invoke 的 InvocationTargetException，避免 assertThrows 观察到反射包装异常。"));
+                }
+                if (runtimeRepair) {
+                    if (!isProvenNoInteractionsContradictionRepair(
+                            currentCode, nextCode, runtimeDiagnostics)) {
+                        runtimeOracleGate.validateRepair(
+                                oracleAssessment, currentCode, nextCode, editableTests);
+                    }
                 }
                 addWarnings(result, response.getWarnings());
                 addWarnings(result, processed.getWarnings());
@@ -1886,8 +2165,8 @@ public class UnitTestGenerationService {
                     }
                     if (unchangedResponses <= MAX_COVERAGE_UNCHANGED_RETRIES) {
                         previousFormatFailure = null;
-                        formatRetries = 0;
-                        transportRetries = 0;
+                        // 不重置格式/传输重试预算：此前每次“无变化”重试都会恢复全部传输与格式
+                        // 重试额度，单次改进调用最坏可放大出十余次模型请求且不消耗任何语义轮次。
                         LOG.info("UnitMind coverage: unchanged response, retrying with stronger instruction, kind="
                                 + attemptKind + ", stage=" + unchangedStage
                                 + ", unchangedResponses=" + unchangedResponses);
@@ -1901,6 +2180,13 @@ public class UnitTestGenerationService {
                 attemptBudget.consumeChangedCandidate(attemptKind, report, true);
                 return new CoverageImprovement(nextCode, rawModelHash, postProcessedHash,
                         stabilizedHash, responseHash, false, "");
+            } catch (RuntimeOracleGate.UnsafeOracleCorrectionException ex) {
+                OracleAssessment blocked = new OracleAssessment();
+                blocked.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+                blocked.setDecision(OracleDecision.KEEP);
+                blocked.setRootCauseCategory("UNSAFE_ORACLE_PATCH");
+                blocked.setEvidence(List.of(ex.getMessage()));
+                return CoverageImprovement.terminal(currentCode, blocked);
             } catch (LlmOutputTruncatedException ex) {
                 LOG.warn("UnitMind coverage: model output truncated, semanticCall=" + iteration
                         + ", error=" + safeMessage(ex));
@@ -2033,6 +2319,96 @@ public class UnitTestGenerationService {
         return names;
     }
 
+    static boolean hasOracleSensitiveFailure(List<RuntimeDiagnostic> diagnostics) {
+        if (diagnostics == null) return false;
+        for (RuntimeDiagnostic diagnostic : diagnostics) {
+            if (diagnostic == null) continue;
+            String category = diagnostic.getCategory() == null ? "" : diagnostic.getCategory();
+            if ((category.startsWith("ASSERTION_")
+                    && !"ASSERT_THROWS_WRAPPED_BY_REFLECTION".equals(category))
+                    || category.equals("ASSERTION_FAILURE")
+                    || category.equals("MOCKITO_INVOCATION_COUNT_MISMATCH")
+                    || category.equals("MOCKITO_ARGUMENT_MISMATCH")
+                    || category.equals("MOCKITO_WANTED_BUT_NOT_INVOKED")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isProvenFixtureRepair(OracleAssessment assessment,
+                                         List<RuntimeDiagnostic> diagnostics) {
+        if (assessment == null || diagnostics == null || diagnostics.isEmpty()
+                || !"FIXTURE_DEPENDENCY_MISSING".equals(assessment.getRootCauseCategory())) {
+            return false;
+        }
+        boolean proven = false;
+        for (RuntimeDiagnostic diagnostic : diagnostics) {
+            if (diagnostic == null) continue;
+            if ("FIXTURE_DEPENDENCY_MISSING".equals(diagnostic.getCategory())) {
+                proven = true;
+                continue;
+            }
+            if (hasOracleSensitiveFailure(List.of(diagnostic))) return false;
+        }
+        return proven;
+    }
+
+    /**
+     * 模型不得用 Fixture 缺失覆盖真实的运行失败类别。三方证据不成立时，
+     * 恢复为确定性诊断器给出的类别，避免 UI 继续显示误导性分类。
+     */
+    static boolean normalizeUnsupportedFixtureClassification(OracleAssessment assessment,
+                                                               List<RuntimeDiagnostic> diagnostics) {
+        if (assessment == null
+                || !"FIXTURE_DEPENDENCY_MISSING".equals(assessment.getRootCauseCategory())
+                || isProvenFixtureRepair(assessment, diagnostics)) {
+            return false;
+        }
+        String observedCategory = diagnostics == null ? "" : diagnostics.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(RuntimeDiagnostic::getCategory)
+                .filter(category -> category != null && !category.isBlank()
+                        && !"FIXTURE_DEPENDENCY_MISSING".equals(category))
+                .findFirst().orElse("");
+        assessment.setRootCauseCategory(observedCategory.isBlank()
+                ? "UNSUPPORTED_FIXTURE_CLASSIFICATION" : observedCategory);
+        assessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+        assessment.setEvidence(appendEvidence(assessment.getEvidence(),
+                "已拒绝模型的 FIXTURE_DEPENDENCY_MISSING 分类：缺少源码构造依赖、"
+                        + "测试声明和真实 NullPointerException 三方证明；已恢复真实运行诊断类别。"));
+        return true;
+    }
+
+    static boolean shouldAnalyzePossibleSourceFailure(OracleAssessment assessment) {
+        if (assessment == null) return false;
+        return assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                || "ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN".equals(
+                assessment.getRootCauseCategory());
+    }
+
+    static boolean isProvenNoInteractionsContradictionRepair(String currentCode,
+                                                              String proposedCode,
+                                                              List<RuntimeDiagnostic> diagnostics) {
+        if (diagnostics == null || diagnostics.isEmpty()
+                || diagnostics.stream().filter(java.util.Objects::nonNull)
+                .anyMatch(item -> !"MOCKITO_NO_INTERACTIONS_CONTRADICTION".equals(
+                        item.getCategory()))) {
+            return false;
+        }
+        MockitoNoInteractionsContradictionGuard.Result deterministic =
+                MockitoNoInteractionsContradictionGuard.inspectAndRepair(currentCode, true);
+        return deterministic.isChanged()
+                && testCodeFingerprint(deterministic.getCode())
+                .equals(testCodeFingerprint(proposedCode));
+    }
+
+    private static boolean hasRuntimeCategory(List<RuntimeDiagnostic> diagnostics, String category) {
+        if (diagnostics == null || category == null) return false;
+        return diagnostics.stream().filter(java.util.Objects::nonNull)
+                .anyMatch(diagnostic -> category.equals(diagnostic.getCategory()));
+    }
+
     /** 忽略断言自定义消息和栈行号，只表示外部可观测的失败状态。 */
     static String runtimeFailureSignature(List<RuntimeDiagnostic> diagnostics) {
         if (diagnostics == null || diagnostics.isEmpty()) return "NO_DIAGNOSTIC";
@@ -2082,6 +2458,125 @@ public class UnitTestGenerationService {
             if (!name.isBlank()) names.add(name);
         }
         return names;
+    }
+
+    private static Set<String> methodNames(Set<String> testIds) {
+        Set<String> names = new LinkedHashSet<>();
+        if (testIds == null) return names;
+        for (String id : testIds) {
+            String name = testName(id);
+            if (!name.isBlank()) names.add(name);
+        }
+        return names;
+    }
+
+    private static CoverageStatus coverageStatusForOracle(OracleAssessment assessment) {
+        return assessment != null
+                && assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                ? CoverageStatus.SUSPECTED_SUT_BUG : CoverageStatus.NEEDS_REVIEW;
+    }
+
+    private static CoverageStopReason coverageStopReasonForOracle(OracleAssessment assessment) {
+        return assessment != null
+                && assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                ? CoverageStopReason.SUSPECTED_SUT_BUG : CoverageStopReason.ORACLE_INCONCLUSIVE;
+    }
+
+    private static ClassJUnitStatus classStatusForOracle(OracleAssessment assessment) {
+        return assessment != null
+                && assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                ? ClassJUnitStatus.SUSPECTED_SUT_BUG : ClassJUnitStatus.NEEDS_REVIEW;
+    }
+
+    private static ClassJUnitStopReason classStopReasonForOracle(OracleAssessment assessment) {
+        return assessment != null
+                && assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                ? ClassJUnitStopReason.SUSPECTED_SUT_BUG : ClassJUnitStopReason.ORACLE_INCONCLUSIVE;
+    }
+
+    private static String oracleStopMessage(OracleAssessment assessment) {
+        if (assessment == null) return "Oracle 证据不足，已保留原失败测试。";
+        String prefix = assessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
+                ? "疑似生产代码缺陷，已停止自动修复并保留原失败测试。"
+                : "Oracle 证据冲突或不足，已停止自动修复并保留原失败测试。";
+        String evidence = assessment.getEvidence().isEmpty()
+                ? "" : " 证据：" + String.join("；", assessment.getEvidence());
+        return prefix + " 分类=" + assessment.getRootCauseCategory()
+                + "，权威来源=" + assessment.getAuthority()
+                + "，证据引用=" + assessment.getAuthorityRef() + "。" + evidence;
+    }
+
+    static boolean oracleAuthorityReferenceSupported(LlmGenerationRequest request,
+                                                     OracleAssessment assessment) {
+        if (assessment == null) return false;
+        String reference = assessment.getAuthorityRef() == null ? "" : assessment.getAuthorityRef().trim();
+        if (!assessment.getAuthority().permitsAutomaticOracleCorrection()) {
+            return "NONE".equals(reference);
+        }
+        int separator = reference.lastIndexOf(':');
+        if (separator <= 0 || separator == reference.length() - 1) return false;
+        String type = reference.substring(0, separator);
+        int index;
+        try {
+            index = Integer.parseInt(reference.substring(separator + 1));
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+        if (!assessment.getAuthority().name().equals(type) || index < 0 || request == null) return false;
+        ProjectSymbolSnapshot snapshot = request.getSymbolSnapshot();
+        return switch (assessment.getAuthority()) {
+            case USER_REQUIREMENT -> request.getScenarios() != null
+                    && index < request.getScenarios().size()
+                    && request.getScenarios().get(index) != null
+                    && "USER_REQUIREMENT".equalsIgnoreCase(
+                    request.getScenarios().get(index).getOracleEvidence())
+                    && request.getScenarios().get(index).getExpectedAssertions() != null
+                    && !request.getScenarios().get(index).getExpectedAssertions().isEmpty();
+            case EXISTING_TEST -> snapshot != null && index < snapshot.getTestExamples().size();
+            case CONTRACT_FACT -> snapshot != null && index < snapshot.getContractFacts().size()
+                    && isIndependentContractFact(snapshot.getContractFacts().get(index));
+            default -> false;
+        };
+    }
+
+    private static boolean isIndependentContractFact(String value) {
+        String fact = value == null ? "" : value.strip().toUpperCase(Locale.ROOT);
+        return fact.startsWith("CONTRACT:") || fact.startsWith("REQUIREMENT:")
+                || fact.startsWith("EXISTING_TEST_ORACLE:");
+    }
+
+    private static String unsafeAuthorityMessage(OracleAssessment assessment) {
+        return "拒绝自动修改 Oracle：" + (assessment == null ? "NONE" : assessment.getAuthority())
+                + " 不是独立契约证据。当前生产实现或 runtime actual 不能用来把可能的 Bug 改写成测试期望。";
+    }
+
+    private static List<String> appendEvidence(List<String> evidence, String value) {
+        List<String> result = new ArrayList<>(evidence == null ? List.of() : evidence);
+        if (value != null && !value.isBlank()) result.add(value);
+        return result;
+    }
+
+    /**
+     * 最多调用一次只读归因。失败只影响解释可用性，绝不改变 Oracle 终态或测试代码。
+     */
+    private SourceBugAnalysis analyzeSuspectedSutBug(LlmClient client,
+                                                      LlmGenerationRequest request,
+                                                      OracleAssessment assessment) {
+        if (client == null || request == null || assessment == null
+                || !shouldAnalyzePossibleSourceFailure(assessment)) {
+            return SourceBugAnalysis.failed("缺少疑似缺陷归因所需的运行上下文。");
+        }
+        try {
+            SourceBugAnalysis analysis = client.analyzeSuspectedSutBug(request, assessment);
+            if (analysis == null || !analysis.isAvailable()) {
+                return SourceBugAnalysis.failed("大模型未返回可展示的源码缺陷归因。");
+            }
+            analysis.setAttempted(true);
+            return analysis;
+        } catch (Exception ex) {
+            LOG.warn("UnitMind source bug analysis failed: " + safeMessage(ex));
+            return SourceBugAnalysis.failed("源码缺陷归因未完成：" + safeMessage(ex));
+        }
     }
 
     private static String testName(String testId) {
@@ -2426,6 +2921,8 @@ public class UnitTestGenerationService {
         private final String normalizedHash;
         private final boolean unchanged;
         private final String unchangedStage;
+        private final OracleAssessment oracleAssessment;
+        private final LlmGenerationRequest analysisRequest;
 
         private CoverageImprovement(String code,
                                     String rawModelHash,
@@ -2441,6 +2938,33 @@ public class UnitTestGenerationService {
             this.normalizedHash = normalizedHash;
             this.unchanged = unchanged;
             this.unchangedStage = unchangedStage == null ? "" : unchangedStage;
+            this.oracleAssessment = null;
+            this.analysisRequest = null;
+        }
+
+        private CoverageImprovement(String code,
+                                    OracleAssessment oracleAssessment,
+                                    LlmGenerationRequest analysisRequest) {
+            this.code = code == null ? "" : code;
+            String hash = testCodeFingerprint(this.code);
+            this.rawModelHash = hash;
+            this.postProcessedHash = hash;
+            this.stabilizedHash = hash;
+            this.normalizedHash = hash;
+            this.unchanged = false;
+            this.unchangedStage = "";
+            this.oracleAssessment = oracleAssessment;
+            this.analysisRequest = analysisRequest;
+        }
+
+        private static CoverageImprovement terminal(String code,
+                                                    OracleAssessment assessment,
+                                                    LlmGenerationRequest analysisRequest) {
+            return new CoverageImprovement(code, assessment, analysisRequest);
+        }
+
+        private static CoverageImprovement terminal(String code, OracleAssessment assessment) {
+            return terminal(code, assessment, null);
         }
     }
 
@@ -2588,6 +3112,48 @@ public class UnitTestGenerationService {
             if (history.size() >= 4) break;
         }
         return failingTestNames(history);
+    }
+
+    /**
+     * 一次模型请求只处理一个失败测试。优先处理有确定性、不需要改 Oracle 的
+     * Mockito/反射/fixture 错误，避免另一个契约不足的失败终止整批修复。
+     */
+    static List<RuntimeDiagnostic> focusRuntimeDiagnostics(List<RuntimeDiagnostic> diagnostics) {
+        if (diagnostics == null || diagnostics.isEmpty()) return List.of();
+        Map<String, List<RuntimeDiagnostic>> byTest = new java.util.LinkedHashMap<>();
+        for (RuntimeDiagnostic diagnostic : diagnostics) {
+            if (diagnostic == null) continue;
+            String test = testName(diagnostic.getTestId());
+            if (test.isBlank()) test = diagnostic.getTestId();
+            byTest.computeIfAbsent(test == null ? "" : test, ignored -> new ArrayList<>())
+                    .add(diagnostic);
+        }
+        return byTest.values().stream()
+                .min(java.util.Comparator.comparingInt(UnitTestGenerationService::diagnosticGroupPriority))
+                .map(ArrayList::new).orElseGet(ArrayList::new);
+    }
+
+    private static int diagnosticGroupPriority(List<RuntimeDiagnostic> diagnostics) {
+        int priority = 3;
+        for (RuntimeDiagnostic diagnostic : diagnostics) {
+            String category = diagnostic == null || diagnostic.getCategory() == null
+                    ? "" : diagnostic.getCategory();
+            if (java.util.Set.of(
+                    "MOCKITO_NO_INTERACTIONS_CONTRADICTION",
+                    "MOCKITO_MISSING_METHOD_INVOCATION",
+                    "MOCKITO_VOID_STUB_MISUSE",
+                    "MOCKITO_WRONG_RETURN_TYPE",
+                    "MOCKITO_INVALID_MATCHER_USAGE",
+                    "ASSERT_THROWS_WRAPPED_BY_REFLECTION",
+                    "FIXTURE_DEPENDENCY_MISSING").contains(category)) {
+                priority = Math.min(priority, 0);
+            } else if (!hasOracleSensitiveFailure(List.of(diagnostic))) {
+                priority = Math.min(priority, 1);
+            } else {
+                priority = Math.min(priority, 2);
+            }
+        }
+        return priority;
     }
 
     private static String runtimeRootKey(RuntimeDiagnostic diagnostic) {

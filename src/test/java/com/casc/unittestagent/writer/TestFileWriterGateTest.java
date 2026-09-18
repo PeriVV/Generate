@@ -60,6 +60,56 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
         }
     }
 
+    public void testRejectsTargetCreatedAfterPrepareEvenWhenForced() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-writer-conflict-test-");
+        try {
+            PsiFile source = sourceFile(root);
+            GeneratedTestFile generated = generatedFile("package sample; class SubjectTest {}");
+            TestFileWriter writer = new TestFileWriter();
+            TestFileWriter.PreparedWrite prepared = writer.prepare(
+                    getProject(), source, generated, generated.getContent(),
+                    TestWriteMode.CREATE_NEW, GenerationTarget.method("sample.Subject#work()"));
+            Files.createDirectories(prepared.getTargetFile().toPath().getParent());
+            Files.writeString(prepared.getTargetFile().toPath(),
+                    "package sample; class SubjectTest { void userEdit() {} }", StandardCharsets.UTF_8);
+
+            try {
+                writer.commit(getProject(), prepared, ValidationResult.status(ValidationStatus.FAILED), true);
+                fail("concurrent target creation must be rejected");
+            } catch (IllegalStateException expected) {
+                assertTrue(expected.getMessage().contains("校验期间已被修改"));
+            }
+        } finally {
+            delete(root);
+        }
+    }
+
+    public void testRejectsSourceChangedAfterPrepare() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-writer-source-conflict-test-");
+        try {
+            PsiFile source = sourceFile(root);
+            GeneratedTestFile generated = generatedFile("package sample; class SubjectTest {}");
+            TestFileWriter writer = new TestFileWriter();
+            TestFileWriter.PreparedWrite prepared = writer.prepare(
+                    getProject(), source, generated, generated.getContent(),
+                    TestWriteMode.CREATE_NEW, GenerationTarget.method("sample.Subject#work()"));
+            com.intellij.openapi.application.ApplicationManager.getApplication().runWriteAction(() ->
+                    com.intellij.psi.PsiDocumentManager.getInstance(getProject())
+                            .getDocument(source).setText("package sample; public class Subject { int changed; }"));
+
+            ValidationResult passed = ValidationResult.status(ValidationStatus.PASSED);
+            passed.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            try {
+                writer.commit(getProject(), prepared, passed, false);
+                fail("source changes must invalidate a prepared write");
+            } catch (IllegalStateException expected) {
+                assertTrue(expected.getMessage().contains("被测源码"));
+            }
+        } finally {
+            delete(root);
+        }
+    }
+
     private void assertCommitRejected(TestFileWriter writer,
                                       TestFileWriter.PreparedWrite prepared,
                                       ValidationResult validation) {

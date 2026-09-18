@@ -327,6 +327,18 @@ public class JacocoCoverageExecutorTest extends TestCase {
         assertTrue(rootCause < productionFrame);
     }
 
+    public void testParsesExpectedExceptionWhenNothingWasThrown() {
+        com.casc.unittestagent.model.RuntimeDiagnostic diagnostic =
+                JacocoCoverageExecutor.runtimeDiagnostic(
+                        "sample.ProcessServiceTest#rejectsAtConcurrentLimit()",
+                        "org.opentest4j.AssertionFailedError",
+                        "Expected java.lang.IllegalStateException to be thrown, but nothing was thrown.",
+                        "at sample.ProcessServiceTest.rejectsAtConcurrentLimit(ProcessServiceTest.java:31)");
+
+        assertEquals("java.lang.IllegalStateException", diagnostic.getExpectedExceptionType());
+        assertEquals("", diagnostic.getActualExceptionType());
+    }
+
     public void testParsesNestedAngleBracketAssertionValuesWithoutCallingThemExceptionTypes() {
         String expected = "<!DOCTYPE html \"-//W3C//DTD HTML 4.01//EN\" "
                 + "\"http://www.w3.org/TR/html4/strict.dtd\">";

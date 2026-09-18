@@ -94,16 +94,6 @@ public class UnitMindStepperPanel extends JBPanel<UnitMindStepperPanel> {
         return prefix + " " + name;
     }
 
-    /**
-     * 去除旧按钮文本中的编号和状态。
-     */
-    private String trimNumber(String text) {
-        String value = text == null ? "" : text;
-        value = value.replaceAll("^\\d+\\s*(✓\\s*)?", "");
-        value = value.replace("进行中", "").replace("有警告", "").replace("失败", "").trim();
-        return value;
-    }
-
     private String displayName(int index) {
         return getWidth() > 520 || index >= shortSteps.length ? fullSteps[index] : shortSteps[index];
     }

@@ -435,6 +435,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
         int requestId = analysisSequence;
         GenerationResult currentResult = generationResult;
+        PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在生成测试代码", currentResult instanceof ClassGenerationResult) {
             private GenerationResult result;
             private String error;
@@ -443,9 +444,9 @@ public class UnitMindToolWindowPanel extends JPanel {
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
                     result = currentResult instanceof ClassGenerationResult
-                            ? classGenerationService.generateClassTest(project, currentPsiFile,
+                            ? classGenerationService.generateClassTest(project, requestFile,
                             (ClassGenerationResult) currentResult, indicator)
-                            : generationService.generateTestCode(project, currentPsiFile, currentResult);
+                            : generationService.generateTestCode(project, requestFile, currentResult);
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
@@ -453,7 +454,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onSuccess() {
-                if (requestId != analysisSequence) {
+                if (!isCurrentRequest(requestId, requestFile, currentResult)) {
                     return;
                 }
                 if (error != null) {
@@ -698,14 +699,6 @@ public class UnitMindToolWindowPanel extends JPanel {
     }
 
     /**
-     * 重新选择方法。
-     */
-    private void reselectMethod() {
-        detectCurrentEditorContext();
-        setCurrentContext(currentEditor, currentPsiFile);
-    }
-
-    /**
      * 写入测试文件。
      */
     private void writeTestFile(TestWriteMode mode, boolean force) {
@@ -728,9 +721,12 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
         TestFileWriter.PreparedWrite preparedWrite;
         try {
+            MethodModel method = generationResult.getMethodModel();
+            String methodTargetId = method == null ? "未知方法"
+                    : firstNonBlank(method.getMethodId(), method.getSignature(), method.getMethodName());
             GenerationTarget target = generationResult instanceof ClassGenerationResult
                     ? GenerationTarget.classTarget(((ClassGenerationResult) generationResult).getClassModel().getQualifiedName())
-                    : GenerationTarget.method(generationResult.getMethodModel().getMethodName());
+                    : GenerationTarget.method(methodTargetId);
             preparedWrite = testFileWriter.prepare(project, currentPsiFile,
                     generationResult.getGeneratedTestFile(), code, mode, target);
         } catch (Exception ex) {
@@ -748,6 +744,8 @@ public class UnitMindToolWindowPanel extends JPanel {
         stepStatuses[4] = StepStatus.RUNNING;
         rebuildSteps();
         GenerationResult currentResult = generationResult;
+        int requestId = analysisSequence;
+        PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在校验最终测试文件", false) {
             private ValidationResult validation;
             private String error;
@@ -757,7 +755,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                 try {
                     validation = generationService.validateCode(
                             project,
-                            currentPsiFile,
+                            requestFile,
                             currentResult.getGeneratedTestFile(),
                             preparedWrite.getContent());
                 } catch (Exception ex) {
@@ -767,6 +765,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onSuccess() {
+                if (!isCurrentRequest(requestId, requestFile, currentResult)) return;
                 if (error != null) {
                     stepStatuses[4] = StepStatus.FAILED;
                     lastError = error;
@@ -829,18 +828,24 @@ public class UnitMindToolWindowPanel extends JPanel {
         if (report == null || report.getStatus() == CoverageStatus.NOT_RUN || report.getStatus() == CoverageStatus.PASSED) {
             return true;
         }
-        if (report.getStatus() == CoverageStatus.TEST_FAILED && !force) {
+        boolean protectedFailure = report.getStatus() == CoverageStatus.TEST_FAILED
+                || report.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
+                || report.getStatus() == CoverageStatus.NEEDS_REVIEW;
+        if (protectedFailure && !force) {
             Messages.showErrorDialog(project,
-                    "候选测试执行未通过，正常写入已阻止。请修复测试或使用强制写入草稿。\n\n"
+                    (report.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
+                    ? "测试可能发现了生产代码缺陷，插件已保留原断言并阻止普通写入。\n\n"
+                    : "候选测试执行未通过或 Oracle 待确认，正常写入已阻止。\n\n")
                             + report.getMessage(),
-                    "UnitMind 测试执行未通过");
+                    "UnitMind 需要人工确认");
             return false;
         }
-        if (force && report.getStatus() == CoverageStatus.TEST_FAILED) {
+        if (force && protectedFailure) {
             return Messages.showYesNoDialog(project,
-                    "候选测试执行未通过，确定仍要写入草稿吗？\n\n" + report.getMessage(),
-                    "强制写入未通过测试",
-                    "仍然写入草稿",
+                    "原失败测试将按原样写入，用于复现疑似缺陷或等待 Oracle 确认。\n\n"
+                            + report.getMessage(),
+                    "写入失败回归测试",
+                    "写入原失败测试",
                     "取消",
                     Messages.getWarningIcon()) == Messages.YES;
         }
@@ -869,16 +874,21 @@ public class UnitMindToolWindowPanel extends JPanel {
     private boolean confirmClassJUnitWrite(ClassJUnitRepairReport report, boolean force) {
         if (report == null || report.getStatus() == ClassJUnitStatus.NOT_RUN
                 || report.getStatus() == ClassJUnitStatus.PASSED) return true;
-        if (report.getStatus() == ClassJUnitStatus.TEST_FAILED && !force) {
+        boolean protectedFailure = report.getStatus() == ClassJUnitStatus.TEST_FAILED
+                || report.getStatus() == ClassJUnitStatus.SUSPECTED_SUT_BUG
+                || report.getStatus() == ClassJUnitStatus.NEEDS_REVIEW;
+        if (protectedFailure && !force) {
             Messages.showErrorDialog(project,
-                    "完整测试类 JUnit 执行未通过，正常写入已阻止。请修复测试或使用强制写入草稿。\n\n"
+                    (report.getStatus() == ClassJUnitStatus.SUSPECTED_SUT_BUG
+                    ? "完整测试类可能发现了生产代码缺陷，原失败测试已保留。\n\n"
+                    : "完整测试类未通过或 Oracle 待确认，正常写入已阻止。\n\n")
                             + report.getMessage(), "UnitMind 整类测试未通过");
             return false;
         }
-        if (force && report.getStatus() == ClassJUnitStatus.TEST_FAILED) {
+        if (force && protectedFailure) {
             return Messages.showYesNoDialog(project,
-                    "完整测试类 JUnit 执行未通过，确定仍要写入草稿吗？\n\n" + report.getMessage(),
-                    "强制写入未通过整类测试", "仍然写入草稿", "取消",
+                    "原失败整类测试将按原样写入，确定继续吗？\n\n" + report.getMessage(),
+                    "写入失败回归测试", "写入原失败测试", "取消",
                     Messages.getWarningIcon()) == Messages.YES;
         }
         return true;
@@ -934,6 +944,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         rebuildSteps();
         GenerationResult currentResult = generationResult;
         String candidate = editedCode;
+        PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, classMode
                 ? "UnitMind 正在运行整类 JUnit 修复" : "UnitMind 正在运行覆盖率闭环", true) {
             private GenerationResult completed;
@@ -943,7 +954,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                 coverageIndicator = indicator;
                 indicator.setIndeterminate(false);
                 completed = classMode
-                        ? generationService.runFinalClassJUnitRepair(project, currentPsiFile,
+                        ? generationService.runFinalClassJUnitRepair(project, requestFile,
                         (ClassGenerationResult) currentResult, candidate, indicator::isCanceled,
                         (text, fraction) -> {
                             indicator.setText(text);
@@ -956,7 +967,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                                 }
                             });
                         })
-                        : generationService.runCoverageLoop(project, currentPsiFile, currentResult,
+                        : generationService.runCoverageLoop(project, requestFile, currentResult,
                         candidate, indicator::isCanceled, (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
@@ -1066,6 +1077,8 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
         String validatingCode = editedCode;
         String validatingHash = CodeFingerprint.sha256(validatingCode);
+        int requestId = analysisSequence;
+        PsiFile validatingFile = currentPsiFile;
         generationResult.setValidationResult(ValidationResult.status(ValidationStatus.RUNNING));
         stepStatuses[3] = StepStatus.RUNNING;
         rebuildSteps();
@@ -1077,13 +1090,14 @@ public class UnitMindToolWindowPanel extends JPanel {
             public void run(@NotNull ProgressIndicator indicator) {
                 validation = generationService.validateCode(
                         project,
-                        currentPsiFile,
+                        validatingFile,
                         currentResult.getGeneratedTestFile(),
                         validatingCode);
             }
 
             @Override
             public void onSuccess() {
+                if (!isCurrentRequest(requestId, validatingFile, currentResult)) return;
                 String latestCode = currentCode();
                 if (!validatingHash.equals(CodeFingerprint.sha256(latestCode))) {
                     markValidationStale(latestCode);
@@ -1134,11 +1148,15 @@ public class UnitMindToolWindowPanel extends JPanel {
         currentStepIndex = 3;
         rebuildSteps();
         String currentCode = editedCode;
+        int requestId = analysisSequence;
+        PsiFile requestFile = currentPsiFile;
+        GenerationResult requestResult = generationResult;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
                 GenerationResult regenerated = generationService.regenerateWithLlmFeedback(
-                        project, currentPsiFile, generationResult, currentCode, feedback);
+                        project, requestFile, requestResult, currentCode, feedback);
                 ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!isCurrentRequest(requestId, requestFile, requestResult)) return;
                     generationResult = regenerated;
                     GeneratedTestFile file = generationResult.getGeneratedTestFile();
                     generatedCode = file == null ? "" : file.getContent();
@@ -1154,6 +1172,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             } catch (Exception ex) {
                 String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!isCurrentRequest(requestId, requestFile, requestResult)) return;
                     generationStatus = GenerationStatus.SUCCESS;
                     stepStatuses[3] = StepStatus.WARNING;
                     lastError = message;
@@ -1162,6 +1181,19 @@ public class UnitMindToolWindowPanel extends JPanel {
                 });
             }
         });
+    }
+
+    private boolean isCurrentRequest(int requestId, PsiFile requestFile, GenerationResult requestResult) {
+        return requestId == analysisSequence && requestFile == currentPsiFile
+                && requestResult == generationResult && !project.isDisposed();
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return "";
     }
 
     /**

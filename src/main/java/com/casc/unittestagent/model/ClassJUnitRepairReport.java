@@ -18,6 +18,8 @@ public class ClassJUnitRepairReport {
     private long durationMillis;
     private String sourceHash = "";
     private String message = "";
+    private OracleAssessment oracleAssessment;
+    private SourceBugAnalysis sourceBugAnalysis = new SourceBugAnalysis();
 
     public static ClassJUnitRepairReport status(ClassJUnitStatus status) {
         ClassJUnitRepairReport report = new ClassJUnitRepairReport();
@@ -59,4 +61,10 @@ public class ClassJUnitRepairReport {
     public void setSourceHash(String value) { sourceHash = value == null ? "" : value; }
     public String getMessage() { return message; }
     public void setMessage(String value) { message = value == null ? "" : value; }
+    public OracleAssessment getOracleAssessment() { return oracleAssessment; }
+    public void setOracleAssessment(OracleAssessment value) { oracleAssessment = value; }
+    public SourceBugAnalysis getSourceBugAnalysis() { return sourceBugAnalysis; }
+    public void setSourceBugAnalysis(SourceBugAnalysis value) {
+        sourceBugAnalysis = value == null ? new SourceBugAnalysis() : value;
+    }
 }

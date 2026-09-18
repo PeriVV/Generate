@@ -128,6 +128,46 @@ public class MockitoRuntimeDiagnosticEnricherTest extends TestCase {
         assertTrue(diagnostic.getSuggestion().contains("不要把期望类型改成"));
     }
 
+    public void testClassifiesExpectedExceptionNotThrownWithoutCallingItFixtureFailure() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("sample.ProcessServiceTest#rejectsAtConcurrentLimit()");
+        diagnostic.setExceptionType("org.opentest4j.AssertionFailedError");
+        diagnostic.setMessage("Expected java.lang.IllegalStateException to be thrown, but nothing was thrown.");
+        diagnostic.setExpectedExceptionType("java.lang.IllegalStateException");
+
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic), """
+                class ProcessServiceTest {
+                    @Test void rejectsAtConcurrentLimit() {
+                        assertThrows(IllegalStateException.class, () -> service.start());
+                    }
+                }
+                """);
+
+        assertEquals("ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN", diagnostic.getCategory());
+        assertTrue(diagnostic.getSuggestion().contains("完整生产类源码"));
+        assertTrue(diagnostic.getSuggestion().contains("不得归类为 Fixture 缺失"));
+    }
+
+    public void testClassifiesContradictoryNoInteractionsOracle() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("sample.SubjectTest#returnsEarly()");
+        diagnostic.setExceptionType("org.mockito.exceptions.verification.NoInteractionsWanted");
+        diagnostic.setMessage("No interactions wanted here");
+        diagnostic.setFailureDetails("But found this interaction on mock 'dao': dao.findById(\"a\")");
+
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic), """
+                class SubjectTest {
+                    @Test void returnsEarly() {
+                        verify(dao).findById("a");
+                        verifyNoInteractions(dao);
+                    }
+                }
+                """);
+
+        assertEquals("MOCKITO_NO_INTERACTIONS_CONTRADICTION", diagnostic.getCategory());
+        assertTrue(diagnostic.getSuggestion().contains("verifyNoMoreInteractions"));
+    }
+
     public void testClassifiesGeneratedAssertionValueMismatchForOracleAdjudication() {
         RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
         diagnostic.setTestId("org.jsoup.nodes.DocumentTypeTest#shouldHandleBoundaryValues()");

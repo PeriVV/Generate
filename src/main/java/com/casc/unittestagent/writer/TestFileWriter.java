@@ -5,6 +5,7 @@ import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.ui.TestWriteModeDialog;
 import com.casc.unittestagent.util.CodeFingerprint;
 import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VfsUtil;
@@ -24,39 +25,6 @@ import java.nio.file.Files;
 public class TestFileWriter {
     /** 测试类合并器，负责追加时去重 import、字段和测试方法。 */
     private final TestClassMerger merger = new TestClassMerger();
-
-    /**
-     * 将生成的测试文件写入项目目录。
-     * 写入动作通过 IntelliJ 写命令执行，确保 IDE 的文档模型和虚拟文件系统保持一致。
-     * @param project 当前 IntelliJ 项目上下文，用于消息提示、写命令和对话框归属
-     * @param sourceFile 被测源码文件，用于推导测试文件写入位置
-     * @param generatedTestFile 准备写入磁盘的测试文件模型
-     * @throws IllegalStateException 当源文件或生成内容不可用时抛出
-     * @throws RuntimeException 当底层文件写入失败时抛出
-     */
-    public void write(Project project, PsiFile sourceFile, GeneratedTestFile generatedTestFile) {
-        throw new IllegalStateException("写入前必须先调用 prepare，并使用通过编译校验的 ValidationResult 执行 commit。");
-    }
-
-    /**
-     * 将用户编辑后的测试源码写入目标测试文件。
-     * 当目标文件已存在且未指定模式时会弹出选择框，默认追加而不是覆盖。
-     *
-     * @param project 当前 IntelliJ 项目上下文，用于消息提示、写命令和对话框归属
-     * @param sourceFile 被测源码文件，用于推导测试文件写入位置
-     * @param generatedTestFile 准备写入磁盘的测试文件模型
-     * @param editedContent 用户在工具窗口中编辑后的测试源码，非空时优先写入该内容
-     * @param requestedMode 调用方指定的写入模式，传 null 时由写入服务按目标文件状态决定
-     * @param testedMethodName 本次被测方法名，追加时用于 UnitMind region 标记
-     */
-    public void write(Project project,
-                      PsiFile sourceFile,
-                      GeneratedTestFile generatedTestFile,
-                      String editedContent,
-                      TestWriteMode requestedMode,
-                      String testedMethodName) {
-        throw new IllegalStateException("写入前必须先调用 prepare，并使用通过编译校验的 ValidationResult 执行 commit。");
-    }
 
     /**
      * 计算本次真正准备落盘的最终内容，追加模式会在此阶段完成合并。
@@ -93,14 +61,18 @@ public class TestFileWriter {
             throw new IllegalStateException("测试代码为空，不能写入测试文件。");
         }
         GenerationTarget effectiveTarget = generationTarget == null ? GenerationTarget.method("未知方法") : generationTarget;
-        WriteDecision decision = decideWriteMode(project, targetFile, content, requestedMode, effectiveTarget);
+        TargetSnapshot targetSnapshot = snapshot(targetFile);
+        WriteDecision decision = decideWriteMode(project, targetFile, targetSnapshot.content,
+                requestedMode, effectiveTarget);
         if (decision.mode == TestWriteMode.CANCEL) {
             return PreparedWrite.cancelled(targetFile);
         }
         try {
-            String finalContent = contentForWrite(targetFile, content, decision, effectiveTarget);
-            return new PreparedWrite(targetFile, finalContent, decision.mode, false);
-        } catch (IOException ex) {
+            String finalContent = contentForWrite(targetSnapshot.content, content, decision, effectiveTarget);
+            return new PreparedWrite(targetFile, finalContent, decision.mode, false,
+                    targetSnapshot.exists, targetSnapshot.hash, sourceFile,
+                    CodeFingerprint.sha256(sourceContent(sourceFile)));
+        } catch (RuntimeException ex) {
             throw new IllegalStateException("准备最终测试文件失败：" + ex.getMessage(), ex);
         }
     }
@@ -119,8 +91,20 @@ public class TestFileWriter {
         if (!force && (validationResult == null || !validationResult.isPassedFor(finalHash))) {
             throw new IllegalStateException("最终测试文件尚未通过编译校验，已阻止写入。");
         }
+        if (preparedWrite.sourceFile != null
+                && !preparedWrite.sourceContentHash.equals(
+                CodeFingerprint.sha256(sourceContent(preparedWrite.sourceFile)))) {
+            throw new IllegalStateException(
+                    "被测源码在校验期间已被修改，已阻止写入。请重新分析并校验生成结果。");
+        }
         WriteCommandAction.runWriteCommandAction(project, () -> {
             try {
+                TargetSnapshot current = snapshot(preparedWrite.targetFile);
+                if (current.exists != preparedWrite.targetExisted
+                        || !current.hash.equals(preparedWrite.targetContentHash)) {
+                    throw new IllegalStateException(
+                            "目标测试文件在校验期间已被修改，已阻止覆盖。请重新执行写入并校验最新合并结果。");
+                }
                 writeText(preparedWrite.targetFile, preparedWrite.content);
             } catch (IOException ex) {
                 throw new RuntimeException(ex);
@@ -148,24 +132,12 @@ public class TestFileWriter {
     }
 
     /**
-     * 判断目标文件是否存在。
-     * 工具窗口写入预览需要提前展示模式，因此提供轻量查询方法。
-     *
-     * @param sourceFile 被测源码文件
-     * @param generatedTestFile 生成测试文件模型
-     * @return 目标测试文件已存在时返回 true
-     */
-    public boolean targetExists(PsiFile sourceFile, GeneratedTestFile generatedTestFile) {
-        return resolveTargetFile(sourceFile, generatedTestFile).exists();
-    }
-
-    /**
      * 决定最终写入模式。
      * 目标文件不存在时直接新建；目标文件存在时默认弹窗选择追加、覆盖或取消。
      */
     private WriteDecision decideWriteMode(Project project,
                                           File targetFile,
-                                          String generatedContent,
+                                          String existingContent,
                                           TestWriteMode requestedMode,
                                           GenerationTarget generationTarget) {
         if (!targetFile.exists()) {
@@ -177,12 +149,7 @@ public class TestFileWriter {
         if (requestedMode != null && requestedMode != TestWriteMode.CANCEL) {
             return new WriteDecision(requestedMode, true);
         }
-        boolean hasRegion = false;
-        try {
-            hasRegion = merger.hasRegion(Files.readString(targetFile.toPath(), StandardCharsets.UTF_8), generationTarget);
-        } catch (IOException ignored) {
-            hasRegion = false;
-        }
+        boolean hasRegion = merger.hasRegion(existingContent, generationTarget);
         TestWriteModeDialog dialog = new TestWriteModeDialog(project, targetFile, hasRegion);
         if (!dialog.showAndGet()) {
             return new WriteDecision(TestWriteMode.CANCEL, true);
@@ -194,15 +161,15 @@ public class TestFileWriter {
      * 根据写入模式生成最终落盘内容。
      * 追加模式会走测试类合并器，覆盖和新建模式直接使用当前编辑器内容。
      */
-    private String contentForWrite(File targetFile, String generatedContent, WriteDecision decision, GenerationTarget generationTarget) throws IOException {
+    private String contentForWrite(String existingContent, String generatedContent,
+                                   WriteDecision decision, GenerationTarget generationTarget) {
         if (decision.mode == TestWriteMode.CREATE_NEW || decision.mode == TestWriteMode.OVERWRITE_EXISTING) {
             return generatedContent;
         }
         if (decision.mode == TestWriteMode.APPEND_TO_EXISTING) {
             MergeOptions options = new MergeOptions();
             options.setReplaceExistingRegionForSameMethod(decision.replaceExistingRegion);
-            String existing = Files.readString(targetFile.toPath(), StandardCharsets.UTF_8);
-            return merger.merge(existing, generatedContent, generationTarget, options);
+            return merger.merge(existingContent, generatedContent, generationTarget, options);
         }
         return generatedContent;
     }
@@ -228,6 +195,47 @@ public class TestFileWriter {
         }
         VfsUtil.saveText(targetVirtualFile, content);
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(targetFile);
+    }
+
+    /** Captures both saved VFS content and unsaved IDE document edits for optimistic locking. */
+    private TargetSnapshot snapshot(File targetFile) {
+        if (targetFile == null || !targetFile.exists()) {
+            return new TargetSnapshot(false, "");
+        }
+        try {
+            VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(targetFile);
+            if (virtualFile != null) {
+                com.intellij.openapi.editor.Document document =
+                        FileDocumentManager.getInstance().getDocument(virtualFile);
+                if (document != null) return new TargetSnapshot(true, document.getText());
+            }
+            return new TargetSnapshot(true, Files.readString(targetFile.toPath(), StandardCharsets.UTF_8));
+        } catch (IOException ex) {
+            throw new IllegalStateException("读取目标测试文件失败：" + ex.getMessage(), ex);
+        }
+    }
+
+    private String sourceContent(PsiFile sourceFile) {
+        if (sourceFile == null) return "";
+        VirtualFile virtualFile = sourceFile.getVirtualFile();
+        if (virtualFile != null) {
+            com.intellij.openapi.editor.Document document =
+                    FileDocumentManager.getInstance().getDocument(virtualFile);
+            if (document != null) return document.getText();
+        }
+        return sourceFile.getText();
+    }
+
+    private static class TargetSnapshot {
+        private final boolean exists;
+        private final String content;
+        private final String hash;
+
+        private TargetSnapshot(boolean exists, String content) {
+            this.exists = exists;
+            this.content = content == null ? "" : content;
+            this.hash = CodeFingerprint.sha256(this.content);
+        }
     }
 
     /**
@@ -260,16 +268,27 @@ public class TestFileWriter {
         private final String content;
         private final TestWriteMode mode;
         private final boolean cancelled;
+        private final boolean targetExisted;
+        private final String targetContentHash;
+        private final PsiFile sourceFile;
+        private final String sourceContentHash;
 
-        private PreparedWrite(File targetFile, String content, TestWriteMode mode, boolean cancelled) {
+        private PreparedWrite(File targetFile, String content, TestWriteMode mode, boolean cancelled,
+                              boolean targetExisted, String targetContentHash, PsiFile sourceFile,
+                              String sourceContentHash) {
             this.targetFile = targetFile;
             this.content = content == null ? "" : content;
             this.mode = mode;
             this.cancelled = cancelled;
+            this.targetExisted = targetExisted;
+            this.targetContentHash = targetContentHash == null ? "" : targetContentHash;
+            this.sourceFile = sourceFile;
+            this.sourceContentHash = sourceContentHash == null ? "" : sourceContentHash;
         }
 
         private static PreparedWrite cancelled(File targetFile) {
-            return new PreparedWrite(targetFile, "", TestWriteMode.CANCEL, true);
+            return new PreparedWrite(targetFile, "", TestWriteMode.CANCEL, true,
+                    targetFile != null && targetFile.exists(), "", null, "");
         }
 
         public File getTargetFile() {
