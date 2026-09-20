@@ -211,10 +211,13 @@ public class JacocoCoverageExecutor {
         if (workingDirectory == null || !workingDirectory.isDirectory()) {
             workingDirectory = artifact.getRoot().toFile();
         }
-        Process process = new ProcessBuilder(command)
-                .directory(workingDirectory)
-                .redirectErrorStream(true)
-                .start();
+        // Windows 命令行约 32K 上限：项目运行时 classpath 整体传给 java -cp 时超限
+        // 会以“文件名或扩展名太长”失败，超限时自动改写为 pathing jar 形式。
+        Process process = LongCommandLineLauncher.start(
+                new ProcessBuilder(command)
+                        .directory(workingDirectory)
+                        .redirectErrorStream(true),
+                artifact.getRoot());
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Thread drain = new Thread(() -> drain(process.getInputStream(), output), "unitmind-coverage-output");
         drain.setDaemon(true);
@@ -321,23 +324,83 @@ public class JacocoCoverageExecutor {
     }
 
     private String runtimeClasspath(CompiledTestArtifact artifact) throws ClassNotFoundException, IOException {
-        Set<String> paths = new LinkedHashSet<>();
-        paths.add(artifact.getClasses().toAbsolutePath().toString());
-        // 用户项目的 JUnit/Mockito 运行时必须优先（classpath 首位优先），
-        // 让候选测试在贴近项目真实依赖版本的环境下执行；内置 console-standalone 垫底，
-        // 仅补齐用户环境缺失的部分并提供 ConsoleLauncher 入口。此前按文件名剔除用户全部
-        // JUnit jar 的做法会让 5.13+/6.x 项目在运行期出现版本错配并被误判为测试失败。
-        for (File file : artifact.getRuntimeClasspath()) {
-            if (file == null || !file.exists()) continue;
-            paths.add(file.getAbsolutePath());
-        }
         Class<?> console = Class.forName("org.junit.platform.console.ConsoleLauncher");
         String consolePath = PathUtil.getJarPathForClass(console);
         if (consolePath == null || consolePath.isBlank()) {
             throw new IOException("无法定位内置 JUnit Platform Console 运行时。");
         }
-        paths.add(new File(consolePath).getAbsolutePath());
+        Set<String> paths = new LinkedHashSet<>();
+        paths.add(artifact.getClasses().toAbsolutePath().toString());
+        // classpath 首位优先。ConsoleLauncher 只存在于内置 console-standalone，而
+        // junit-platform-commons 等基础库在两边都有：用户版本不高于内置时必须让内置
+        // standalone 整体前置，保证 platform 各包同源，否则 1.10.x 的 commons 配 1.12 的
+        // console 会在启动期抛 NoSuchMethodError（真实项目普遍自带 JUnit 5，这是覆盖率
+        // 闭环的高频报错来源）。用户的 JUnit Platform 比内置新（5.13+/6.x）时保持用户
+        // 优先，候选测试继续由项目自身的新版 engine 执行；此前按文件名剔除用户全部
+        // JUnit jar 的做法会让这类项目在运行期出现版本错配并被误判为测试失败。
+        boolean userJunitFirst = prefersUserJunitFirst(artifact.getRuntimeClasspath(), consolePath);
+        if (userJunitFirst) {
+            addAllExisting(paths, artifact.getRuntimeClasspath());
+            paths.add(consolePath);
+        } else {
+            paths.add(consolePath);
+            addAllExisting(paths, artifact.getRuntimeClasspath());
+        }
         return String.join(File.pathSeparator, paths);
+    }
+
+    private static void addAllExisting(Set<String> paths, List<File> files) {
+        for (File file : files) {
+            if (file == null || !file.exists()) continue;
+            paths.add(file.getAbsolutePath());
+        }
+    }
+
+    /**
+     * 判断用户运行时里的 junit-platform 版本是否高于内置 console-standalone。
+     * 找不到可识别的用户 platform jar（项目没带 JUnit）时返回 false，
+     * 使用内置全套运行时，不存在版本冲突。
+     */
+    static boolean prefersUserJunitFirst(List<File> runtimeClasspath, String consoleJarPath) {
+        String bundled = jarVersion(consoleJarPath, "console-standalone");
+        String userPlatform = null;
+        if (runtimeClasspath != null) {
+            for (File file : runtimeClasspath) {
+                if (file == null) continue;
+                String name = file.getName();
+                if (name.startsWith("junit-platform-commons-") && name.endsWith(".jar")
+                        && userPlatform == null) {
+                    userPlatform = jarVersion(file.getAbsolutePath(), "junit-platform-commons-");
+                }
+            }
+        }
+        if (userPlatform == null || bundled == null) return false;
+        return compareVersions(userPlatform, bundled) > 0;
+    }
+
+    /** 从 jar 文件名提取紧跟在 marker 之后的版本号；解析失败返回 null。 */
+    static String jarVersion(String jarPath, String marker) {
+        if (jarPath == null) return null;
+        String name = new File(jarPath).getName();
+        int index = name.indexOf(marker);
+        if (index < 0) return null;
+        String rest = name.substring(index + marker.length());
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(\\d+(?:\\.\\d+)*)").matcher(rest);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    /** 按数字分段比较版本号，如 1.10.1 < 1.12.0 < 2.0。 */
+    static int compareVersions(String left, String right) {
+        String[] leftParts = left.split("\\.");
+        String[] rightParts = right.split("\\.");
+        int length = Math.max(leftParts.length, rightParts.length);
+        for (int index = 0; index < length; index++) {
+            int leftValue = index < leftParts.length ? Integer.parseInt(leftParts[index]) : 0;
+            int rightValue = index < rightParts.length ? Integer.parseInt(rightParts[index]) : 0;
+            if (leftValue != rightValue) return Integer.compare(leftValue, rightValue);
+        }
+        return 0;
     }
 
     private void analyze(CompiledTestArtifact artifact, MethodModel method, String sourceText,

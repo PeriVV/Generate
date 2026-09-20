@@ -291,10 +291,13 @@ public class TestSandboxCompiler {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try {
-            Process process = new ProcessBuilder(command)
-                    .directory(sourceRoot.toFile())
-                    .redirectErrorStream(true)
-                    .start();
+            // Windows 命令行约 32K 上限：大项目 classpath/processorpath 拼接超限时
+            // 直接 start() 会以“文件名或扩展名太长”失败，超限时自动改写为 @argfile。
+            Process process = LongCommandLineLauncher.start(
+                    new ProcessBuilder(command)
+                            .directory(sourceRoot.toFile())
+                            .redirectErrorStream(true),
+                    sourceRoot.getParent());
             Thread drain = new Thread(() -> drain(process, output), "unitmind-target-javac-output");
             drain.setDaemon(true);
             drain.start();
