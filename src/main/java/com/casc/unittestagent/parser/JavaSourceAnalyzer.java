@@ -1,6 +1,7 @@
 package com.casc.unittestagent.parser;
 
 import com.casc.unittestagent.model.ClassModel;
+import com.casc.unittestagent.model.DependencyModel;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.SkippedMethodModel;
@@ -30,10 +31,13 @@ import com.github.javaparser.ast.type.ReferenceType;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 将当前 Java 源码解析为单元测试生成所需的方法模型。
@@ -41,6 +45,8 @@ import java.util.Set;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class JavaSourceAnalyzer {
+    /** 匹配类型文本里的裸标识符（前面不是点、字母数字、下划线或 $），用于嵌套类型限定改写。 */
+    private static final Pattern NESTED_NAME_PATTERN = Pattern.compile("(?<![.\\w$])([A-Za-z_$][\\w$]*)");
     /** 约束提取器，负责识别 if 条件中的参数限制。 */
     private final ConstraintExtractor constraintExtractor = new ConstraintExtractor();
     /** 依赖提取器，负责识别字段依赖和调用方法。 */
@@ -199,7 +205,62 @@ public class JavaSourceAnalyzer {
         model.setDependencies(dependencyExtractor.extract(classDeclaration, methodDeclaration));
         model.setUsages(methodUsageExtractor.extract(classDeclaration, methodDeclaration));
         model.setCallContexts(callContextExtractor.extract(classDeclaration, methodDeclaration));
+        qualifyNestedTypes(model, classDeclaration);
         return model;
+    }
+
+    /**
+     * 把嵌套类型改写为“顶层类.嵌套类”限定形式。
+     * 生成的测试类与被测类同包但不同文件，嵌套类型的裸简单名（如 TypeParser 内的
+     * MyTokenizer）在测试类里不可见，new/mock/参数声明都无法编译；改写为限定名后可见。
+     */
+    private void qualifyNestedTypes(MethodModel model, ClassOrInterfaceDeclaration owner) {
+        Map<String, String> nestedPaths = new LinkedHashMap<>();
+        ClassOrInterfaceDeclaration outermost = owner;
+        while (outermost.findAncestor(ClassOrInterfaceDeclaration.class).isPresent()) {
+            outermost = outermost.findAncestor(ClassOrInterfaceDeclaration.class).get();
+        }
+        collectNestedTypePaths(outermost, outermost.getNameAsString(), nestedPaths);
+        if (nestedPaths.isEmpty()) {
+            return;
+        }
+        model.setReturnType(qualifyNestedName(model.getReturnType(), nestedPaths));
+        for (ParameterModel parameter : model.getParameters()) {
+            parameter.setType(qualifyNestedName(parameter.getType(), nestedPaths));
+        }
+        for (DependencyModel dependency : model.getDependencies()) {
+            dependency.setFieldType(qualifyNestedName(dependency.getFieldType(), nestedPaths));
+        }
+    }
+
+    /** 递归收集嵌套类型“简单名 → 顶层类.….嵌套名”路径；同名嵌套以外层第一个为准。 */
+    private void collectNestedTypePaths(com.github.javaparser.ast.body.TypeDeclaration<?> owner,
+                                        String prefix,
+                                        Map<String, String> paths) {
+        for (com.github.javaparser.ast.Node member : owner.getMembers()) {
+            if (!(member instanceof com.github.javaparser.ast.body.TypeDeclaration<?> nested)) {
+                continue;
+            }
+            String path = prefix + "." + nested.getNameAsString();
+            paths.putIfAbsent(nested.getNameAsString(), path);
+            collectNestedTypePaths(nested, path, paths);
+        }
+    }
+
+    /** 把类型文本中的嵌套类型裸名替换为限定路径；已限定（带 .）或其他标识符保持不变。 */
+    private String qualifyNestedName(String type, Map<String, String> paths) {
+        if (type == null || type.isBlank()) {
+            return type;
+        }
+        java.util.regex.Matcher matcher = NESTED_NAME_PATTERN.matcher(type);
+        StringBuilder builder = new StringBuilder();
+        while (matcher.find()) {
+            String token = matcher.group(1);
+            String path = paths.get(token);
+            matcher.appendReplacement(builder, java.util.regex.Matcher.quoteReplacement(path == null ? token : path));
+        }
+        matcher.appendTail(builder);
+        return builder.toString();
     }
 
     private ClassOrInterfaceDeclaration findTopLevelClass(CompilationUnit compilationUnit,

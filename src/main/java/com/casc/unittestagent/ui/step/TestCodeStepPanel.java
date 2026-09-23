@@ -5,15 +5,20 @@ import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.model.CoverageReport;
+import com.casc.unittestagent.model.CoverageStopReason;
 import com.casc.unittestagent.model.ClassJUnitRepairReport;
 import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.model.CoverageStatus;
+import com.casc.unittestagent.model.FailureCategory;
+import com.casc.unittestagent.model.RepairStrategy;
 import com.casc.unittestagent.model.SourceBugAnalysis;
 import com.casc.unittestagent.model.SourceBugLocation;
+import com.casc.unittestagent.coverage.CoverageConfigManager;
 import com.casc.unittestagent.ui.component.CoverageReportPanel;
 import com.casc.unittestagent.ui.component.UnitMindEmptyStatePanel;
 import com.casc.unittestagent.ui.component.UnitMindErrorPanel;
 import com.casc.unittestagent.ui.component.UnitMindLoadingPanel;
+import com.casc.unittestagent.ui.component.UnitMindWrapLayout;
 import com.intellij.ide.highlighter.JavaFileType;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.EditorFactory;
@@ -133,7 +138,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
                              Runnable onStopCoverage) {
         this(project, status, generatedCode, currentCode, error, generationNote, validationResult,
                 coverageReport, null, coverageRunning, regenerationAllowed, coverageAllowed,
-                false, onRegenerate, onValidate, onCodeChanged, onRunCoverage, onStopCoverage);
+                false, onRegenerate, onValidate, onCodeChanged, onRunCoverage, onStopCoverage,
+                feedback -> { }, 0);
     }
 
     public TestCodeStepPanel(Project project,
@@ -153,7 +159,9 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
                              Runnable onValidate,
                              Consumer<String> onCodeChanged,
                              Runnable onRunCoverage,
-                             Runnable onStopCoverage) {
+                             Runnable onStopCoverage,
+                             Consumer<String> onResumeWithEvidence,
+                             int evidenceResumeUsed) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         this.generatedCode = generatedCode == null ? "" : generatedCode;
@@ -238,6 +246,23 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         });
 
         JPanel bottom = new JPanel(new BorderLayout(0, 6));
+        boolean evidenceStopState = evidenceResumeStopState(coverageReport, coverageRunning);
+        if (evidenceStopState) {
+            JTextArea evidenceHint = new JTextArea(2, 60);
+            evidenceHint.setLineWrap(true);
+            evidenceHint.setWrapStyleWord(true);
+            evidenceHint.setEditable(false);
+            evidenceHint.setBackground(null);
+            FailureCategory category = FailureCategory.fromCode(
+                    coverageReport.getOracleAssessment().getRootCauseCategory());
+            String hintText = "证据提示：" + category.formatRequiredUserInfo(
+                    coverageReport.getFailingTestNamesAtStop());
+            if (CoverageConfigManager.load().isStrictOracleGate()) {
+                hintText += "（严格 Oracle 准出已开启：即使补充证据，修改断言的修复也不会自动应用，仍需人工确认后写入。）";
+            }
+            evidenceHint.setText(hintText);
+            bottom.add(evidenceHint, BorderLayout.NORTH);
+        }
         JPanel feedbackPanel = new JPanel(new BorderLayout(6, 0));
         feedbackArea = new JTextArea(2, 60);
         feedbackArea.setLineWrap(true);
@@ -247,15 +272,17 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         feedbackPanel.add(new JScrollPane(feedbackArea), BorderLayout.CENTER);
         bottom.add(feedbackPanel, BorderLayout.CENTER);
 
-        JPanel buttons = new JPanel();
-        buttons.setLayout(new BoxLayout(buttons, BoxLayout.Y_AXIS));
-        JButton copy = new JButton("复制代码");
-        JButton restore = new JButton("恢复生成代码");
-        JButton regenerate = new JButton(regenerationAllowed ? "再次生成" : "整类请重新分析后生成");
+        JPanel buttons = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
+        JButton copy = new JButton("复制");
+        copy.setToolTipText("复制当前测试代码到剪贴板");
+        JButton restore = new JButton("还原");
+        restore.setToolTipText("丢弃手动修改，恢复为最近一次生成的测试代码");
+        JButton regenerate = new JButton(regenerationAllowed ? "再次生成" : "重新分析后生成");
         JButton validate = new JButton("重新校验");
-        JButton runCoverage = new JButton(!coverageAllowed ? "运行闭环不可用"
-                : coverageRunning ? (classMode ? "整类 JUnit 修复中..." : "覆盖率运行中...")
-                : classMode ? "运行整类 JUnit 并自动修复" : "运行覆盖率并自动补测");
+        JButton runCoverage = new JButton(!coverageAllowed ? "闭环不可用"
+                : coverageRunning ? (classMode ? "修复中..." : "运行中...")
+                : classMode ? "运行整类修复" : "运行覆盖率");
+        runCoverage.setToolTipText("在隔离 JVM 中真实执行测试，按未覆盖的行/分支自动补测并修复");
         JButton stopCoverage = new JButton("停止");
         copy.addActionListener(event -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(getCode()), null));
         restore.addActionListener(event -> setCode(generatedCode));
@@ -268,20 +295,44 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         runCoverage.addActionListener(event -> onRunCoverage.run());
         stopCoverage.setEnabled(coverageRunning);
         stopCoverage.addActionListener(event -> onStopCoverage.run());
-        buttons.add(buttonRow(copy, restore));
-        buttons.add(buttonRow(regenerate, validate));
-        buttons.add(buttonRow(runCoverage, stopCoverage));
+        buttons.add(copy);
+        buttons.add(restore);
+        buttons.add(regenerate);
+        buttons.add(validate);
+        buttons.add(runCoverage);
+        if (evidenceStopState) {
+            JButton resumeEvidence = new JButton("补充证据并继续修复");
+            int maxEvidenceResumes = CoverageConfigManager.load().getMaxEvidenceResumes();
+            if (maxEvidenceResumes > 0 && evidenceResumeUsed < maxEvidenceResumes) {
+                resumeEvidence.setToolTipText("将下方补充要求作为用户权威证据注入，从当前测试代码继续覆盖率修复");
+            } else {
+                // 额度耗尽/禁用时保留入口并置灰，让用户知道为什么不能续修，而不是按钮凭空消失。
+                resumeEvidence.setEnabled(false);
+                resumeEvidence.setToolTipText("补充证据续修次数已达上限（" + maxEvidenceResumes
+                        + "）。可在设置中调整额度，或重新生成后再试。");
+            }
+            resumeEvidence.addActionListener(event -> onResumeWithEvidence.accept(feedbackArea.getText()));
+            buttons.add(resumeEvidence);
+        }
+        buttons.add(stopCoverage);
         bottom.add(buttons, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
     }
 
     /**
-     * 将操作按钮放进固定的一行，避免工具窗口较窄时 FlowLayout 换行后被父容器裁掉。
+     * 只有“覆盖率闭环因缺少 Oracle 证据停止”才提供证据续修入口：
+     * 需要 NEEDS_REVIEW 状态（STALE 意味着代码或输入已被编辑，指纹前提失效）、
+     * ORACLE_INCONCLUSIVE 停止原因，且失败类别确实属于 EVIDENCE_REQUIRED。
+     * 额度是否可用（evidenceResumeUsed vs maxEvidenceResumes）由调用方另行判断。
      */
-    private JPanel buttonRow(JButton... rowButtons) {
-        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        for (JButton button : rowButtons) row.add(button);
-        return row;
+    static boolean evidenceResumeStopState(CoverageReport report, boolean coverageRunning) {
+        return !coverageRunning
+                && report != null
+                && report.getStatus() == CoverageStatus.NEEDS_REVIEW
+                && report.getStopReason() == CoverageStopReason.ORACLE_INCONCLUSIVE
+                && report.getOracleAssessment() != null
+                && FailureCategory.fromCode(report.getOracleAssessment().getRootCauseCategory())
+                        .getRepairStrategy() == RepairStrategy.EVIDENCE_REQUIRED;
     }
 
     /**

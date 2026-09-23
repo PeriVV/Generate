@@ -5,6 +5,7 @@ import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.model.ClassGenerationResult;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
+import com.casc.unittestagent.ui.component.UnitMindWrapLayout;
 import com.casc.unittestagent.writer.TestWriteMode;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
@@ -60,7 +61,7 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         model.addRow(new Object[]{"测试类名", result.getGeneratedTestFile().getClassName()});
         model.addRow(new Object[]{"目标路径", targetFile.getAbsolutePath()});
         model.addRow(new Object[]{"文件状态", exists ? "已存在" : "不存在"});
-        model.addRow(new Object[]{"默认写入模式", exists ? "追加到已有测试类" : "新建测试类"});
+        model.addRow(new Object[]{"默认写入模式", exists ? "追加" : "新建"});
         model.addRow(new Object[]{"当前写入模式", exists ? "追加 / 覆盖 / 取消" : "新建 / 取消"});
         ValidationResult validation = result.getValidationResult();
         model.addRow(new Object[]{"编译校验", validation == null ? "尚未执行" : validationText(validation)});
@@ -74,12 +75,15 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
                                boolean exists,
                                java.util.function.BiConsumer<TestWriteMode, Boolean> onWrite) {
         JPanel container = new JPanel(new BorderLayout());
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        JPanel buttons = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
         JButton create = new JButton("新建测试类");
-        JButton append = new JButton("追加到已有测试类");
-        JButton overwrite = new JButton("覆盖整个测试类");
-        JButton force = new JButton("强制写入草稿");
-        JButton cancel = new JButton("取消写入");
+        JButton append = new JButton("追加");
+        append.setToolTipText("合并进已有测试类，保留 UnitMind 区域外的人工测试和 fixture");
+        JButton overwrite = new JButton("覆盖");
+        overwrite.setToolTipText("删除已有测试类全部内容，写入本次生成内容");
+        JButton force = new JButton("强制写入");
+        force.setToolTipText("跳过编译/执行门禁写入草稿，写入前会再次确认");
+        JButton cancel = new JButton("取消");
         boolean generated = result != null && result.getGeneratedTestFile() != null;
         boolean complete = !(result instanceof ClassGenerationResult) || ((ClassGenerationResult) result).isComplete();
         create.setEnabled(!exists && generated && complete);
@@ -98,7 +102,7 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         buttons.add(overwrite);
         buttons.add(force);
         buttons.add(cancel);
-        JBLabel hint = new JBLabel("正常写入要求最终文件编译通过；“强制写入草稿”会再次确认。");
+        JBLabel hint = new JBLabel("正常写入要求最终文件编译通过；“强制写入”会再次确认。");
         hint.setBorder(JBUI.Borders.emptyTop(6));
         container.add(buttons, BorderLayout.NORTH);
         container.add(hint, BorderLayout.SOUTH);

@@ -31,6 +31,8 @@ public class TestScenario {
     private String oracleEvidence = "STATIC_ANALYSIS";
     /** 断言可信度：HIGH / MEDIUM / LOW。 */
     private String oracleConfidence = "LOW";
+    /** 用户补充证据绑定的失败测试名单（结构化作用域），空表示未限定。 */
+    private List<String> evidenceScopedFailingTests = new ArrayList<>();
     /** 用户是否勾选该场景纳入测试代码生成；UI 表格编辑时回写，默认允许生成。 */
     private boolean enabled = true;
 
@@ -254,5 +256,16 @@ public class TestScenario {
     public String getOracleConfidence() { return oracleConfidence; }
     public void setOracleConfidence(String value) {
         oracleConfidence = value == null ? "LOW" : value;
+    }
+
+    /**
+     * 用户补充证据（oracleEvidence=USER_REQUIREMENT）绑定作用域的结构化名单：
+     * 证据只授权修改这些失败测试的 Oracle。空列表表示未限定（全局用户意图）。
+     * 服务端权威引用校验据此拒绝名单外的 CORRECT 授权。
+     */
+    public List<String> getEvidenceScopedFailingTests() { return evidenceScopedFailingTests; }
+    public void setEvidenceScopedFailingTests(List<String> evidenceScopedFailingTests) {
+        this.evidenceScopedFailingTests = evidenceScopedFailingTests == null
+                ? new ArrayList<>() : new ArrayList<>(evidenceScopedFailingTests);
     }
 }

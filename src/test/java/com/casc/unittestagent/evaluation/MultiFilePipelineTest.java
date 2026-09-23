@@ -65,7 +65,6 @@ public class MultiFilePipelineTest extends LightJavaCodeInsightFixtureTestCase {
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(0);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
     }
 

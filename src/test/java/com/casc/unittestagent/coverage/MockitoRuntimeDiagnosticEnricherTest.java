@@ -259,4 +259,43 @@ public class MockitoRuntimeDiagnosticEnricherTest extends TestCase {
         assertTrue(diagnostic.getSuggestion().contains("Wanted/Actual"));
         assertTrue(diagnostic.getSuggestion().contains("返回值或状态断言"));
     }
+
+    public void testClassifiesStaticMockRefusalAsForbiddenTarget() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("sample.SubjectTest#shouldMockSystem()");
+        diagnostic.setExceptionType("org.mockito.exceptions.base.MockitoException");
+        diagnostic.setMessage("It is not possible to mock static methods of class java.lang.System");
+        diagnostic.setStackTrace(List.of(
+                "at org.mockito.internal.MockitoCore.mockStatic(MockitoCore.java:1)",
+                "at sample.SubjectTest.shouldMockSystem(SubjectTest.java:6)"));
+
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic),
+                "class SubjectTest { @Test void shouldMockSystem() { mockStatic(System.class); } }");
+
+        assertEquals("MOCKITO_STATIC_MOCK_FORBIDDEN_TARGET", diagnostic.getCategory());
+        assertTrue(diagnostic.getSuggestion().contains("删除 mockStatic"));
+        assertEquals(6, diagnostic.getSourceLine());
+    }
+
+    public void testClassifiesCannotInstrumentRefusalAsForbiddenTarget() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setExceptionType("org.mockito.exceptions.base.MockitoException");
+        diagnostic.setMessage("Cannot instrument class java.lang.Thread because it is a JDK class");
+
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic), "class SubjectTest { @Test void t() {} }");
+
+        assertEquals("MOCKITO_STATIC_MOCK_FORBIDDEN_TARGET", diagnostic.getCategory());
+    }
+
+    public void testStaticMockRefusalDoesNotShadowAssertionFailures() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setExceptionType("org.opentest4j.AssertionFailedError");
+        diagnostic.setMessage("expected: <2> but was: <1>");
+
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic),
+                "class SubjectTest { @Test void v() { assertEquals(2, run()); } }");
+
+        // 无 expected/actual 值字段时落入 ASSERTION_FAILURE；关键是未被静态 mock 分支抢占。
+        assertEquals("ASSERTION_FAILURE", diagnostic.getCategory());
+    }
 }

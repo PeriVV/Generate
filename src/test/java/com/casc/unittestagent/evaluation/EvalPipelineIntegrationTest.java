@@ -72,7 +72,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(0);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
     }
 
@@ -124,7 +123,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(5);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -188,7 +186,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(3);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -279,7 +276,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(3);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -348,7 +344,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
             throws Exception {
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRepairRounds(2);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -401,7 +396,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
             throws Exception {
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRepairRounds(2);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -455,7 +449,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRounds(0);
         coverage.setMaxRepairRounds(3);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;
@@ -522,7 +515,6 @@ public class EvalPipelineIntegrationTest extends LightJavaCodeInsightFixtureTest
     public void testClassLoopRejectsKeepRepairThatWouldChangeArrangeAfterAssertionMismatch() throws Exception {
         CoverageConfig coverage = new CoverageConfig();
         coverage.setMaxRepairRounds(2);
-        coverage.setExistingBaselineEnabled(false);
         CoverageConfigManager.save(coverage);
         PsiFile source = myFixture.configureByText("Subject.java", """
                 package sample;

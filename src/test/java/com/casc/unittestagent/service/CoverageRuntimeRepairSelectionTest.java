@@ -230,6 +230,28 @@ public class CoverageRuntimeRepairSelectionTest extends TestCase {
                 List.of(diagnostic)));
     }
 
+    public void testSkippedTestNamesFeedAcceptanceInvariant() {
+        // “失败→跳过”会让 failed 下降甚至 isSuccessful 为真；接受门禁依赖 skippedTestNames
+        // 提取名单来拒绝这类伪修复。
+        TestExecutionSummary summary = new TestExecutionSummary();
+        TestCaseExecution skipped = execution("sample.SubjectTest#turnedSkipped()");
+        skipped.setSkipped(true);
+        TestCaseExecution failed = execution("sample.SubjectTest#stillFailing()");
+        failed.setSuccessful(false);
+        summary.getTestCases().add(skipped);
+        summary.getTestCases().add(failed);
+
+        assertEquals(java.util.Set.of("turnedSkipped"), UnitTestGenerationService.skippedTestNames(summary));
+        assertTrue(UnitTestGenerationService.skippedTestNames(null).isEmpty());
+    }
+
+    private TestCaseExecution execution(String testId) {
+        TestCaseExecution execution = new TestCaseExecution();
+        execution.setTestId(testId);
+        execution.setSuccessful(true);
+        return execution;
+    }
+
     private RuntimeDiagnostic diagnostic(String testId, String message) {
         RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
         diagnostic.setTestId(testId);

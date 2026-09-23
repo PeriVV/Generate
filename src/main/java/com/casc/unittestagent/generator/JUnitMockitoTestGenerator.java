@@ -31,6 +31,11 @@ public class JUnitMockitoTestGenerator {
     /** 测试数据生成器，负责按类型提供可写入源码的参数值。 */
     private final RandomTestDataGenerator dataGenerator = new RandomTestDataGenerator();
 
+    /** 注入真实 classpath 的可实例化探针，抑制 new 第三方接口/抽象类型。 */
+    public void setTypeInstantiabilityProbe(java.util.function.Predicate<String> probe) {
+        dataGenerator.setTypeInstantiabilityProbe(probe);
+    }
+
     /**
      * 执行单元测试源码生成。
      * 方法把分析模型和场景转换为一个可预览、可写入磁盘的测试文件模型。
@@ -464,6 +469,7 @@ public class JUnitMockitoTestGenerator {
                 continue;
             }
             String expression = values.get(parameter.getName());
+            expression = safeValueExpression(methodModel, parameter, expression);
             MockStrategyItem selected = strategyItem(dependency, mockStrategy);
             if (dependency != null && selected != null && selected.isGenerate()
                     && isLocalMockStrategy(selected.getMockitoStrategy())) {
@@ -906,6 +912,14 @@ public class JUnitMockitoTestGenerator {
         if (!methodModel.isStaticMethod()) {
             imports.add("org.mockito.InjectMocks");
         }
+        // 异常场景使用 assertThrows(异常类型.class)，异常类型同样需要 import，
+        // 否则生成代码引用分支里的业务异常（如 DecoderException）时无法编译。
+        for (String exceptionType : methodModel.getThrownExceptions()) {
+            addExceptionImport(imports, methodModel, exceptionType);
+        }
+        for (BranchModel branch : methodModel.getBranches()) {
+            addExceptionImport(imports, methodModel, branch.getExceptionType());
+        }
         if (isPrivateMethod(methodModel)) {
             imports.add("java.lang.reflect.InvocationTargetException");
             imports.add("java.lang.reflect.Method");
@@ -928,6 +942,30 @@ public class JUnitMockitoTestGenerator {
         code.append("    void initMockito() {\n");
         code.append("        MockitoAnnotations.initMocks(this);\n");
         code.append("    }\n");
+    }
+
+    /**
+     * 为异常类型补充 import。
+     * 全限定名直接使用；简单名先匹配被测源码的 import，同包或 java.lang 类型无需 import。
+     */
+    private void addExceptionImport(Set<String> imports, MethodModel methodModel, String exceptionType) {
+        if (exceptionType == null || exceptionType.isBlank()) {
+            return;
+        }
+        String trimmed = exceptionType.trim();
+        String simple = simpleType(trimmed);
+        if ("Exception".equals(simple) || "RuntimeException".equals(simple)
+                || "Error".equals(simple) || "Throwable".equals(simple)) {
+            return; // java.lang 无需 import。
+        }
+        if (trimmed.contains(".")) {
+            imports.add(trimmed);
+            return;
+        }
+        String importName = importForType(methodModel, simple);
+        if (importName != null) {
+            imports.add(importName);
+        }
     }
 
     /**
@@ -1027,6 +1065,47 @@ public class JUnitMockitoTestGenerator {
             return "mock(" + simpleType(type) + ".class)";
         }
         return expression;
+    }
+
+    /**
+     * 主路径参数值安全化。
+     * 数据生成器对引用类型给出 `new X()`，但 X 可能没有无参构造，也可能是源码 import 不到的
+     * 嵌套类（如 jackson 的 TypeParser.MyTokenizer）或 package-private 类型——这类名字在
+     * 生成的测试类里根本不可见，new 和 mock 都会编译失败。凡是被测源码 import 不到、又不在
+     * java.lang 的类型统一退回 null（任何引用类型都可编译），断言质量交给后续 LLM/人工阶段。
+     */
+    private String safeValueExpression(MethodModel methodModel, ParameterModel parameter, String expression) {
+        if (expression == null || !expression.startsWith("new ")) {
+            return expression;
+        }
+        String simple = simpleType(parameter.getType());
+        if (isJavaLangType(simple) || importForType(methodModel, simple) != null) {
+            return expression;
+        }
+        // 静态分析已把嵌套类型改写为“外部类.嵌套类”限定名，限定名在测试类中可见，可用 mock。
+        String type = parameter.getType();
+        if (type != null && type.contains(".") && !type.contains("<")) {
+            return "mock(" + type.trim() + ".class)";
+        }
+        return "null";
+    }
+
+    private boolean isJavaLangType(String simpleType) {
+        switch (simpleType) {
+            case "Object":
+            case "String":
+            case "StringBuilder":
+            case "StringBuffer":
+            case "Thread":
+            case "Exception":
+            case "RuntimeException":
+            case "IllegalArgumentException":
+            case "IllegalStateException":
+            case "NullPointerException":
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**

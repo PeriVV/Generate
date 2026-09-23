@@ -335,13 +335,23 @@ public class JacocoCoverageExecutor {
         // junit-platform-commons 等基础库在两边都有：用户版本不高于内置时必须让内置
         // standalone 整体前置，保证 platform 各包同源，否则 1.10.x 的 commons 配 1.12 的
         // console 会在启动期抛 NoSuchMethodError（真实项目普遍自带 JUnit 5，这是覆盖率
-        // 闭环的高频报错来源）。用户的 JUnit Platform 比内置新（5.13+/6.x）时保持用户
-        // 优先，候选测试继续由项目自身的新版 engine 执行；此前按文件名剔除用户全部
-        // JUnit jar 的做法会让这类项目在运行期出现版本错配并被误判为测试失败。
+        // 闭环的高频报错来源）。用户的 JUnit Platform 比内置新且自带 launcher
+        // （5.13+/6.x）时保持用户优先，候选测试继续由项目自身的新版 engine 执行。
         boolean userJunitFirst = prefersUserJunitFirst(artifact.getRuntimeClasspath(), consolePath);
-        if (userJunitFirst) {
+        if (userJunitFirst && hasUserPlatformLauncher(artifact.getRuntimeClasspath())) {
             addAllExisting(paths, artifact.getRuntimeClasspath());
             paths.add(consolePath);
+        } else if (userJunitFirst) {
+            // 用户平台比内置新（如 JUnit 6）但没有 junit-platform-launcher：launcher
+            // 只能来自内置 standalone（1.12），engine 与 launcher 版本错配是 JUnit 的
+            // 硬性约束，spring-petclinic（JUnit 6.0.3 无 launcher）实测在发现阶段抛
+            // "OutputDirectoryCreator not available"。此时整体对齐到内置全套：
+            // standalone 前置并剔除用户 junit 平台/引擎 jar，console、launcher、
+            // engine、commons 全部同源 1.12；生成的测试只用稳定的 Jupiter 基础
+            // API，可由内置引擎执行。mockito-junit-jupiter 等第三方适配 jar 不在
+            // 剔除范围（按 org.junit 官方 artifact 前缀精确匹配）。
+            paths.add(consolePath);
+            addAllExisting(paths, artifact.getRuntimeClasspath(), JacocoCoverageExecutor::isUserJUnitStackJar);
         } else {
             paths.add(consolePath);
             addAllExisting(paths, artifact.getRuntimeClasspath());
@@ -349,9 +359,29 @@ public class JacocoCoverageExecutor {
         return String.join(File.pathSeparator, paths);
     }
 
+    /** 用户运行时是否自带 junit-platform-launcher（engine↔launcher 对齐的必要条件）。 */
+    static boolean hasUserPlatformLauncher(List<File> runtimeClasspath) {
+        if (runtimeClasspath == null) return false;
+        for (File file : runtimeClasspath) {
+            if (file != null && file.getName().startsWith("junit-platform-launcher")) return true;
+        }
+        return false;
+    }
+
+    /** org.junit 官方 JUnit 平台/引擎 artifact 的文件名前缀；第三方 junit-jupiter 适配 jar 不匹配。 */
+    static boolean isUserJUnitStackJar(String jarName) {
+        if (jarName == null) return false;
+        return jarName.startsWith("junit-platform-") || jarName.startsWith("junit-jupiter-")
+                || jarName.startsWith("junit-vintage-");
+    }
+
     private static void addAllExisting(Set<String> paths, List<File> files) {
+        addAllExisting(paths, files, excluded -> false);
+    }
+
+    private static void addAllExisting(Set<String> paths, List<File> files, java.util.function.Predicate<String> excludeByName) {
         for (File file : files) {
-            if (file == null || !file.exists()) continue;
+            if (file == null || !file.exists() || excludeByName.test(file.getName())) continue;
             paths.add(file.getAbsolutePath());
         }
     }

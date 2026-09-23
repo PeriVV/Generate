@@ -5,6 +5,7 @@ import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.model.ClassGenerationResult;
 import com.casc.unittestagent.model.MethodGenerationItem;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
+import com.casc.unittestagent.ui.component.UnitMindWrapLayout;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -37,6 +38,8 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
     /** 与表格行对齐的场景列表；占位行（尚未分析/暂无推荐）没有对应场景。 */
     private final List<TestScenario> rowScenarios = new ArrayList<>();
     private final GenerationResult result;
+    /** 场景被编辑后的通知，用于让上层失效旧的测试代码。 */
+    private final Runnable onEdited;
     private boolean syncing;
 
     /**
@@ -44,11 +47,13 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
      *
      * @param result 生成结果
      * @param onRestore 恢复推荐场景动作
+     * @param onEdited 场景编辑动作，场景变化后旧测试代码不再有效
      */
-    public ScenarioStepPanel(GenerationResult result, Runnable onRestore) {
+    public ScenarioStepPanel(GenerationResult result, Runnable onRestore, Runnable onEdited) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         this.result = result;
+        this.onEdited = onEdited;
         if (result instanceof ClassGenerationResult) {
             DefaultTableModel classModel = classModel((ClassGenerationResult) result);
             JBTable classTable = new JBTable(classModel);
@@ -156,7 +161,19 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
                 applyTrigger(scenario, String.valueOf(value));
             } else if (column == COLUMN_METHOD_NAME) {
                 scenario.setMethodNameEn(String.valueOf(value));
+            } else {
+                return;
             }
+            notifyEdited();
+        }
+    }
+
+    /**
+     * 场景数据实际变化后通知上层，使旧测试代码失效。
+     */
+    private void notifyEdited() {
+        if (onEdited != null) {
+            onEdited.run();
         }
     }
 
@@ -179,7 +196,7 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
      * 构建场景工具栏。新增/删除按钮同时维护表格、行对齐列表与 result 模型。
      */
     private JPanel toolbar(DefaultTableModel model, JBTable table, Runnable onRestore) {
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        JPanel buttons = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
         JButton add = new JButton("新增场景");
         JButton remove = new JButton("删除场景");
         JButton restore = new JButton("恢复推荐");
@@ -203,6 +220,7 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
             if (result != null) {
                 result.getScenarios().add(scenario);
             }
+            notifyEdited();
         });
         remove.addActionListener(event -> {
             int row = table.getSelectedRow();
@@ -218,6 +236,7 @@ public class ScenarioStepPanel extends JBPanel<ScenarioStepPanel> {
                 if (result != null) {
                     result.getScenarios().remove(removed);
                 }
+                notifyEdited();
             }
         });
         restore.addActionListener(event -> onRestore.run());

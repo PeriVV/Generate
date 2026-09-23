@@ -104,10 +104,11 @@ public final class MissingFixtureDependencyDetector {
 
     private static boolean isNullPointerFailure(RuntimeDiagnostic diagnostic) {
         if (diagnostic == null) return false;
-        String evidence = diagnostic.getExceptionType() + "\n" + diagnostic.getRootCauseType()
-                + "\n" + diagnostic.getMessage() + "\n" + diagnostic.getFailureDetails()
-                + "\n" + String.join("\n", diagnostic.getCauseChain());
-        return evidence.toLowerCase(java.util.Locale.ROOT).contains("nullpointerexception");
+        // 只有顶层异常（外层或首个根因）是 NPE 才参与 fixture 升级：
+        // ExceptionInInitializerError / 框架 IllegalStateException 仅 cause 链里带 NPE 时，
+        // 根因是环境/上下文问题，不得误导成“补 @Mock 即可修”。
+        String topEvidence = diagnostic.getExceptionType() + "\n" + diagnostic.getRootCauseType();
+        return topEvidence.toLowerCase(java.util.Locale.ROOT).contains("nullpointerexception");
     }
 
     private static String nullMember(RuntimeDiagnostic diagnostic) {

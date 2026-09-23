@@ -9,7 +9,6 @@ public class CoverageReport {
     private CoverageStatus status = CoverageStatus.NOT_RUN;
     private CoverageStopReason stopReason = CoverageStopReason.NONE;
     private CoverageSnapshot generated = new CoverageSnapshot();
-    private CoverageSnapshot existing = new CoverageSnapshot();
     private List<CoverageGap> gaps = new ArrayList<>();
     private List<CoverageSnapshot> history = new ArrayList<>();
     private int rounds;
@@ -48,6 +47,8 @@ public class CoverageReport {
     private String lastUnchangedStage = "";
     private OracleAssessment oracleAssessment;
     private SourceBugAnalysis sourceBugAnalysis = new SourceBugAnalysis();
+    /** Oracle 停止时仍在失败的测试方法名（有界），用于证据绑定与续修提示。 */
+    private List<String> failingTestNamesAtStop = new ArrayList<>();
 
     public static CoverageReport status(CoverageStatus status) {
         CoverageReport report = new CoverageReport();
@@ -61,8 +62,6 @@ public class CoverageReport {
     public void setStopReason(CoverageStopReason stopReason) { this.stopReason = stopReason == null ? CoverageStopReason.NONE : stopReason; }
     public CoverageSnapshot getGenerated() { return generated; }
     public void setGenerated(CoverageSnapshot generated) { this.generated = generated == null ? new CoverageSnapshot() : generated; }
-    public CoverageSnapshot getExisting() { return existing; }
-    public void setExisting(CoverageSnapshot existing) { this.existing = existing == null ? new CoverageSnapshot() : existing; }
     public List<CoverageGap> getGaps() { return gaps; }
     public void setGaps(List<CoverageGap> gaps) { this.gaps = gaps == null ? new ArrayList<>() : gaps; }
     public List<CoverageSnapshot> getHistory() { return history; }
@@ -134,6 +133,14 @@ public class CoverageReport {
     public SourceBugAnalysis getSourceBugAnalysis() { return sourceBugAnalysis; }
     public void setSourceBugAnalysis(SourceBugAnalysis value) {
         sourceBugAnalysis = value == null ? new SourceBugAnalysis() : value;
+    }
+    public List<String> getFailingTestNamesAtStop() { return failingTestNamesAtStop; }
+    public void setFailingTestNamesAtStop(List<String> names) {
+        List<String> safe = names == null ? List.of() : names.stream()
+                .filter(name -> name != null && !name.isBlank())
+                .limit(20)
+                .collect(java.util.stream.Collectors.toList());
+        this.failingTestNamesAtStop = new ArrayList<>(safe);
     }
 
     /** 同步更新后台任务进度，供工具窗口实时渲染。 */

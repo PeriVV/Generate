@@ -8,7 +8,6 @@ public enum CoveragePhase {
     EXECUTING,
     ANALYZING,
     IMPROVING,
-    BASELINE,
     VALIDATING,
     DIAGNOSING_SUT_BUG,
     COMPLETED

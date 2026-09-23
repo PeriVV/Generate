@@ -12,10 +12,12 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.JavaResolveResult;
+import com.intellij.psi.PsiAnnotation;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiExpression;
 import com.intellij.psi.PsiField;
+import com.intellij.psi.PsiJavaCodeReferenceElement;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiMethod;
@@ -50,6 +52,11 @@ public class ProjectSymbolSnapshotBuilder {
     private static final int MAX_REACHABLE_DEPTH = 2;
     private static final int MAX_TYPE_COUNT = 40;
     private static final int MAX_METHOD_COUNT_PER_TYPE = 40;
+    /** 字段构造器兜底在 40 类型主预算之外允许追加的独立名额，避免抢占可达类型。 */
+    private static final int MAX_FIELD_CONSTRUCTOR_TYPE_COUNT = 12;
+    /** Lombok 构造器注解：生成的构造器在源码 PSI 中不存在，必须按 Lombok 语义合成签名。 */
+    private static final Set<String> LOMBOK_CONSTRUCTOR_ANNOTATIONS =
+            Set.of("NoArgsConstructor", "AllArgsConstructor", "RequiredArgsConstructor");
 
     /**
      * 构造符号快照。调用方必须在 read action 中执行。
@@ -90,6 +97,7 @@ public class ProjectSymbolSnapshotBuilder {
             collector.addFixtureType(PsiTypesUtil.getPsiClass(parameter.getType()));
         }
         collector.collectFromMethod(targetMethod, 0);
+        collector.addClassFieldConstructorSignatures(targetClass);
         snapshot.setTypes(new ArrayList<>(collector.types.values()));
         return snapshot;
     }
@@ -334,6 +342,8 @@ public class ProjectSymbolSnapshotBuilder {
         private final Map<String, TypeSymbol> types = new LinkedHashMap<>();
         private final Map<String, Set<String>> callableIds = new LinkedHashMap<>();
         private final Set<String> visitedMethods = new LinkedHashSet<>();
+        /** 字段构造器兜底已占用的独立类型名额；addType 的预算检查会放宽这部分。 */
+        private int extraFieldTypeSlots;
 
         private SnapshotCollector(Project project, PsiMethod targetMethod, ProjectSymbolSnapshot snapshot) {
             this.project = project;
@@ -465,11 +475,17 @@ public class ProjectSymbolSnapshotBuilder {
         }
 
         private void addType(PsiClass psiClass, boolean includeConstructors) {
-            if (psiClass == null || types.size() >= MAX_TYPE_COUNT) {
+            if (psiClass == null) {
                 return;
             }
             String qualifiedName = qualifiedName(psiClass);
             if (qualifiedName.isBlank()) {
+                return;
+            }
+            // 已有类型回填成员不增加类型数量，不受预算限制；新类型受主预算约束，
+            // 字段构造器兜底启用的独立名额除外。
+            if (!types.containsKey(qualifiedName)
+                    && types.size() >= MAX_TYPE_COUNT + extraFieldTypeSlots) {
                 return;
             }
             TypeSymbol type = types.computeIfAbsent(qualifiedName, ignored -> {
@@ -497,7 +513,100 @@ public class ProjectSymbolSnapshotBuilder {
                 if (psiClass.isRecord()) {
                     addCallable(psiClass, recordCanonicalConstructor(psiClass), true);
                 }
+                appendLombokConstructors(psiClass);
             }
+        }
+
+        /**
+         * 被测类全部实例字段类型的构造器签名兜底。方法可达性收集覆盖不到只在更深层
+         * 调用链或本类其他方法中使用的字段：模型拿不到构造器时会被迫猜测，并回归到
+         * getDeclaredField 反射改私有字段（被 CoverageCandidatePreflight 一票否决）。
+         * 约束：只补构造器签名——不带 sourceCode、不收集方法、不做具体子类型展开
+         * （@Mock 字段由 Mockito 直接 mock 接口，无需实现类）；新增类型使用主预算
+         * 之外的独立名额，可达性收集的类型始终优先。
+         */
+        private void addClassFieldConstructorSignatures(PsiClass targetClass) {
+            if (targetClass == null) return;
+            for (PsiField field : targetClass.getFields()) {
+                if (extraFieldTypeSlots >= MAX_FIELD_CONSTRUCTOR_TYPE_COUNT) break;
+                if (field.hasModifierProperty(PsiModifier.STATIC)) continue;
+                PsiClass fieldClass = PsiTypesUtil.getPsiClass(field.getType());
+                String name = qualifiedName(fieldClass);
+                if (fieldClass == null || name.isBlank()) continue;
+                TypeSymbol existing = types.get(name);
+                if (existing != null && !existing.getConstructors().isEmpty()) continue;
+                if (existing == null) extraFieldTypeSlots++;
+                addType(fieldClass, true);
+                TypeSymbol added = types.get(name);
+                if (added == null) {
+                    // 预算守卫拒绝新增时收回名额；已存在类型回填构造器本就不占名额。
+                    if (existing == null) extraFieldTypeSlots--;
+                } else {
+                    for (CallableSymbol constructor : added.getConstructors()) {
+                        constructor.setSourceCode("");
+                    }
+                }
+            }
+        }
+
+        /**
+         * 按 Lombok 语义合成构造器签名。@RequiredArgsConstructor 等注解生成的构造器
+         * 只存在于编译期产物，PSI 源码中不可见；快照缺失时模型无从得知依赖参数列表，
+         * 只能猜测并回归到 getDeclaredField 反射。跳过 static 字段和已初始化的 final
+         * 字段（无法在构造器中再次赋值）；RequiredArgs 只含未初始化 final 与
+         * @NonNull 字段。签名与显式构造器重合时由 addCallable 的 id 去重。
+         */
+        private void appendLombokConstructors(PsiClass psiClass) {
+            LinkedHashSet<String> present = new LinkedHashSet<>();
+            for (PsiAnnotation candidate : psiClass.getAnnotations()) {
+                String name = annotationSimpleName(candidate);
+                if (LOMBOK_CONSTRUCTOR_ANNOTATIONS.contains(name)) present.add(name);
+            }
+            for (String annotation : present) {
+                boolean requiredOnly = "RequiredArgsConstructor".equals(annotation);
+                boolean noArguments = "NoArgsConstructor".equals(annotation);
+                List<String> parameters = new ArrayList<>();
+                if (!noArguments) {
+                    for (PsiField field : psiClass.getFields()) {
+                        if (field.hasModifierProperty(PsiModifier.STATIC)) continue;
+                        if (field.hasModifierProperty(PsiModifier.FINAL) && field.getInitializer() != null) continue;
+                        if (requiredOnly && !(field.hasModifierProperty(PsiModifier.FINAL)
+                                || hasAnnotation(field, "NonNull"))) continue;
+                        parameters.add(canonicalType(field.getType()));
+                    }
+                }
+                addCallable(psiClass, synthesizedConstructor(psiClass, parameters), true);
+            }
+        }
+
+        private CallableSymbol synthesizedConstructor(PsiClass psiClass, List<String> parameters) {
+            CallableSymbol symbol = new CallableSymbol();
+            String ownerName = qualifiedName(psiClass);
+            symbol.setOwnerQualifiedName(ownerName);
+            symbol.setName(simpleType(ownerName));
+            symbol.setParameterTypes(parameters);
+            symbol.setVisibility("public");
+            symbol.setConstructor(true);
+            symbol.setResolved(true);
+            symbol.setId(ownerName + "#<init>(" + String.join(",", parameters) + ")");
+            return symbol;
+        }
+
+        private boolean hasAnnotation(PsiField field, String simpleName) {
+            for (PsiAnnotation annotation : field.getAnnotations()) {
+                if (simpleName.equals(annotationSimpleName(annotation))) return true;
+            }
+            return false;
+        }
+
+        private String annotationSimpleName(PsiAnnotation annotation) {
+            PsiJavaCodeReferenceElement reference =
+                    PsiTreeUtil.getChildOfType(annotation, PsiJavaCodeReferenceElement.class);
+            if (reference != null) return reference.getReferenceName();
+            String qualified = annotation.getQualifiedName();
+            if (qualified == null || qualified.isBlank()) return "";
+            int dot = qualified.lastIndexOf('.');
+            return dot < 0 ? qualified : qualified.substring(dot + 1);
         }
 
         private CallableSymbol recordCanonicalConstructor(PsiClass recordType) {

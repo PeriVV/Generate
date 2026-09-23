@@ -19,6 +19,16 @@ public class RandomTestDataGenerator {
     private static final String ASCII = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
 
     /**
+     * 可选的真实 classpath 可实例化探针。存在时优先于名称启发式：
+     * 第三方接口（如 Spring 的 Errors）不在启发式后缀表内，new X() 必然编译失败。
+     */
+    private java.util.function.Predicate<String> instantiabilityProbe;
+
+    public void setTypeInstantiabilityProbe(java.util.function.Predicate<String> probe) {
+        this.instantiabilityProbe = probe;
+    }
+
+    /**
      * 为指定 Java 类型生成普通测试值表达式。
      * 返回值是可直接写入 Java 测试源码的字面量或构造表达式。
      *
@@ -59,6 +69,23 @@ public class RandomTestDataGenerator {
             default:
                 if ("List".equals(type) || "Collection".equals(type)) {
                     return "List.of(\"test_" + ThreadLocalRandom.current().nextInt(1000, 9999) + "\")";
+                }
+                // 常见 JDK 接口/抽象类型无法 new，直接给兼容字面量，
+                // 避免生成 `new CharSequence()` 这类必然编译失败的代码。
+                switch (type) {
+                    case "CharSequence":
+                    case "Comparable":
+                        return "\"" + randomAsciiString() + "\"";
+                    case "Number":
+                        return "0";
+                    case "Appendable":
+                        return "new StringBuilder(\"sample\")";
+                    case "Readable":
+                        return "new java.io.StringReader(\"sample\")";
+                    case "Iterable":
+                        return "java.util.List.of()";
+                    default:
+                        break;
                 }
                 return canUseConstructor(type) ? "new " + type + "()" : "null";
         }
@@ -347,12 +374,17 @@ public class RandomTestDataGenerator {
     /**
      * 判断未知类型是否可以尝试无参构造。
      * 以大写开头的类型更可能是类名，生成 new 表达式比直接 null 更利于普通路径测试。
+     * 提供 classpath 探针时以真实反射结果为准（接口/抽象/无公共无参构造都不可 new），
+     * 名称启发式只作为无探针时的兜底。
      */
     private boolean canUseConstructor(String type) {
-        return type != null
-                && !type.isBlank()
-                && Character.isUpperCase(type.charAt(0))
-                && !looksLikeExternalInterface(type);
+        if (type == null || type.isBlank() || !Character.isUpperCase(type.charAt(0))) {
+            return false;
+        }
+        if (instantiabilityProbe != null) {
+            return instantiabilityProbe.test(type);
+        }
+        return !looksLikeExternalInterface(type);
     }
 
     /**

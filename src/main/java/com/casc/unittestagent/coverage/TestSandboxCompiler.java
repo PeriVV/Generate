@@ -66,7 +66,7 @@ public class TestSandboxCompiler {
                                 + "。请删除 mockStatic/MockedStatic，直接执行真实的无副作用静态方法，"
                                 + "或通过可注入依赖设计测试；不要修改项目构建依赖。"));
             }
-            diagnostics.addAll(CoverageCandidatePreflight.inspect(testCode));
+            diagnostics.addAll(CoverageCandidatePreflight.inspectGeneratedRegions(testCode));
             if (!diagnostics.isEmpty()) {
                 return new CompiledTestArtifact(root, classes, qualifiedName(testPackage, testSimpleName),
                         targetClassName, environment.javaExecutable, Collections.emptyList(), diagnostics);

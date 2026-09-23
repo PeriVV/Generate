@@ -211,6 +211,142 @@ public class ProjectSymbolSnapshotBuilderTest extends LightJavaCodeInsightFixtur
         assertEquals(2, command.getConcreteSubtypes().size());
     }
 
+    public void testCollectsConstructorSignaturesForUnreferencedClassFields() {
+        String source = """
+                package sample;
+                class AuditService {
+                    private final Store store;
+                    private final Meter meter;
+                    String <caret>describe(int value) { return "v" + value; }
+                    String flush() { return store.dump() + meter.tick(); }
+                }
+                class Store { Store(String name) {} String dump() { return ""; } }
+                class Meter { Meter() {} Meter(String id, int size) {} String tick() { return ""; } }
+                """;
+        PsiFile file = myFixture.configureByText("AuditService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "describe");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol store = typeEndingWith(snapshot, "Store");
+        assertEquals(1, store.getConstructors().size());
+        assertEquals(List.of("java.lang.String"), store.getConstructors().get(0).getParameterTypes());
+        // 兜底构造器只提供签名，不携带源码，控制上下文增量。
+        assertTrue(store.getConstructors().get(0).getSourceCode().isEmpty());
+        // 只补构造器：不收集方法，模型仍需从可达性通道获取方法签名。
+        assertTrue(store.getMethods().isEmpty());
+        TypeSymbol meter = typeEndingWith(snapshot, "Meter");
+        assertEquals(2, meter.getConstructors().size());
+    }
+
+    public void testFieldConstructorFallbackSkipsSubtypeExpansionForInterfaces() {
+        String source = """
+                package sample;
+                class NotifyService {
+                    private final Gateway gateway;
+                    String <caret>render(String body) { return body; }
+                }
+                interface Gateway { String send(String body); }
+                class HttpGateway implements Gateway { HttpGateway() {} public String send(String body) { return body; } }
+                """;
+        PsiFile file = myFixture.configureByText("NotifyService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "render");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol gateway = typeEndingWith(snapshot, "Gateway");
+        assertEquals("interface", gateway.getKind());
+        // @Mock 字段由 Mockito 直接 mock 接口；兜底不做 ClassInheritorsSearch 子类型展开。
+        assertTrue(gateway.getConcreteSubtypes().isEmpty());
+        assertTrue(gateway.getMethods().isEmpty());
+        assertTrue(snapshot.getTypes().stream()
+                .noneMatch(type -> type.getQualifiedName().endsWith("HttpGateway")));
+    }
+
+    public void testFieldConstructorFallbackCappedAtTwelveExtraTypes() {
+        StringBuilder source = new StringBuilder("package sample;\nclass WideService {\n");
+        for (int index = 0; index < 20; index++) {
+            source.append("    private final Dep").append(index).append(" dep").append(index).append(";\n");
+        }
+        source.append("    int <caret>run(int value) { return value; }\n}\n");
+        for (int index = 0; index < 20; index++) {
+            source.append("class Dep").append(index).append(" { Dep").append(index).append("() {} }\n");
+        }
+        String text = source.toString();
+        PsiFile file = myFixture.configureByText("WideService.java", text);
+        MethodModel model = new JavaSourceAnalyzer().analyze(text.replace("<caret>", ""), "run");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        long depCount = snapshot.getTypes().stream()
+                .filter(type -> type.getQualifiedName().startsWith("sample.Dep")).count();
+        assertEquals(12, depCount);
+        assertTrue(snapshot.getTypes().size() <= 40 + 12);
+    }
+
+    public void testSynthesizesLombokRequiredArgsConstructor() {
+        String source = """
+                package sample;
+                import lombok.RequiredArgsConstructor;
+                @RequiredArgsConstructor
+                class PaymentService {
+                    private final Ledger ledger;
+                    private final String tenant;
+                    private int cached;
+                    private final String region = "cn";
+                    int <caret>charge(int amount) { return amount; }
+                }
+                class Ledger { Ledger() {} }
+                """;
+        PsiFile file = myFixture.configureByText("PaymentService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "charge");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol payment = typeEndingWith(snapshot, "PaymentService");
+        // 未初始化 final 依序进入；非 final 与已初始化 final 被排除。
+        assertEquals(1, payment.getConstructors().size());
+        assertEquals(List.of("sample.Ledger", "java.lang.String"),
+                payment.getConstructors().get(0).getParameterTypes());
+    }
+
+    public void testSynthesizesLombokConstructorsForFieldTypes() {
+        String source = """
+                package sample;
+                import lombok.AllArgsConstructor;
+                import lombok.NoArgsConstructor;
+                class RowService {
+                    private final Row row;
+                    String <caret>render() { return "r"; }
+                }
+                @AllArgsConstructor
+                @NoArgsConstructor
+                class Row {
+                    private String name;
+                    private final int size;
+                    private static String constant;
+                    private final String fixed = "x";
+                }
+                """;
+        PsiFile file = myFixture.configureByText("RowService.java", source);
+        MethodModel model = new JavaSourceAnalyzer().analyze(source.replace("<caret>", ""), "render");
+
+        ProjectSymbolSnapshot snapshot = ReadAction.compute(() ->
+                new ProjectSymbolSnapshotBuilder().build(getProject(), file, myFixture.getEditor(), model));
+
+        TypeSymbol row = typeEndingWith(snapshot, "Row");
+        assertEquals(2, row.getConstructors().size());
+        // AllArgs 跳过 static 与已初始化 final；NoArgs 为空参。
+        assertTrue(row.getConstructors().stream().anyMatch(constructor ->
+                constructor.getParameterTypes().equals(List.of("java.lang.String", "int"))));
+        assertTrue(row.getConstructors().stream().anyMatch(constructor ->
+                constructor.getParameterTypes().isEmpty()));
+    }
+
     private TypeSymbol typeEndingWith(ProjectSymbolSnapshot snapshot, String name) {
         return snapshot.getTypes().stream()
                 .filter(type -> type.getQualifiedName().endsWith(name))

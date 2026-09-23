@@ -8,6 +8,7 @@ import com.github.javaparser.ast.body.BodyDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 
 import java.util.ArrayList;
@@ -113,11 +114,16 @@ public class ClassRuntimeRepairStabilizer {
         }
         for (MethodCallExpr call : test.findAll(MethodCallExpr.class)) {
             if (!("assumeTrue".equals(call.getNameAsString()) || "assumeFalse".equals(call.getNameAsString()))) continue;
-            if (call.getArguments().size() != 1 || !call.getArgument(0).isBooleanLiteralExpr()) continue;
-            BooleanLiteralExpr literal = call.getArgument(0).asBooleanLiteralExpr();
-            if (("assumeTrue".equals(call.getNameAsString()) && !literal.getValue())
-                    || ("assumeFalse".equals(call.getNameAsString()) && literal.getValue())) {
-                throw new IllegalArgumentException("测试方法不得用恒假 assumption 跳过执行：" + test.getName());
+            // 检查所有实参位置：JUnit5 assumeTrue(boolean,String) 与 JUnit4 assumeTrue(String,boolean)
+            // 参数顺序不同，只查固定位置会被双参重载绕过。静态字面量检查只是纵深防御，
+            // 运行时 skipped 不变量（接受门禁）才是兜底。
+            for (Expression argument : call.getArguments()) {
+                if (!argument.isBooleanLiteralExpr()) continue;
+                boolean literal = argument.asBooleanLiteralExpr().getValue();
+                if (("assumeTrue".equals(call.getNameAsString()) && !literal)
+                        || ("assumeFalse".equals(call.getNameAsString()) && literal)) {
+                    throw new IllegalArgumentException("测试方法不得用恒假 assumption 跳过执行：" + test.getName());
+                }
             }
         }
     }

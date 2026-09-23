@@ -9,6 +9,7 @@ import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.LiteralStringValueExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
@@ -52,8 +53,7 @@ public final class CoverageCandidatePreflight {
                     inspectWhen(call, mockReceivers, spyReceivers, realReceivers, diagnostics);
                 } else if ("getDeclaredField".equals(call.getNameAsString())) {
                     diagnostics.add(diagnostic("REFLECTION_FIELD_ACCESS_UNSAFE", call,
-                            "覆盖率补测禁止通过 getDeclaredField 猜测私有字段。请使用真实构造函数、"
-                                    + "可见 API 或输入对象命中分支。"));
+                            reflectionFieldMessage(call)));
                 } else if (isPotentialMatcher(unit, call) && !insideMockitoMatcherContext(call)) {
                     diagnostics.add(diagnostic("MOCKITO_MATCHER_OUTSIDE_STUBBING", call,
                             "Mockito matcher " + call.getNameAsString()
@@ -65,6 +65,50 @@ public final class CoverageCandidatePreflight {
             // Syntax/compiler diagnostics remain the source of truth for unparsable Java.
         }
         return diagnostics;
+    }
+
+    /**
+     * 写入门禁专用：preflight 引导规则只应用于 UnitMind 生成的测试区间
+     * （TestClassMerger 写入的 “// region UnitMind generated tests for …” 到 “// endregion”）。
+     * 合并文件中用户既有测试的合法遗留写法（@Spy+when(spy.x())、getDeclaredField 等）
+     * 不应被候选引导规则误判为编译失败并阻止写入——既有测试本身是 Oracle 权威。
+     * 无任何 region 标记时视为纯生成文件，保持全量检查（覆盖率闭环候选）。
+     */
+    public static List<CompileDiagnostic> inspectGeneratedRegions(String code) {
+        List<CompileDiagnostic> diagnostics = inspect(code);
+        if (diagnostics.isEmpty()) return diagnostics;
+        List<int[]> regions = generatedRegions(code);
+        if (regions.isEmpty()) return diagnostics;
+        List<CompileDiagnostic> filtered = new ArrayList<>();
+        for (CompileDiagnostic diagnostic : diagnostics) {
+            long line = diagnostic.getLine();
+            if (line <= 0 || withinAny(regions, (int) line)) filtered.add(diagnostic);
+        }
+        return filtered;
+    }
+
+    private static List<int[]> generatedRegions(String code) {
+        List<int[]> regions = new ArrayList<>();
+        if (code == null) return regions;
+        String[] lines = code.split("\\R", -1);
+        int start = -1;
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index].strip();
+            if (line.startsWith("// region UnitMind generated tests for ")) {
+                start = index + 1;
+            } else if (start > 0 && line.equals("// endregion")) {
+                regions.add(new int[]{start, index + 1});
+                start = -1;
+            }
+        }
+        return regions;
+    }
+
+    private static boolean withinAny(List<int[]> regions, int line) {
+        for (int[] region : regions) {
+            if (line >= region[0] && line <= region[1]) return true;
+        }
+        return false;
     }
 
     private static void inspectWhen(MethodCallExpr when,
@@ -117,6 +161,22 @@ public final class CoverageCandidatePreflight {
         }
         // 已知 mock 是合法的。未知接收者可能来自 helper 参数或工厂，留给真实 Mockito 运行判断。
         if (!receiver.isBlank() && mockReceivers.contains(receiver)) return;
+    }
+
+    /**
+     * 反射猜测私有字段的替代路径提示：修复循环必须被引向真实构造器或 mock 注入，
+     * 否则会反复回归到 getDeclaredField。构造器签名在 context.symbolSnapshot.types
+     * 中提供（被测类字段类型已兜底收录，Lombok 构造器已按语义合成）。
+     */
+    private static String reflectionFieldMessage(MethodCallExpr call) {
+        String field = call.getArguments().size() == 1
+                && call.getArgument(0) instanceof LiteralStringValueExpr literal
+                ? literal.getValue() : "";
+        return "覆盖率补测禁止通过 getDeclaredField 猜测"
+                + (field.isBlank() ? "私有字段" : "私有字段 '" + field + "'")
+                + "。请改用：context.symbolSnapshot.types 中该字段类型的真实构造器签名构造对象状态，"
+                + "或通过可见 API/setter、方法输入命中分支；"
+                + "被测类依赖字段应使用 @Mock + @InjectMocks 注入，不要反射改写。";
     }
 
     private static boolean isMockitoWhen(CompilationUnit unit, MethodCallExpr call) {

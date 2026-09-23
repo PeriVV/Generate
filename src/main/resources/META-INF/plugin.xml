@@ -61,11 +61,6 @@
                 description="配置 UnitMind 生成单元测试时使用的随机测试数据范围">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
-        <action id="UnitTestAgent.GenerateClassUnitTest"
-                class="com.casc.unittestagent.action.GenerateClassUnitTestAction"
-                text="UnitMind：为当前类生成完整测试"
-                description="逐方法生成并聚合当前 Java 类的完整 JUnit5 与 Mockito 测试类">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-        </action>
+        <!-- 整类生成暂不开放前端入口，服务与评测链路保留，需要时重新注册 GenerateClassUnitTestAction。 -->
     </actions>
 </idea-plugin>

@@ -24,6 +24,10 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
      * 限制输出规模防止思考型模型把预算耗在长推理上。
      */
     private static final int SOURCE_BUG_ANALYSIS_MAX_TOKENS = 1800;
+    /** 思考模式下源码归因同样要为推理内容留预算，上限相应放宽。 */
+    private static final int THINKING_ANALYSIS_MAX_TOKENS = 4000;
+    /** 思考模型连通性探测预算：容纳推理内容后再回答一个极小 JSON。 */
+    private static final int TEST_CONNECTION_THINKING_MAX_TOKENS = 1024;
     /**
      * 全插件共享连接池：生成/修复/覆盖率各流程都会创建客户端实例，
      * 若每个实例独立建池会重复维护到同一端点的 TLS 连接且从不释放。
@@ -55,14 +59,14 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         String systemPrompt = promptBuilder.systemPrompt();
         String userPrompt = promptBuilder.userPrompt(request);
-        return responseParser.parse(executeChat(systemPrompt, userPrompt, config.getMaxTokens()));
+        return responseParser.parse(executeChat(systemPrompt, userPrompt, effectiveMaxTokens()));
     }
 
     @Override
     public LlmGenerationResponse repairUnitTest(LlmGenerationRequest request) throws Exception {
         validateConfig();
         return responseParser.parse(executeChat(promptBuilder.repairSystemPrompt(), promptBuilder.repairPrompt(request),
-                config.getMaxTokens()));
+                effectiveMaxTokens()));
     }
 
     @Override
@@ -70,7 +74,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         return responseParser.parseCoverage(executeChat(
                 promptBuilder.coverageSystemPrompt(), promptBuilder.coveragePrompt(request),
-                config.getMaxTokens()));
+                effectiveMaxTokens()));
     }
 
     @Override
@@ -78,7 +82,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         validateConfig();
         return responseParser.parseClassRepair(executeChat(
                 promptBuilder.classRepairSystemPrompt(), promptBuilder.classRepairPrompt(request),
-                config.getMaxTokens()));
+                effectiveMaxTokens()));
     }
 
     @Override
@@ -88,7 +92,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         return responseParser.parseSourceBugAnalysis(executeChat(
                 promptBuilder.sourceBugAnalysisSystemPrompt(),
                 promptBuilder.sourceBugAnalysisPrompt(request, assessment),
-                Math.min(config.getMaxTokens(), SOURCE_BUG_ANALYSIS_MAX_TOKENS)));
+                Math.min(effectiveMaxTokens(), sourceBugAnalysisMaxTokens())));
     }
 
     @Override
@@ -100,7 +104,22 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private String executeChat(String systemPrompt, String userPrompt) throws IOException {
-        return executeChat(systemPrompt, userPrompt, config.getMaxTokens());
+        return executeChat(systemPrompt, userPrompt, effectiveMaxTokens());
+    }
+
+    /**
+     * 思考模式下推理内容与最终代码共享输出预算，用户配置低于下限时自动抬高，
+     * 避免生成以 finish_reason=length 截断；非思考模式原样使用用户配置。
+     */
+    int effectiveMaxTokens() {
+        if (!config.isThinkingMode()) {
+            return config.getMaxTokens();
+        }
+        return Math.max(config.getMaxTokens(), LlmConfig.THINKING_MIN_OUTPUT_TOKENS);
+    }
+
+    private int sourceBugAnalysisMaxTokens() {
+        return config.isThinkingMode() ? THINKING_ANALYSIS_MAX_TOKENS : SOURCE_BUG_ANALYSIS_MAX_TOKENS;
     }
 
     private String executeChat(String systemPrompt, String userPrompt, int maxTokens) throws IOException {
@@ -127,18 +146,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     public String testConnection() throws Exception {
         validateConfig();
-        // JSON 模式要求消息中显式要求 JSON，否则部分提供商会输出空白直到 token 上限。
-        JSONArray messages = new JSONArray();
-        messages.put(new JSONObject().put("role", "system")
-                .put("content", "You are a connectivity checker. Always reply in JSON."));
-        messages.put(new JSONObject().put("role", "user")
-                .put("content", "Reply with {\"status\":\"ok\"} only."));
-        JSONObject body = new JSONObject()
-                .put("model", modelName())
-                .put("messages", messages)
-                .put("temperature", 0)
-                .put("max_tokens", 16);
-        applyProviderOptions(body);
+        JSONObject body = testConnectionBody();
         Request httpRequest = new Request.Builder()
                 .url(endpointUrl())
                 .post(RequestBody.create(body.toString(), JSON))
@@ -150,13 +158,61 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(responseBody));
             }
-            String content = extractMessageContent(responseBody);
+            // 连通性判定只关心 HTTP 200 + 合法的 chat 响应结构：
+            // finish_reason=length 仅说明探测预算小，连接本身是通的，不应按生成截断报错。
+            String content = connectivityReply(responseBody);
             return content == null || content.isBlank() ? "连接成功。" : "连接成功：" + content.trim();
         }
     }
 
+    /**
+     * 连通性探测请求体。
+     * 思考模型（开启思考模式或网关托管的第三方推理模型）即使只回答一个 JSON 也会先输出
+     * 推理内容，16 token 必然被截断；给足探测预算让回答有机会落盘。
+     */
+    JSONObject testConnectionBody() {
+        // JSON 模式要求消息中显式要求 JSON，否则部分提供商会输出空白直到 token 上限。
+        JSONArray messages = new JSONArray();
+        messages.put(new JSONObject().put("role", "system")
+                .put("content", "You are a connectivity checker. Always reply in JSON."));
+        messages.put(new JSONObject().put("role", "user")
+                .put("content", "Reply with {\"status\":\"ok\"} only."));
+        boolean thinkingCapable = config.isThinkingMode() || isHostedThirdPartyModel();
+        JSONObject body = new JSONObject()
+                .put("model", modelName())
+                .put("messages", messages)
+                .put("temperature", 0)
+                .put("max_tokens", thinkingCapable ? TEST_CONNECTION_THINKING_MAX_TOKENS : 16);
+        applyProviderOptions(body);
+        return body;
+    }
+
+    /** 连通性视角的响应解析：合法结构即成功，返回可展示的回复文本（可能为空）。 */
+    String connectivityReply(String body) {
+        JSONObject root;
+        try {
+            root = new JSONObject(body);
+        } catch (org.json.JSONException ex) {
+            throw new LlmResponseFormatException("大模型响应不是合法 JSON：" + responseSnippet(body));
+        }
+        JSONArray choices = root.optJSONArray("choices");
+        if (choices == null || choices.length() == 0) {
+            throw new LlmResponseFormatException("大模型响应中没有 choices。");
+        }
+        JSONObject message = choices.getJSONObject(0).optJSONObject("message");
+        if (message == null) {
+            return "";
+        }
+        Object content = message.opt("content");
+        if (content instanceof String) {
+            return (String) content;
+        }
+        // 分段 content 等复杂结构对连通性探测不重要，空文本等价于“连接成功”。
+        return "";
+    }
+
     JSONObject requestBody(String systemPrompt, String userPrompt) {
-        return requestBody(systemPrompt, userPrompt, config.getMaxTokens());
+        return requestBody(systemPrompt, userPrompt, effectiveMaxTokens());
     }
 
     private JSONObject requestBody(String systemPrompt, String userPrompt, int maxTokens) {
@@ -173,12 +229,21 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private void applyProviderOptions(JSONObject body) {
+        // 百炼上的第三方模型（如 MiniMax/MiniMax-M2.7）参数透传给原厂：
+        // enable_thinking 与 response_format 是 Qwen 家族参数，第三方思考模型可能直接拒绝。
+        // 最小请求体最稳；思考内容由 extractMessageContent 的 reasoning_content 分支兜底。
+        boolean dashScopeNativeModel = isDashScope() && !isHostedThirdPartyModel();
+        // 思考模式：用户显式选择让推理模型按默认思考行为工作，不再注入任何
+        // “关闭思考”参数；JSON mode 与思考模式在多数网关互斥，同样不发送。
+        if (config.isThinkingMode()) {
+            return;
+        }
         if (supportsJsonMode()) {
             body.put("response_format", new JSONObject().put("type", "json_object"));
         }
         // DashScope JSON mode conflicts with thinking mode. Coverage repair needs a short,
         // machine-readable final answer rather than provider-specific reasoning_content.
-        if (isDashScope()) {
+        if (dashScopeNativeModel) {
             body.put("enable_thinking", false);
         }
         // DeepSeek V4 思考模式默认开启：推理内容会挤占 max_tokens 预算（finish_reason=length），
@@ -188,7 +253,16 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
     }
 
+    /** 百炼兼容模式里的第三方模型名带厂商前缀（MiniMax/MiniMax-M2.7），自家模型无斜杠。 */
+    private boolean isHostedThirdPartyModel() {
+        String model = config.getModel() == null ? "" : config.getModel().trim();
+        return model.contains("/");
+    }
+
     private boolean supportsJsonMode() {
+        if (isDashScope() && isHostedThirdPartyModel()) {
+            return false;
+        }
         String url = config.getApiUrl() == null ? "" : config.getApiUrl().toLowerCase();
         return isDashScope() || isDeepSeek() || url.contains("api.openai.com/");
     }
@@ -223,7 +297,9 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     /**
      * 官方文档只给 base_url（如 https://api.deepseek.com），完整路径由 SDK 拼接；
-     * 本客户端直接 POST，因此为裸 base_url 自动补全 /chat/completions。
+     * 本客户端直接 POST，因此为 base_url 自动补全 /chat/completions。
+     * 判断依据是路径以 /v1 结尾而非恰好等于 /v1——阿里云百炼等网关的路径形如
+     * /compatible-mode/v1，同样需要在末尾追加 /chat/completions。
      */
     String endpointUrl() {
         String url = config.getApiUrl() == null ? "" : config.getApiUrl().trim();
@@ -239,7 +315,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         if (path.matches("/+")) {
             return url.substring(0, pathStart) + "/chat/completions";
         }
-        if (path.matches("/v1/?")) {
+        if (path.matches(".*/v1/?")) {
             return url.replaceAll("/+$", "") + "/chat/completions";
         }
         return url;

@@ -44,6 +44,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JSpinner compileRepairRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
     private final JSpinner temperature = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.1));
     private final JCheckBox fallbackToRuleBased = new JCheckBox("失败时使用规则兜底");
+    private final JCheckBox thinkingMode = new JCheckBox("启用思考模式（推理模型）");
     private final JLabel apiKeyStatus = new JLabel();
     private final JButton testConnection = new JButton("测试连接");
     private final JSpinner lineCoverage = new JSpinner(new SpinnerNumberModel(90, 0, 100, 1));
@@ -51,7 +52,8 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JSpinner coverageRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
     private final JSpinner coverageRepairRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
     private final JSpinner coverageTimeout = new JSpinner(new SpinnerNumberModel(60, 5, 600, 5));
-    private final JCheckBox existingBaseline = new JCheckBox("计算已有 <被测类>Test 基线");
+    private final JCheckBox strictOracleGate = new JCheckBox("严格 Oracle 准出（禁止自动修改断言）");
+    private final JSpinner maxEvidenceResumes = new JSpinner(new SpinnerNumberModel(2, 0, 5, 1));
 
     public UnitMindSettingsDialog(@Nullable Project project) {
         super(project);
@@ -102,7 +104,8 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         coverage.setMaxRounds((Integer) coverageRounds.getValue());
         coverage.setMaxRepairRounds((Integer) coverageRepairRounds.getValue());
         coverage.setExecutionTimeoutSeconds((Integer) coverageTimeout.getValue());
-        coverage.setExistingBaselineEnabled(existingBaseline.isSelected());
+        coverage.setStrictOracleGate(strictOracleGate.isSelected());
+        coverage.setMaxEvidenceResumes((Integer) maxEvidenceResumes.getValue());
         CoverageConfigManager.save(coverage);
         super.doOKAction();
     }
@@ -137,7 +140,21 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         constraints.gridx = 1;
         constraints.gridy = 8;
         constraints.gridwidth = 1;
+        thinkingMode.setToolTipText("适合 MiniMax-M2、DeepSeek-V4 等推理模型：不再强制关闭模型思考、"
+                + "不发送 JSON 模式参数，并把最大输出长度自动抬到 " + LlmConfig.THINKING_MIN_OUTPUT_TOKENS
+                + " 以上（推理内容与最终代码共享输出预算）。");
+        // 勾选时把输出预算一次性抬到思考模式下限，用户仍可自行调大；取消勾选不回改，避免覆盖用户选择。
+        thinkingMode.addItemListener(event -> {
+            if (thinkingMode.isSelected()
+                    && ((Integer) maxTokens.getValue()) < LlmConfig.THINKING_MIN_OUTPUT_TOKENS) {
+                maxTokens.setValue(LlmConfig.THINKING_MIN_OUTPUT_TOKENS);
+            }
+        });
         panel.add(fallbackToRuleBased, constraints);
+
+        constraints.gridx = 0;
+        constraints.gridy = 9;
+        panel.add(thinkingMode, constraints);
 
         constraints.gridx = 1;
         constraints.gridy = 9;
@@ -165,10 +182,14 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         addRow(panel, constraints, 2, "最多覆盖率探索轮次", coverageRounds);
         addRow(panel, constraints, 3, "最多失败修复轮次", coverageRepairRounds);
         addRow(panel, constraints, 4, "单轮执行超时（秒）", coverageTimeout);
-        constraints.gridx = 1;
-        constraints.gridy = 5;
-        constraints.weightx = 1;
-        panel.add(existingBaseline, constraints);
+        addRow(panel, constraints, 5, "证据续修最大次数", maxEvidenceResumes);
+        constraints.gridx = 0;
+        constraints.gridy = 6;
+        constraints.gridwidth = 2;
+        strictOracleGate.setToolTipText("开启后，凡是模型判定“测试期望写错、需要修改断言”的自动修复一律不应用："
+                + "闭环立即停止并标记 NEEDS_REVIEW，保留原失败测试与证据，由你人工确认是被测代码缺陷还是测试问题。"
+                + "适合担心自动修复掩盖产品缺陷的场景；默认关闭，沿用权威分级仲裁。");
+        panel.add(strictOracleGate, constraints);
         return panel;
     }
 
@@ -196,13 +217,15 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         compileRepairRounds.setValue(config.getMaxCompileRepairRounds());
         temperature.setValue(config.getTemperature());
         fallbackToRuleBased.setSelected(config.isFallbackToRuleBased());
+        thinkingMode.setSelected(config.isThinkingMode());
         CoverageConfig coverage = CoverageConfigManager.load();
         lineCoverage.setValue((int) Math.round(coverage.getLineThreshold() * 100));
         branchCoverage.setValue((int) Math.round(coverage.getBranchThreshold() * 100));
         coverageRounds.setValue(coverage.getMaxRounds());
         coverageRepairRounds.setValue(coverage.getMaxRepairRounds());
         coverageTimeout.setValue(coverage.getExecutionTimeoutSeconds());
-        existingBaseline.setSelected(coverage.isExistingBaselineEnabled());
+        strictOracleGate.setSelected(coverage.isStrictOracleGate());
+        maxEvidenceResumes.setValue(coverage.getMaxEvidenceResumes());
     }
 
     private LlmConfig configFromUi() {
@@ -217,6 +240,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         config.setMaxCompileRepairRounds((Integer) compileRepairRounds.getValue());
         config.setTemperature(((Number) temperature.getValue()).doubleValue());
         config.setFallbackToRuleBased(fallbackToRuleBased.isSelected());
+        config.setThinkingMode(thinkingMode.isSelected());
         return config;
     }
 

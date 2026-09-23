@@ -6,6 +6,7 @@ import com.casc.unittestagent.model.MockStrategyItem;
 import com.casc.unittestagent.model.ClassGenerationResult;
 import com.casc.unittestagent.model.MethodGenerationItem;
 import com.casc.unittestagent.ui.component.UnitMindSectionPanel;
+import com.casc.unittestagent.ui.component.UnitMindWrapLayout;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -26,6 +27,9 @@ import java.util.List;
  * 页面同时展示静态策略和用户手动调用得到的大模型候选策略，由用户选择后续测试代码生成使用哪一份。
  */
 public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
+    /** 策略项被编辑后的通知，用于让上层失效旧的测试代码。 */
+    private final Runnable onEdited;
+
     /**
      * 创建 Mock 策略页。
      *
@@ -34,14 +38,17 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
      * @param onGenerateLlmMockStrategy 调用大模型生成候选 Mock 策略
      * @param onUseStaticMockStrategy 选择静态 Mock 策略
      * @param onUseLlmMockStrategy 选择大模型候选 Mock 策略
+     * @param onEdited 策略项编辑动作，策略变化后旧测试代码不再有效
      */
     public MockStrategyStepPanel(GenerationResult result,
                                  boolean llmRunning,
                                  Runnable onGenerateLlmMockStrategy,
                                  Runnable onUseStaticMockStrategy,
-                                 Runnable onUseLlmMockStrategy) {
+                                 Runnable onUseLlmMockStrategy,
+                                 Runnable onEdited) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
+        this.onEdited = onEdited;
         if (result instanceof ClassGenerationResult) {
             add(new JLabel("整类模式会按方法使用以下静态策略，并在聚合时去重共享字段 Mock。"), BorderLayout.NORTH);
             add(new UnitMindSectionPanel("整类 Mock 策略", table(classModel((ClassGenerationResult) result))), BorderLayout.CENTER);
@@ -80,30 +87,30 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
 
     /**
      * 构建顶部操作栏。
+     * 状态标签与按钮放进同一个自适应换行容器：宽时一行排开，窄时自动换行，不会互相裁切。
      */
     private JPanel toolbar(GenerationResult result,
                            boolean llmRunning,
                            Runnable onGenerateLlmMockStrategy,
                            Runnable onUseStaticMockStrategy,
                            Runnable onUseLlmMockStrategy) {
-        JPanel panel = new JPanel(new BorderLayout());
+        JPanel panel = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
         JLabel selected = new JLabel("当前用于测试代码生成：" + selectedText(result));
-        panel.add(selected, BorderLayout.WEST);
+        panel.add(selected);
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        JButton generate = new JButton(llmRunning ? "大模型生成中..." : "调用大模型 Mock 策略");
-        JButton useStatic = new JButton("使用静态策略");
-        JButton useLlm = new JButton("使用大模型策略");
+        JButton generate = new JButton(llmRunning ? "生成中..." : "生成大模型策略");
+        generate.setToolTipText("调用大模型生成候选 Mock 策略，不覆盖静态策略");
+        JButton useStatic = new JButton("用静态策略");
+        JButton useLlm = new JButton("用大模型策略");
         generate.setEnabled(!llmRunning && result != null && result.getMethodModel() != null);
         useStatic.setEnabled(result != null && result.getMockStrategy() != null);
         useLlm.setEnabled(result != null && result.getLlmMockStrategy() != null);
         generate.addActionListener(event -> onGenerateLlmMockStrategy.run());
         useStatic.addActionListener(event -> onUseStaticMockStrategy.run());
         useLlm.addActionListener(event -> onUseLlmMockStrategy.run());
-        buttons.add(generate);
-        buttons.add(useStatic);
-        buttons.add(useLlm);
-        panel.add(buttons, BorderLayout.EAST);
+        panel.add(generate);
+        panel.add(useStatic);
+        panel.add(useLlm);
         return panel;
     }
 
@@ -171,6 +178,12 @@ public class MockStrategyStepPanel extends JBPanel<MockStrategyStepPanel> {
                 item.setMockitoStrategy(String.valueOf(value));
             } else if (column == 6) {
                 item.setRemark(String.valueOf(value));
+            } else {
+                return;
+            }
+            // 策略项已实际变化，通知上层失效旧测试代码。
+            if (onEdited != null) {
+                onEdited.run();
             }
         });
         return model;

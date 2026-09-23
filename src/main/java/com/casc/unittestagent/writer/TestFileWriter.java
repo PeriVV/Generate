@@ -4,7 +4,9 @@ import com.casc.unittestagent.model.GeneratedTestFile;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.ui.TestWriteModeDialog;
 import com.casc.unittestagent.util.CodeFingerprint;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -117,7 +119,7 @@ public class TestFileWriter {
      * 标准 Gradle/Maven 目录写入 src/test/java，非标准目录落到 generated-test 子目录。
      */
     public File resolveTargetFile(PsiFile sourceFile, GeneratedTestFile generatedTestFile) {
-        String sourcePath = sourceFile.getVirtualFile().getPath();
+        String sourcePath = ReadAction.compute(() -> sourceFile.getVirtualFile().getPath());
         String normalized = sourcePath.replace('\\', '/');
         int index = normalized.indexOf("/src/main/java/");
         if (index >= 0) {
@@ -197,7 +199,11 @@ public class TestFileWriter {
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(targetFile);
     }
 
-    /** Captures both saved VFS content and unsaved IDE document edits for optimistic locking. */
+    /**
+     * 捕获目标文件当前内容，用于写入前后的乐观锁校验。
+     * 优先读取 IDE 文档以包含未保存的编辑；文档读取必须处于读动作内，
+     * 而同步 VFS 刷新必须处于读动作外，两者不能放在同一个读动作中。
+     */
     private TargetSnapshot snapshot(File targetFile) {
         if (targetFile == null || !targetFile.exists()) {
             return new TargetSnapshot(false, "");
@@ -205,9 +211,11 @@ public class TestFileWriter {
         try {
             VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(targetFile);
             if (virtualFile != null) {
-                com.intellij.openapi.editor.Document document =
-                        FileDocumentManager.getInstance().getDocument(virtualFile);
-                if (document != null) return new TargetSnapshot(true, document.getText());
+                String documentContent = ReadAction.compute(() -> {
+                    Document document = FileDocumentManager.getInstance().getDocument(virtualFile);
+                    return document == null ? null : document.getText();
+                });
+                if (documentContent != null) return new TargetSnapshot(true, documentContent);
             }
             return new TargetSnapshot(true, Files.readString(targetFile.toPath(), StandardCharsets.UTF_8));
         } catch (IOException ex) {
@@ -217,13 +225,14 @@ public class TestFileWriter {
 
     private String sourceContent(PsiFile sourceFile) {
         if (sourceFile == null) return "";
-        VirtualFile virtualFile = sourceFile.getVirtualFile();
-        if (virtualFile != null) {
-            com.intellij.openapi.editor.Document document =
-                    FileDocumentManager.getInstance().getDocument(virtualFile);
-            if (document != null) return document.getText();
-        }
-        return sourceFile.getText();
+        return ReadAction.compute(() -> {
+            VirtualFile virtualFile = sourceFile.getVirtualFile();
+            if (virtualFile != null) {
+                Document document = FileDocumentManager.getInstance().getDocument(virtualFile);
+                if (document != null) return document.getText();
+            }
+            return sourceFile.getText();
+        });
     }
 
     private static class TargetSnapshot {

@@ -9,6 +9,7 @@ import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
+import com.casc.unittestagent.model.FailureCategory;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.TestExecutionSummary;
 import com.casc.unittestagent.model.SourceBugAnalysis;
@@ -139,8 +140,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         // 纵向卡片在窄工具窗口中不会互相挤压或制造整页横向滚动。
         JPanel cards = new JPanel(new java.awt.GridLayout(0, 1, 0, JBUI.scale(8)));
         cards.setOpaque(false);
-        cards.add(metricCard("本次生成", report.getGenerated(), true));
-        cards.add(metricCard("已有测试基线", report.getExisting(), false));
+        cards.add(metricCard("本次生成", report.getGenerated()));
         return cards;
     }
 
@@ -189,7 +189,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         return panel;
     }
 
-    private JComponent metricCard(String title, CoverageSnapshot snapshot, boolean generated) {
+    private JComponent metricCard(String title, CoverageSnapshot snapshot) {
         JPanel card = new JPanel();
         card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
         card.setBorder(BorderFactory.createCompoundBorder(
@@ -202,14 +202,12 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         JBLabel titleLabel = new JBLabel(title);
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
         headingRow.add(titleLabel, BorderLayout.WEST);
-        if (generated) {
-            headingRow.add(new JBLabel("目标：行 " + percent(config.getLineThreshold())
-                    + " / 分支 " + percent(config.getBranchThreshold())), BorderLayout.EAST);
-        }
+        headingRow.add(new JBLabel("目标：行 " + percent(config.getLineThreshold())
+                + " / 分支 " + percent(config.getBranchThreshold())), BorderLayout.EAST);
         card.add(headingRow);
         card.add(Box.createVerticalStrut(JBUI.scale(5)));
 
-        boolean running = generated && report.getStatus() == CoverageStatus.RUNNING;
+        boolean running = report.getStatus() == CoverageStatus.RUNNING;
         card.add(metricRow("行", snapshot == null ? null : snapshot.getLine(),
                 config.getLineThreshold(), snapshot != null && snapshot.isAvailable(), false, running));
         card.add(Box.createVerticalStrut(JBUI.scale(4)));
@@ -494,7 +492,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             if (!usefulStack.isBlank()) message += "  |  " + usefulStack;
             String exception = diagnostic.getCategory().isBlank()
                     ? diagnostic.getExceptionType()
-                    : diagnostic.getCategory() + " / " + diagnostic.getExceptionType();
+                    : FailureCategory.fromCode(diagnostic.getCategory()).displayText()
+                            + " / " + diagnostic.getExceptionType();
             model.addRow(new Object[]{diagnostic.getTestId(), exception, message});
         }
         JBTable table = table(model);
@@ -594,8 +593,9 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             case REPAIR_BUDGET_EXHAUSTED -> "修复预算已耗尽";
             case TEST_FAILURE -> "测试持续失败";
             case TEST_DESIGN_ERROR -> "测试设计错误";
+            case RUNTIME_ENVIRONMENT_FAILURE -> "运行环境失败";
             case SUSPECTED_SUT_BUG -> "疑似生产代码缺陷";
-            case ORACLE_INCONCLUSIVE -> "Oracle 证据不足";
+            case ORACLE_INCONCLUSIVE -> "证据不足或无法判定";
             case MODEL_ERROR -> "大模型调用失败";
             case ENVIRONMENT_ERROR -> "覆盖率环境错误";
             case CANCELLED -> "用户取消";
@@ -616,10 +616,10 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         private static final CoveragePhase[] PHASES = {
                 CoveragePhase.PREPARING, CoveragePhase.COMPILING, CoveragePhase.EXECUTING,
                 CoveragePhase.ANALYZING, CoveragePhase.IMPROVING, CoveragePhase.DIAGNOSING_SUT_BUG,
-                CoveragePhase.BASELINE, CoveragePhase.VALIDATING, CoveragePhase.COMPLETED
+                CoveragePhase.VALIDATING, CoveragePhase.COMPLETED
         };
         private static final String[] LABELS = {
-                "准备", "编译", "执行", "分析", "补测", "归因", "基线", "校验", "完成"
+                "准备", "编译", "执行", "分析", "补测", "归因", "校验", "完成"
         };
         private final CoverageReport report;
 

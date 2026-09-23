@@ -33,6 +33,23 @@ public class CoverageCandidatePreflightTest extends TestCase {
                 "REFLECTION_FIELD_ACCESS_UNSAFE".equals(item.getCode())));
     }
 
+    public void testReflectionFieldMessagePointsToConstructorsAndMocks() {
+        List<CompileDiagnostic> diagnostics = CoverageCandidatePreflight.inspect("""
+                class SubjectTest {
+                    void test() throws Exception {
+                        Subject.class.getDeclaredField("guessedPrivateState");
+                    }
+                }
+                """);
+
+        CompileDiagnostic diagnostic = diagnostics.stream()
+                .filter(item -> "REFLECTION_FIELD_ACCESS_UNSAFE".equals(item.getCode()))
+                .findFirst().orElseThrow();
+        assertTrue(diagnostic.getMessage(), diagnostic.getMessage().contains("guessedPrivateState"));
+        assertTrue(diagnostic.getMessage(), diagnostic.getMessage().contains("symbolSnapshot"));
+        assertTrue(diagnostic.getMessage(), diagnostic.getMessage().contains("@Mock"));
+    }
+
     public void testRejectsAssertThrowsThatDirectlyInvokesReflection() {
         List<CompileDiagnostic> diagnostics = CoverageCandidatePreflight.inspect("""
                 import java.lang.reflect.Method;
@@ -205,5 +222,58 @@ public class CoverageCandidatePreflightTest extends TestCase {
 
         assertFalse(diagnostics.toString(), diagnostics.stream().anyMatch(item ->
                 "MOCKITO_WHEN_ON_SPY".equals(item.getCode())));
+    }
+
+    public void testGeneratedRegionsExemptLegacyCodeInMergedFile() {
+        // 写入门禁：用户既有测试（region 之外）的合法遗留写法（@Spy + when）不得被候选
+        // 引导规则误判为编译失败；生成区间内的违规（getDeclaredField）仍须拦截。
+        String merged = """
+                package sample;
+                import org.mockito.Spy;
+                import static org.mockito.Mockito.when;
+                class SubjectTest {
+                    @Spy OrderValidator validator;
+
+                    @Test void legacyUsesWhenOnSpy() {
+                        when(validator.validate("a")).thenReturn(true);
+                    }
+
+                    // region UnitMind generated tests for sample.Subject#calc()
+                    @Test void generatedUsesReflection() {
+                        Object field = new Subject().getClass().getDeclaredField("hidden");
+                    }
+                    // endregion
+                }
+                """;
+        // 补充 import 使文本可解析。
+        merged = merged.replace("import org.mockito.Spy;",
+                "import org.junit.jupiter.api.Test;\nimport org.mockito.Spy;");
+
+        List<CompileDiagnostic> full = CoverageCandidatePreflight.inspect(merged);
+        assertTrue(full.stream().anyMatch(item -> "MOCKITO_WHEN_ON_SPY".equals(item.getCode())));
+        assertTrue(full.stream().anyMatch(item -> "REFLECTION_FIELD_ACCESS_UNSAFE".equals(item.getCode())));
+
+        List<CompileDiagnostic> regionFiltered = CoverageCandidatePreflight.inspectGeneratedRegions(merged);
+        assertTrue(regionFiltered.toString(), regionFiltered.stream().noneMatch(item ->
+                "MOCKITO_WHEN_ON_SPY".equals(item.getCode())));
+        assertTrue(regionFiltered.stream().anyMatch(item ->
+                "REFLECTION_FIELD_ACCESS_UNSAFE".equals(item.getCode())));
+    }
+
+    public void testGeneratedRegionsKeepFullCheckWithoutMarkers() {
+        // 无 region 标记 = 纯生成文件（覆盖率闭环候选），保持全量检查。
+        String generated = """
+                package sample;
+                import org.mockito.Spy;
+                import static org.mockito.Mockito.when;
+                class SubjectTest {
+                    @Spy OrderValidator validator;
+                    @Test void test() { when(validator.validate("a")).thenReturn(true); }
+                }
+                """.replace("import org.mockito.Spy;",
+                        "import org.junit.jupiter.api.Test;\nimport org.mockito.Spy;");
+
+        List<CompileDiagnostic> diagnostics = CoverageCandidatePreflight.inspectGeneratedRegions(generated);
+        assertTrue(diagnostics.stream().anyMatch(item -> "MOCKITO_WHEN_ON_SPY".equals(item.getCode())));
     }
 }

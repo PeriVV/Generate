@@ -49,6 +49,23 @@ public class JacocoCoverageExecutorClasspathOrderTest extends TestCase {
         assertTrue(JacocoCoverageExecutor.compareVersions("1.3", "1.2.9") > 0);
     }
 
+    public void testDetectsUserPlatformLauncherPresence() {
+        assertTrue(JacocoCoverageExecutor.hasUserPlatformLauncher(
+                List.of(jar("~/.m2/org/junit/platform/junit-platform-launcher/1.13.0/junit-platform-launcher-1.13.0.jar"))));
+        assertFalse(JacocoCoverageExecutor.hasUserPlatformLauncher(
+                List.of(jar("~/.m2/org/junit/platform/junit-platform-commons/6.0.3/junit-platform-commons-6.0.3.jar"))));
+        assertFalse(JacocoCoverageExecutor.hasUserPlatformLauncher(null));
+    }
+
+    public void testJUnitStackExclusionMatchesOnlyOfficialArtifacts() {
+        assertTrue(JacocoCoverageExecutor.isUserJUnitStackJar("junit-platform-engine-6.0.3.jar"));
+        assertTrue(JacocoCoverageExecutor.isUserJUnitStackJar("junit-jupiter-engine-6.0.3.jar"));
+        assertTrue(JacocoCoverageExecutor.isUserJUnitStackJar("junit-vintage-engine-5.12.0.jar"));
+        // 第三方适配 jar 名字里带 junit-jupiter 但不能剔除。
+        assertFalse(JacocoCoverageExecutor.isUserJUnitStackJar("mockito-junit-jupiter-5.23.0.jar"));
+        assertFalse(JacocoCoverageExecutor.isUserJUnitStackJar("testcontainers-junit-jupiter-2.0.5.jar"));
+    }
+
     private static File jar(String path) {
         return new File(path.replace("~", System.getProperty("user.home")));
     }

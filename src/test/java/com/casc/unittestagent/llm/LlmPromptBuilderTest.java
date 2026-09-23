@@ -8,6 +8,7 @@ import com.casc.unittestagent.model.CoverageGap;
 import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.CoverageSnapshot;
 import com.casc.unittestagent.model.CoverageMetric;
+import com.casc.unittestagent.model.FailureCategory;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.model.OracleAssessment;
@@ -86,6 +87,39 @@ public class LlmPromptBuilderTest {
         assertTrue(generation.contains("verify(logger).info/error/warn/debug/trace"));
         assertTrue(coverage.contains("@Mock Logger 与生产 logger 不是同一实例"));
         assertTrue(classRepair.contains("MOCKITO_VERIFY_WRONG_INSTANCE"));
+    }
+
+    @Test
+    public void runtimeRepairPromptEnumeratesClosedCategoryList() {
+        RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("SubjectTest#t()");
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        request.setCoverageReport(new CoverageReport());
+        request.setExistingTestCodeSummary("class SubjectTest { void t() {} }");
+
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+
+        for (String code : FailureCategory.runtimeArbitrationCodes()) {
+            assertTrue("封闭分类缺失：" + code, prompt.contains(code));
+        }
+        assertTrue(prompt.contains("不得发明新分类"));
+        assertTrue(prompt.contains("MOCKITO_STATIC_MOCK_FORBIDDEN_TARGET 表示 Mockito 拒绝 mockStatic 该目标"));
+        assertTrue(prompt.contains("只对列出的失败测试有效"));
+    }
+
+    @Test
+    public void classRepairPromptEnumeratesClosedCategoryList() {
+        LlmGenerationRequest request = new LlmGenerationRequest();
+        request.setMethodSourceCode("class Subject {}");
+
+        String prompt = new LlmPromptBuilder().classRepairPrompt(request);
+
+        for (String code : FailureCategory.runtimeArbitrationCodes()) {
+            assertTrue("整类修复封闭分类缺失：" + code, prompt.contains(code));
+        }
+        assertTrue(prompt.contains("不得发明新分类"));
+        assertTrue(prompt.contains("只对列出的失败测试有效"));
     }
 
     @Test

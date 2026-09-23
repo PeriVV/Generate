@@ -112,10 +112,20 @@ public class UnitMindStepperPanel extends JBPanel<UnitMindStepperPanel> {
     }
 
     private String tooltip(String step) {
-        if ("静态分析结果".equals(step)) {
-            return "静态分析结果：展示方法信息、参数信息、参数约束、控制流和方法调用";
+        switch (step) {
+            case "静态分析结果":
+                return "静态分析结果：展示方法信息、参数信息、参数约束、控制流分支和依赖调用";
+            case "测试场景":
+                return "测试场景：正常/异常/边界场景及触发条件，可直接编辑，编辑后旧测试代码会失效";
+            case "Mock策略":
+                return "Mock 策略：静态策略与可选大模型候选策略，可选择或编辑，变化后旧测试代码会失效";
+            case "测试代码":
+                return "测试代码：生成、编辑、编译校验与覆盖率闭环";
+            case "写入测试文件":
+                return "写入测试文件：选择写入模式，编译与执行门禁通过后写入目标测试类";
+            default:
+                return step;
         }
-        return step;
     }
 
     /**

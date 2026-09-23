@@ -6,6 +6,7 @@ import com.casc.unittestagent.model.CallContextModel;
 import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ConstraintModel;
 import com.casc.unittestagent.model.DependencyModel;
+import com.casc.unittestagent.model.FailureCategory;
 import com.casc.unittestagent.model.MethodUsageModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.ProjectSymbolSnapshot;
@@ -161,7 +162,7 @@ public class LlmPromptBuilder {
         payload.put("oracleEvidence", oracleEvidence(request));
         payload.put("previousAttempt", nullToEmpty(request.getPreviousAttemptSummary()));
         String outputSchema = "RUNTIME_REPAIR".equals(taskMode)
-                ? "输出格式：{\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"可定位的独立证据\"],"
+                ? "输出格式：{\"diagnosis\":{\"rootCauseCategory\":\"必须取自规则 R3c 的封闭分类列表\",\"evidence\":[\"可定位的独立证据\"],"
                 + "\"oracleDecision\":\"KEEP|CORRECT\",\"oracleAuthority\":\"USER_REQUIREMENT|EXISTING_TEST|CONTRACT_FACT|PRODUCTION_SOURCE|SCENARIO|RUNTIME_ACTUAL|NONE\","
                 + "\"oracleAuthorityRef\":\"oracleEvidence.authorityItems 中的精确 ref；无权威证据时为 NONE\","
                 + "\"repairDisposition\":\"REPAIR_TEST|SUSPECTED_SUT_BUG|INCONCLUSIVE\"},"
@@ -202,7 +203,7 @@ public class LlmPromptBuilder {
         payload.put("userInstruction", nullToEmpty(request.getUserInstruction()));
         return "请只返回 JSON，不要返回 Markdown。\n"
                 + "输出格式：{\"repairScope\":\"METHOD_ONLY|SHARED_FIXTURE\","
-                + "\"diagnosis\":{\"rootCauseCategory\":\"\",\"evidence\":[\"可定位的独立证据\"],\"oracleDecision\":\"KEEP|CORRECT\","
+                + "\"diagnosis\":{\"rootCauseCategory\":\"必须取自规则 13 的封闭分类列表\",\"evidence\":[\"可定位的独立证据\"],\"oracleDecision\":\"KEEP|CORRECT\","
                 + "\"oracleAuthority\":\"USER_REQUIREMENT|EXISTING_TEST|CONTRACT_FACT|PRODUCTION_SOURCE|SCENARIO|RUNTIME_ACTUAL|NONE\","
                 + "\"oracleAuthorityRef\":\"oracleEvidence.authorityItems 中的精确 ref；无权威证据时为 NONE\","
                 + "\"repairDisposition\":\"REPAIR_TEST|SUSPECTED_SUT_BUG|INCONCLUSIVE\"},"
@@ -223,12 +224,22 @@ public class LlmPromptBuilder {
                 + "9. repairDisposition=REPAIR_TEST 时必须返回 testCode。oracleDecision=KEEP 不得修改断言/verify/expected exception 语义。"
                 + "oracleDecision=CORRECT 只能在 oracleAuthority 为 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 时修改 Oracle；"
                 + "PRODUCTION_SOURCE 和 RUNTIME_ACTUAL 都不是独立契约，不得据此把当前错误实现写成新期望。\n"
-                + "10. oracleAuthorityRef 必须精确引用 oracleEvidence.authorityItems 中同类型 ref。不得自己编造 ref 或将修复指令冒充用户业务需求。\n"
+                + "10. oracleAuthorityRef 必须精确引用 oracleEvidence.authorityItems 中同类型 ref。不得自己编造 ref 或将修复指令冒充用户业务需求。"
+                + "authorityItems 中 type=USER_REQUIREMENT 且 content 标注“适用于失败测试：…”的证据，只对列出的失败测试有效，"
+                + "不得据此修改其他测试的 Oracle。\n"
                 + "11. MOCKITO_VERIFY_WRONG_INSTANCE 表示测试验证了不可注入的 @Mock Logger，而生产代码使用 @Slf4j/static logger。"
                 + "不得尝试通过 matcher、times 或 Arrange 修复；若还有业务断言，删除该无效日志 verify；若它是唯一 Oracle，保留失败并说明应改用业务断言或真实日志捕获器。\n"
                 + "12. FIXTURE_DEPENDENCY_MISSING 只有在 runtimeDiagnostics 已明确给出该分类时才可使用。"
                 + "选择 SHARED_FIXTURE，补充缺失的构造依赖 @Mock/真实对象并确保 @InjectMocks 或显式构造实际注入；"
                 + "只修复 fixture，必须返回 oracleDecision=KEEP、oracleAuthority=NONE、oracleAuthorityRef=NONE，严禁修改任何原断言或 verify。\n"
+                + "12a. 运行期环境类失败（RUNTIME_DEPENDENCY_UNAVAILABLE / RUNTIME_LINKAGE_VERSION_CONFLICT / "
+                + "RUNTIME_STATIC_INIT_FAILURE / RUNTIME_EXTERNAL_RESOURCE_UNAVAILABLE / FRAMEWORK_CONTEXT_BOOTSTRAP_FAILURE / "
+                + "RUNTIME_RESOURCE_LIMIT_EXCEEDED）：根因在测试代码之外，不是 Oracle 证据问题。"
+                + "rootCauseCategory 原样保留环境分类；能为外部协作者补 mock/替身时返回 REPAIR_TEST+KEEP 修复 Arrange；"
+                + "无法补救时返回 INCONCLUSIVE 并保留环境分类，不得当作证据冲突。\n"
+                + "13. rootCauseCategory 只能从以下封闭分类中选取："
+                + String.join("、", FailureCategory.runtimeArbitrationCodes())
+                + "；此外可原样引用 runtimeDiagnostics.category 中已出现的值。不得发明新分类。\n"
                 + "以下 JSON 是本轮唯一有效事实上下文：\n" + payload.toString(2);
     }
 
@@ -320,6 +331,16 @@ public class LlmPromptBuilder {
                 + "R3a. runtimeDiagnostics.category=FIXTURE_DEPENDENCY_MISSING 时，源码构造依赖、测试声明和真实 NPE 已共同证明 fixture 缺失。"
                 + "返回 REPAIR_TEST + KEEP + NONE；方法级补丁必须在失败测试内创建缺失 mock/真实依赖、按真实构造函数重建被测对象并补充必要 stub，"
                 + "不得修改断言、verify、期望异常或换掉触发失败的业务输入。\n"
+                + "R3b. 运行期环境类失败（RUNTIME_DEPENDENCY_UNAVAILABLE / RUNTIME_LINKAGE_VERSION_CONFLICT / "
+                + "RUNTIME_STATIC_INIT_FAILURE / RUNTIME_EXTERNAL_RESOURCE_UNAVAILABLE / FRAMEWORK_CONTEXT_BOOTSTRAP_FAILURE / "
+                + "RUNTIME_RESOURCE_LIMIT_EXCEEDED，或 exceptionType/causeChain 为 NoClassDefFoundError、NoSuchMethodError、"
+                + "ExceptionInInitializerError、ConnectException、SQLException 等）根因在测试代码之外，不是 Oracle 证据问题："
+                + "rootCauseCategory 原样保留该环境分类；能在测试内补救（为外部协作者补 mock/替身、@TempDir 写临时配置、"
+                + "缩小大数据量输入）时返回 REPAIR_TEST + KEEP + NONE 修复 Arrange；确认无法在测试内补救时返回 INCONCLUSIVE "
+                + "并保留该环境分类，不得改成 TEST_RUNTIME_FAILURE，也不得当作证据冲突。\n"
+                + "R3c. rootCauseCategory 只能从以下封闭分类中选取："
+                + String.join("、", FailureCategory.runtimeArbitrationCodes())
+                + "；此外可原样引用 runtimeDiagnostics.category 中已出现的值。不得发明新分类。\n"
                 + "R4. 按证据修复：成功/正常/有效输入场景意外抛异常时，修复 Arrange、输入、fixture、前置条件或依赖 stub，禁止改成 assertThrows、捕获忽略异常、删除或弱化断言。"
                 + "但若 methodSourceCode/branches 明确证明当前输入本就命中 action=throw 的异常契约，则该场景被错分为正常路径："
                 + "应优先把输入改为满足所有 safeCondition 的有效输入；只有独立契约证据证明该场景本就是异常路径时才允许改为精确 assertThrows。"
@@ -327,9 +348,12 @@ public class LlmPromptBuilder {
                 + "R5. 修改范围：仅当 repairDisposition=REPAIR_TEST 时，必须为每个 focusTestIds 中需要修复的失败测试返回同名 methodPatch；"
                 + "严禁修改 passedTestIds，严禁新增 import/fixture/helper。\n"
                 + "R6. 返回前自检：methodCode 是可解析、带测试注解的完整方法；diagnosis/edits/methodPatches 目标逐项对应；Mockito 调用合法。\n"
-                + "R7. 先决定 repairDisposition：有独立契约支持原测试但 SUT 违反时返回 SUSPECTED_SUT_BUG；证据冲突或不足时返回 INCONCLUSIVE；"
+                + "R7. 先决定 repairDisposition：有独立契约支持原测试但 SUT 违反时返回 SUSPECTED_SUT_BUG；"
                 + "只有确认是测试输入/fixture/stub 或生成 Oracle 错误时才返回 REPAIR_TEST。"
-                + "SUSPECTED_SUT_BUG/INCONCLUSIVE 时 methodPatches 和 edits 必须为空。\n"
+                + "INCONCLUSIVE 仅限 Oracle 语义类失败：断言期望值、期望异常、verify 次数/参数等需要独立契约仲裁、"
+                + "而 authorityItems 为空或相互冲突时才允许返回；"
+                + "失败可由 Arrange/依赖准备/运行环境解释时（环境类失败、fixture、stub、输入问题）不得返回 INCONCLUSIVE，"
+                + "按 R3a/R3b/R4 处置。SUSPECTED_SUT_BUG/INCONCLUSIVE 时 methodPatches 和 edits 必须为空。\n"
                 + "R8. oracleDecision=KEEP 时代码门禁会比对断言、verify 和期望异常指纹，只允许修改 Arrange/Act。"
                 + "oracleDecision=CORRECT 只能使用 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 作为 oracleAuthority；"
                 + "当前生产实现、actualValue、失败消息和模型自身猜测不能授权改 Oracle。\n"
@@ -344,11 +368,20 @@ public class LlmPromptBuilder {
                 + "MOCKITO_VOID_STUB_MISUSE 必须删除对非 void 方法的 doNothing，按真实返回类型使用 when/thenReturn 或直接真实调用；"
                 + "MOCKITO_ARGUMENT_MISMATCH 对照源码定位真实调用序列；没有独立契约授权时不得修改 verify 参数或换掉该交互 Oracle；"
                 + "ASSERT_THROWS_WRAPPED_BY_REFLECTION 保留 expectedExceptionType，解包 InvocationTargetException.getCause()；"
+                + "MOCKITO_STATIC_MOCK_FORBIDDEN_TARGET 表示 Mockito 拒绝 mockStatic 该目标（final/不可 instrument）："
+                + "删除 mockStatic/MockedStatic 改真实调用或可注入依赖，oracleDecision=KEEP 授权该删除；"
+                + "MOCKITO_UNNECESSARY_STUBBING 删除失败测试内未走到的 when(...)，不要全局 lenient；"
+                + "MOCKITO_STRICT_STUBBING_MISMATCH 按生产实参精确修正 when(...) 参数，不得用 any() 放宽绕过；"
+                + "MOCKITO_MOCKING_UNAVAILABLE 改用真实对象构造输入或可注入接口，不得修改项目依赖；"
+                + "ORM_MAPPING_RUNTIME_FAILURE 为对应 Mapper/Session 协作者提供 mock 并断言交互，不触达真实数据库会话；"
+                + "DATA_BINDING_INPUT_INVALID 按目标类型真实模式修正输入字面量（日期格式、字段名）；"
                 + "ASSERTION_VALUE_MISMATCH 的生成断言是待验证假设；只有 authorityItems 中的独立契约证明它错误时才能精确修正，"
                 + "生产源码当前实现或 actualValue 一致不能单独授权改期望值；"
                 + "若原期望值有独立契约证据则标记 POTENTIAL_SUT_BUG，证据不足则 INCONCLUSIVE；"
                 + "MOCKITO_INVOCATION_COUNT_MISMATCH 中 expectedInvocationCount/actualInvocationCount 是 verify 次数；"
-                + "只有独立契约授权时可精确修改 times(n)/once/atLeast，否则必须保留失败；不得用 atLeast(0)/anyTimes 伪造成功。\n";
+                + "只有独立契约授权时可精确修改 times(n)/once/atLeast，否则必须保留失败；不得用 atLeast(0)/anyTimes 伪造成功；"
+                + "authorityItems 中 type=USER_REQUIREMENT 且 content 标注“适用于失败测试：…”的证据，"
+                + "只对列出的失败测试有效，不得据此修改其他测试的 Oracle。\n";
     }
 
     private String coverageExplorationRules() {

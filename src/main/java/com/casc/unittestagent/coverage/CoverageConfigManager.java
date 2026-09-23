@@ -10,7 +10,8 @@ public final class CoverageConfigManager {
     private static final String ROUNDS = PREFIX + "maxRounds";
     private static final String REPAIR_ROUNDS = PREFIX + "maxRepairRounds";
     private static final String TIMEOUT = PREFIX + "executionTimeoutSeconds";
-    private static final String BASELINE = PREFIX + "existingBaselineEnabled";
+    private static final String STRICT_ORACLE_GATE = "unitmind.coverage.strictOracleGate";
+    private static final String MAX_EVIDENCE_RESUMES = PREFIX + "maxEvidenceResumes";
     private static final String EXECUTION_CONFIRMED = PREFIX + "executionConfirmed";
 
     private CoverageConfigManager() {}
@@ -23,7 +24,8 @@ public final class CoverageConfigManager {
         config.setMaxRounds(parseInt(p.getValue(ROUNDS), 5));
         config.setMaxRepairRounds(parseInt(p.getValue(REPAIR_ROUNDS), 5));
         config.setExecutionTimeoutSeconds(parseInt(p.getValue(TIMEOUT), 60));
-        config.setExistingBaselineEnabled(p.getBoolean(BASELINE, true));
+        config.setStrictOracleGate(p.getBoolean(STRICT_ORACLE_GATE, false));
+        config.setMaxEvidenceResumes(parseInt(p.getValue(MAX_EVIDENCE_RESUMES), 2));
         return config;
     }
 
@@ -34,7 +36,8 @@ public final class CoverageConfigManager {
         p.setValue(ROUNDS, Integer.toString(config.getMaxRounds()));
         p.setValue(REPAIR_ROUNDS, Integer.toString(config.getMaxRepairRounds()));
         p.setValue(TIMEOUT, Integer.toString(config.getExecutionTimeoutSeconds()));
-        p.setValue(BASELINE, Boolean.toString(config.isExistingBaselineEnabled()));
+        p.setValue(STRICT_ORACLE_GATE, Boolean.toString(config.isStrictOracleGate()));
+        p.setValue(MAX_EVIDENCE_RESUMES, Integer.toString(config.getMaxEvidenceResumes()));
     }
 
     public static boolean isExecutionConfirmed() {

@@ -64,6 +64,30 @@ public class ClassRuntimeRepairStabilizerTest extends TestCase {
         }
     }
 
+    public void testRejectsConstantFalseAssumptionInAnyArgumentPosition() {
+        // JUnit5 assumeTrue(boolean,String) 与 JUnit4 assumeTrue(String,boolean) 参数顺序不同，
+        // 恒假字面量在任何实参位置都必须被拒绝。
+        String messageFirst = current().replace("assertEquals(2, shared);",
+                "org.junit.Assume.assumeTrue(\"skip\", false);");
+        try {
+            stabilizer.stabilize(current(), messageFirst, ClassJUnitRepairScope.METHOD_ONLY,
+                    Set.of("passing"), Set.of("failing"));
+            fail("Expected constant-false assumption to be rejected");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("assumption"));
+        }
+
+        String booleanFirst = current().replace("assertEquals(2, shared);",
+                "Assumptions.assumeTrue(false, \"skip\");");
+        try {
+            stabilizer.stabilize(current(), booleanFirst, ClassJUnitRepairScope.METHOD_ONLY,
+                    Set.of("passing"), Set.of("failing"));
+            fail("Expected constant-false assumption to be rejected");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("assumption"));
+        }
+    }
+
     private String current() {
         return """
                 package sample;

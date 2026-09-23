@@ -66,3 +66,9 @@ both `JUnit@1` and `JUnit@Budget`, class runtime/compile repair rounds, fixture-
 regression rejections and stop reasons. This loop executes the complete generated class after every
 accepted candidate, protects previously passing tests, and intentionally does not calculate class
 coverage.
+
+## Local open-source coverage matrix
+
+A separate opt-in matrix executes the coverage closure against real cloned repositories
+(commons-codec/io/lang/text). See [opensource/README.md](opensource/README.md). It is skipped by
+`./gradlew test` until `evaluation/opensource/prepare-oss-matrix.sh` has prepared the repositories.

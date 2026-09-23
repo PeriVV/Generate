@@ -1,9 +1,11 @@
 package com.casc.unittestagent.generator;
 
 import com.casc.unittestagent.llm.LlmGenerationResponse;
+import com.casc.unittestagent.model.FailureCategory;
 import com.casc.unittestagent.model.OracleAssessment;
 import com.casc.unittestagent.model.OracleAuthority;
 import com.casc.unittestagent.model.OracleDecision;
+import com.casc.unittestagent.model.RuntimeDiagnostic;
 import com.casc.unittestagent.model.RuntimeRepairDisposition;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.Node;
@@ -28,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -36,6 +39,16 @@ import java.util.Set;
  */
 public final class RuntimeOracleGate {
     public OracleAssessment assessment(LlmGenerationResponse response) {
+        return assessment(response, null);
+    }
+
+    /**
+     * observedDiagnostics 传入确定性诊断器给出的运行失败，用作模型越界取值时的回退类别。
+     * rootCauseCategory 必须落在封闭分类 FailureCategory 内；模型自造标签会被替换为
+     * 观察到的确定性类别或 UNKNOWN，并在证据链中留痕。
+     */
+    public OracleAssessment assessment(LlmGenerationResponse response,
+                                       List<RuntimeDiagnostic> observedDiagnostics) {
         if (response == null) throw new IllegalArgumentException("运行修复响应为空。");
         OracleAssessment assessment = new OracleAssessment();
         try {
@@ -43,31 +56,99 @@ public final class RuntimeOracleGate {
             assessment.setDecision(OracleDecision.valueOf(response.getOracleDecision()));
             assessment.setAuthority(OracleAuthority.valueOf(response.getOracleAuthority()));
         } catch (IllegalArgumentException ex) {
-            throw new IllegalArgumentException("运行修复仲裁枚举无效。", ex);
+            // 仲裁枚举取值来自模型响应，非法/缺失属于响应格式违约：抛 LlmResponseFormatException
+            // 让覆盖率闭环按既有格式重试预算纠错，而不是以普通 IAE 绕过重试直接终止。
+            throw new com.casc.unittestagent.llm.LlmResponseFormatException("运行修复仲裁枚举无效。", ex);
         }
         assessment.setAuthorityRef(response.getOracleAuthorityRef());
-        assessment.setRootCauseCategory(response.getDiagnosisRootCauseCategory());
         assessment.setEvidence(response.getDiagnosisEvidence());
+        // 必须先落入模型证据再仲裁：越界回退的备注要追加在模型证据之后，而不是被覆盖。
+        assessment.setRootCauseCategory(adjudicateCategory(
+                response.getDiagnosisRootCauseCategory(), observedDiagnostics, assessment));
         return assessment;
+    }
+
+    /** 封闭分类仲裁：合法取值原样规范化返回；越界取值回退为观察到的确定性类别或 UNKNOWN。 */
+    private static String adjudicateCategory(String raw,
+                                             List<RuntimeDiagnostic> observed,
+                                             OracleAssessment assessment) {
+        FailureCategory resolved = FailureCategory.fromCode(raw);
+        // 只有运行期可仲裁类别合法：编译期环境码（如 JUNIT5_NOT_FOUND）不得进入运行终态漏斗。
+        if (resolved != FailureCategory.UNKNOWN && resolved.isRuntimeArbitratable()) return resolved.name();
+        String fallback = observed == null ? "" : observed.stream()
+                .filter(Objects::nonNull)
+                .map(RuntimeDiagnostic::getCategory)
+                .filter(category -> category != null && !category.isBlank()
+                        && FailureCategory.isKnownCode(category))
+                .findFirst()
+                .orElse("");
+        assessment.setEvidence(appendEvidence(assessment.getEvidence(),
+                "模型返回的 rootCauseCategory 不在封闭分类中（原值=" + raw + "），"
+                        + (fallback.isBlank() ? "已回退为 UNKNOWN。"
+                        : "已回退为确定性诊断类别 " + fallback + "。")));
+        return fallback.isBlank() ? FailureCategory.UNKNOWN.name() : fallback;
+    }
+
+    private static List<String> appendEvidence(List<String> evidence, String value) {
+        List<String> result = evidence == null ? new ArrayList<>() : new ArrayList<>(evidence);
+        if (value != null && !value.isBlank()) result.add(value);
+        return result;
+    }
+
+    /**
+     * 是否允许自动应用“修改 Oracle（断言/期望）”的修复。
+     * 标准模式沿用权威分级：仅 USER_REQUIREMENT / EXISTING_TEST / CONTRACT_FACT 可自动改。
+     * 严格准出模式下 CORRECT 一律禁止自动应用——权威证据由模型自报，无法完全排除
+     * 把被测代码真实缺陷误判成“测试期望写错”的可能，交人工确认更安全。
+     */
+    public static boolean automaticOracleCorrectionBlocked(OracleAssessment assessment, boolean strictMode) {
+        if (assessment == null || assessment.getDecision() != OracleDecision.CORRECT) {
+            return false;
+        }
+        return strictMode || !assessment.getAuthority().permitsAutomaticOracleCorrection();
+    }
+
+    /** 严格准出模式的拒绝文案，写入评估证据并透出到修复明细与终态消息。 */
+    public static String strictOracleGateMessage(OracleAssessment assessment) {
+        return "严格 Oracle 准出已开启：模型判定需要修改断言（oracleDecision=CORRECT）的修复"
+                + "不再自动应用。原失败测试与证据已保留，请人工确认这是被测代码的真实缺陷"
+                + "（可强制写入作为缺陷回归用例）还是测试期望错误（人工修改断言后重跑）。"
+                + "模型自报权威来源=" + assessment.getAuthority()
+                + "，证据引用=" + assessment.getAuthorityRef() + "。";
     }
 
     public void validateRepair(OracleAssessment assessment,
                                String currentCode,
                                String proposedCode,
                                Set<String> editableTestNames) {
+        validateRepair(assessment, currentCode, proposedCode, editableTestNames, Set.of());
+    }
+
+    /**
+     * protectedTestNames：未聚焦、但 Oracle 必须保持不变的测试（如整类修复中的非聚焦失败测试）。
+     * 即使 oracleDecision=CORRECT（聚焦测试经权威授权可改期望值）也不豁免它们；
+     * 且 CORRECT 只授权修改期望值、不授权删除执行——任何测试的 assumption 与控制流指纹都不得变化。
+     */
+    public void validateRepair(OracleAssessment assessment,
+                               String currentCode,
+                               String proposedCode,
+                               Set<String> editableTestNames,
+                               Set<String> protectedTestNames) {
         if (assessment == null || assessment.getDisposition() != RuntimeRepairDisposition.REPAIR_TEST) {
             throw new IllegalArgumentException("只有 REPAIR_TEST 可以产生代码补丁。");
         }
+        Map<String, List<String>> before = oracleFingerprints(currentCode);
+        Map<String, List<String>> after = oracleFingerprints(proposedCode);
         if (assessment.getDecision() == OracleDecision.CORRECT) {
             if (!assessment.getAuthority().permitsAutomaticOracleCorrection()) {
                 throw new UnsafeOracleCorrectionException(
                         "禁止使用 " + assessment.getAuthority()
                                 + " 修改测试 Oracle；只有 USER_REQUIREMENT、EXISTING_TEST 或 CONTRACT_FACT 可授权。");
             }
+            rejectExecutionRemoval(before, after);
+            rejectUnauthorizedOracleChanges(protectedTestNames, before, after);
             return;
         }
-        Map<String, List<String>> before = oracleFingerprints(currentCode);
-        Map<String, List<String>> after = oracleFingerprints(proposedCode);
         Set<String> editable = editableTestNames == null ? Set.of() : editableTestNames;
         for (String name : editable) {
             List<String> original = before.getOrDefault(name, List.of());
@@ -78,6 +159,47 @@ public final class RuntimeOracleGate {
                                 + original + "，新=" + replacement);
             }
         }
+        rejectUnauthorizedOracleChanges(protectedTestNames, before, after);
+    }
+
+    /** CORRECT 授权修改期望值，不授权删除执行：所有测试的 assumption/控制流指纹必须不变。 */
+    private static void rejectExecutionRemoval(Map<String, List<String>> before,
+                                                Map<String, List<String>> after) {
+        for (Map.Entry<String, List<String>> entry : before.entrySet()) {
+            List<String> originalGuards = executionFingerprints(entry.getValue());
+            List<String> replacementGuards = executionFingerprints(
+                    after.getOrDefault(entry.getKey(), List.of()));
+            if (!originalGuards.equals(replacementGuards)) {
+                throw new UnsafeOracleCorrectionException(
+                        "oracleDecision=CORRECT 只授权修改期望值，不授权删除执行："
+                                + entry.getKey() + " 的 assumption/控制流被改动。");
+            }
+        }
+    }
+
+    /** 非聚焦测试的 Oracle 指纹在 KEEP 与 CORRECT 下都不得变化。 */
+    private static void rejectUnauthorizedOracleChanges(Set<String> protectedTestNames,
+                                                        Map<String, List<String>> before,
+                                                        Map<String, List<String>> after) {
+        if (protectedTestNames == null) return;
+        for (String name : protectedTestNames) {
+            List<String> original = before.getOrDefault(name, List.of());
+            List<String> replacement = after.getOrDefault(name, List.of());
+            if (!original.equals(replacement)) {
+                throw new UnsafeOracleCorrectionException(
+                        "非聚焦测试 " + name + " 的 Oracle 未获授权修改：原=" + original + "，新=" + replacement);
+            }
+        }
+    }
+
+    private static List<String> executionFingerprints(List<String> fingerprints) {
+        List<String> result = new ArrayList<>();
+        for (String fingerprint : fingerprints) {
+            if (fingerprint.startsWith("assumption:") || fingerprint.startsWith("control-")) {
+                result.add(fingerprint);
+            }
+        }
+        return result;
     }
 
     static Map<String, List<String>> oracleFingerprints(String code) {

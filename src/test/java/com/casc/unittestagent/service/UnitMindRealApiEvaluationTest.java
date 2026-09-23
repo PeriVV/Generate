@@ -384,7 +384,6 @@ public class UnitMindRealApiEvaluationTest extends LightJavaCodeInsightFixtureTe
         config.setMaxRounds(5);
         config.setMaxRepairRounds(5);
         config.setExecutionTimeoutSeconds(60);
-        config.setExistingBaselineEnabled(true);
         return config;
     }
 

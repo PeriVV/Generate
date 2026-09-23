@@ -37,6 +37,12 @@ public class GenerationResult {
     /** 当前候选测试代码的项目编译验证结果。 */
     private ValidationResult validationResult = ValidationResult.status(ValidationStatus.NOT_RUN);
     private CoverageReport coverageReport = CoverageReport.status(CoverageStatus.NOT_RUN);
+    /**
+     * 本结果上已使用的“补充证据续修”次数。
+     * 放在 GenerationResult 而非 CoverageReport：覆盖率闭环每次运行都会替换 report，
+     * 计数放 report 上将随每次续修清零、上限永远无法触发。
+     */
+    private int evidenceResumeCount;
 
     public GenerationScope getGenerationScope() { return generationScope; }
     public void setGenerationScope(GenerationScope generationScope) {
@@ -235,5 +241,11 @@ public class GenerationResult {
         this.coverageReport = coverageReport == null
                 ? CoverageReport.status(CoverageStatus.NOT_RUN)
                 : coverageReport;
+    }
+
+    public int getEvidenceResumeCount() { return evidenceResumeCount; }
+
+    public void setEvidenceResumeCount(int evidenceResumeCount) {
+        this.evidenceResumeCount = Math.max(0, evidenceResumeCount);
     }
 }

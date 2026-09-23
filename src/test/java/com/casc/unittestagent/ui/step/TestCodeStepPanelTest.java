@@ -39,7 +39,7 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         TestCodeStepPanel panel = panel(generated, edited);
 
         assertEquals(edited, panel.getCode());
-        JButton restore = findButton(panel, "恢复生成代码");
+        JButton restore = findButton(panel, "还原");
         assertNotNull(restore);
 
         restore.doClick();
@@ -51,7 +51,7 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         String regenerated = "class SubjectTest { /* regenerated */ }";
         TestCodeStepPanel panel = panel(regenerated, "class SubjectTest { /* manual edit */ }");
 
-        JButton restore = findButton(panel, "恢复生成代码");
+        JButton restore = findButton(panel, "还原");
         assertNotNull(restore);
         restore.doClick();
 
@@ -148,7 +148,7 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         TestCodeStepPanel panel = new TestCodeStepPanel(
                 getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
                 "", "", null, null, report, false, true, true, true,
-                ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
+                ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { }, feedback -> { }, 0);
 
         assertTrue(componentContainsText(panel, "分测试修复明细"));
         assertTrue(componentContainsText(panel, "returnsEarly"));
@@ -186,7 +186,7 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         panel.setSize(new Dimension(320, 720));
         layoutRecursively(panel);
 
-        JButton runCoverage = findButton(panel, "运行覆盖率并自动补测");
+        JButton runCoverage = findButton(panel, "运行覆盖率");
         JButton stopCoverage = findButton(panel, "停止");
         assertNotNull(runCoverage);
         assertNotNull(stopCoverage);
@@ -194,6 +194,37 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         assertFullyInsideParent(stopCoverage);
         assertTrue(SwingUtilities.convertRectangle(runCoverage.getParent(), runCoverage.getBounds(), panel).y
                 < panel.getHeight());
+    }
+
+    public void testActionButtonsShareSingleWrappingRow() {
+        TestCodeStepPanel panel = panel(
+                "class SubjectTest { /* generated */ }",
+                "class SubjectTest { /* generated */ }");
+
+        JButton copy = findButton(panel, "复制");
+        JButton stop = findButton(panel, "停止");
+        assertNotNull(copy);
+        assertNotNull(stop);
+        assertSame("所有操作按钮必须在同一个自适应容器中，随窗口宽度整体换行",
+                copy.getParent(), stop.getParent());
+
+        panel.setSize(new Dimension(900, 640));
+        layoutRecursively(panel);
+        assertEquals("宽窗口下六个按钮应排成一行", 1, distinctRows(copy.getParent()));
+
+        panel.setSize(new Dimension(320, 720));
+        layoutRecursively(panel);
+        assertTrue("窄窗口下按钮应自动换行", distinctRows(copy.getParent()) > 1);
+        for (Component component : copy.getParent().getComponents()) {
+            assertFullyInsideParent(component);
+        }
+    }
+
+    private int distinctRows(Container rowParent) {
+        return (int) java.util.Arrays.stream(rowParent.getComponents())
+                .map(Component::getY)
+                .distinct()
+                .count();
     }
 
     public void testCoverageCardVisualizesMetricsAndGaps() {
@@ -221,14 +252,6 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
         report.getHistory().add(initial);
         report.getHistory().add(generated);
 
-        CoverageSnapshot existing = new CoverageSnapshot();
-        existing.setAvailable(true);
-        existing.setLine(new CoverageMetric(5, 5));
-        existing.setBranch(new CoverageMetric());
-        existing.getExecution().setFound(2);
-        existing.getExecution().setSucceeded(2);
-        report.setExisting(existing);
-
         CoverageGap gap = new CoverageGap();
         gap.setKind(CoverageGap.Kind.BRANCH);
         gap.setLineNumber(42);
@@ -242,7 +265,7 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
                 "", "", null, report, false, ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { });
 
         List<String> progressStrings = progressStrings(panel);
-        assertContainsElements(progressStrings, "90.0%  (9/10)", "75.0%  (3/4)", "50.0%  (5/10)", "N/A（无分支）");
+        assertContainsElements(progressStrings, "90.0%  (9/10)", "75.0%  (3/4)");
         assertTrue(componentContainsText(panel, "未达标"));
         assertTrue(componentContainsText(panel, "覆盖率无增益"));
         assertTrue(componentContainsText(panel, "L42"));
@@ -298,6 +321,131 @@ public class TestCodeStepPanelTest extends LightPlatformTestCase {
                 feedback -> { },
                 () -> { },
                 code -> { });
+    }
+
+    public void testEvidenceResumeButtonHiddenWithoutOracleInconclusiveStop() {
+        CoverageReport report = CoverageReport.status(CoverageStatus.TEST_FAILED);
+        report.setStopReason(CoverageStopReason.REPEATED_CODE);
+
+        TestCodeStepPanel panel = panelWithReport(report, false, feedback -> { });
+
+        assertNull(findButton(panel, "补充证据并继续修复"));
+        assertNull(findButton(panelWithReport(null, false, feedback -> { }), "补充证据并继续修复"));
+    }
+
+    public void testEvidenceResumeButtonVisibleForEvidenceRequiredStop() {
+        TestCodeStepPanel panel = panelWithReport(evidenceRequiredReport(), false, feedback -> { });
+
+        JButton resume = findButton(panel, "补充证据并继续修复");
+        assertNotNull(resume);
+        assertTrue(resume.isEnabled());
+        assertTrue(componentContainsText(panel, "证据提示"));
+        assertTrue(componentContainsText(panel, "真实期望值"));
+        assertTrue(componentContainsText(panel, "shouldDiscount"));
+    }
+
+    public void testEvidenceResumeButtonSubmitsFeedbackAsEvidence() {
+        List<String> submitted = new ArrayList<>();
+        TestCodeStepPanel panel = panelWithReport(evidenceRequiredReport(), false, submitted::add);
+        fillFeedback(panel, "期望值应为 95（PRD-3.2）");
+
+        JButton resume = findButton(panel, "补充证据并继续修复");
+        assertNotNull(resume);
+        resume.doClick();
+
+        assertEquals(List.of("期望值应为 95（PRD-3.2）"), submitted);
+    }
+
+    public void testEvidenceResumeButtonHiddenWhileCoverageRunning() {
+        TestCodeStepPanel panel = panelWithReport(evidenceRequiredReport(), true, feedback -> { });
+
+        assertNull(findButton(panel, "补充证据并继续修复"));
+    }
+
+    public void testEvidenceResumeButtonHiddenForStaleReport() {
+        CoverageReport stale = evidenceRequiredReport();
+        stale.setStatus(CoverageStatus.STALE);
+
+        TestCodeStepPanel panel = panelWithReport(stale, false, feedback -> { });
+
+        assertNull(findButton(panel, "补充证据并继续修复"));
+    }
+
+    public void testEvidenceResumeButtonHiddenForDeterministicCategory() {
+        CoverageReport report = CoverageReport.status(CoverageStatus.NEEDS_REVIEW);
+        report.setStopReason(CoverageStopReason.ORACLE_INCONCLUSIVE);
+        report.setOracleAssessment(assessment("FIXTURE_DEPENDENCY_MISSING"));
+
+        TestCodeStepPanel panel = panelWithReport(report, false, feedback -> { });
+
+        assertNull(findButton(panel, "补充证据并继续修复"));
+    }
+
+    public void testEvidenceResumeButtonDisabledWhenQuotaExhausted() {
+        // 额度耗尽（默认上限 2，已用 2）：按钮保留但置灰，证据提示仍显示（告知原因）。
+        TestCodeStepPanel panel = panelWithReport(evidenceRequiredReport(), false, feedback -> { }, 2);
+
+        JButton resume = findButton(panel, "补充证据并继续修复");
+        assertNotNull(resume);
+        assertFalse(resume.isEnabled());
+        assertTrue(resume.getToolTipText(), resume.getToolTipText().contains("上限"));
+        assertTrue(componentContainsText(panel, "证据提示"));
+
+        // 额度内（已用 1）：按钮可用。
+        assertTrue(findButton(panelWithReport(evidenceRequiredReport(), false, feedback -> { }, 1),
+                "补充证据并继续修复").isEnabled());
+    }
+
+    private CoverageReport evidenceRequiredReport() {
+        CoverageReport report = CoverageReport.status(CoverageStatus.NEEDS_REVIEW);
+        report.setStopReason(CoverageStopReason.ORACLE_INCONCLUSIVE);
+        report.setOracleAssessment(assessment("ASSERTION_VALUE_MISMATCH"));
+        report.setFailingTestNamesAtStop(List.of("shouldDiscount"));
+        return report;
+    }
+
+    private static com.casc.unittestagent.model.OracleAssessment assessment(String category) {
+        com.casc.unittestagent.model.OracleAssessment value = new com.casc.unittestagent.model.OracleAssessment();
+        value.setRootCauseCategory(category);
+        return value;
+    }
+
+    private TestCodeStepPanel panelWithReport(CoverageReport report,
+                                              boolean coverageRunning,
+                                              java.util.function.Consumer<String> onResumeWithEvidence) {
+        return panelWithReport(report, coverageRunning, onResumeWithEvidence, 0);
+    }
+
+    private TestCodeStepPanel panelWithReport(CoverageReport report,
+                                              boolean coverageRunning,
+                                              java.util.function.Consumer<String> onResumeWithEvidence,
+                                              int evidenceResumeUsed) {
+        return new TestCodeStepPanel(
+                getProject(), GenerationStatus.SUCCESS, "class SubjectTest {}", "class SubjectTest {}",
+                "", "", null, report, null, coverageRunning, true, true, false,
+                ignored -> { }, () -> { }, ignored -> { }, () -> { }, () -> { }, onResumeWithEvidence,
+                evidenceResumeUsed);
+    }
+
+    private void fillFeedback(TestCodeStepPanel panel, String text) {
+        // 证据提示区是只读 JTextArea；补充要求输入区是面板中唯一可编辑的多行文本组件。
+        JTextComponent feedback = editableTextArea(panel);
+        assertNotNull(feedback);
+        feedback.setText(text);
+    }
+
+    private JTextComponent editableTextArea(Container container) {
+        JTextComponent found = null;
+        for (Component component : container.getComponents()) {
+            if (component instanceof JTextComponent text && text.isEditable()) {
+                found = text;
+            }
+            if (component instanceof Container nested) {
+                JTextComponent nestedFound = editableTextArea(nested);
+                if (nestedFound != null) found = nestedFound;
+            }
+        }
+        return found;
     }
 
     private JButton findButton(Container container, String text) {

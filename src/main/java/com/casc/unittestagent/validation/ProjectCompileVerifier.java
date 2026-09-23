@@ -39,7 +39,7 @@ public class ProjectCompileVerifier implements TestCodeValidator {
         result.setCodeHash(CodeFingerprint.sha256(code));
         try {
             List<CompileDiagnostic> syntaxDiagnostics = syntaxDiagnostics(project, generatedFile, code);
-            syntaxDiagnostics.addAll(CoverageCandidatePreflight.inspect(code));
+            syntaxDiagnostics.addAll(CoverageCandidatePreflight.inspectGeneratedRegions(code));
             if (!syntaxDiagnostics.isEmpty()) {
                 result.setStatus(ValidationStatus.FAILED);
                 result.setDiagnostics(syntaxDiagnostics);

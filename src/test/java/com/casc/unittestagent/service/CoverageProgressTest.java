@@ -24,7 +24,7 @@ public class CoverageProgressTest extends TestCase {
         assertTrue(secondExecution > secondCompile);
         assertTrue(secondAnalysis > secondExecution);
         assertTrue(UnitTestGenerationService.coverageProgressFraction(
-                config, CoveragePhase.BASELINE, 4, 0d) > secondAnalysis);
+                config, CoveragePhase.VALIDATING, 4, 0d) > secondAnalysis);
     }
 
     public void testReportRejectsRegressiveProgressUpdate() {

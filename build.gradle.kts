@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0.15"
+version = "1.0.26"
 
 base {
     archivesName.set("UnitMind")

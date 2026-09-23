@@ -148,6 +148,105 @@ public class OpenAiCompatibleLlmClientTest extends TestCase {
 
         config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
         assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", client.endpointUrl());
+
+        // 百炼兼容模式的 base_url 以 /v1 结尾但路径不止 /v1，同样必须补全 /chat/completions。
+        config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", client.endpointUrl());
+
+        config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1/");
+        assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", client.endpointUrl());
+    }
+
+    public void testDashScopeHostedThirdPartyModelKeepsMinimalRequestBody() {
+        // 百炼上的第三方模型（如 MiniMax/MiniMax-M2.7）参数透传原厂：
+        // enable_thinking 与 response_format 是 Qwen 家族参数，不能注入第三方思考模型。
+        LlmConfig config = new LlmConfig();
+        config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        config.setModel("MiniMax/MiniMax-M2.7");
+
+        OpenAiCompatibleLlmClient client = new OpenAiCompatibleLlmClient(config);
+        assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", client.endpointUrl());
+
+        JSONObject body = client.requestBody("return JSON", "generate JSON");
+        assertEquals("MiniMax/MiniMax-M2.7", body.getString("model"));
+        assertFalse(body.has("response_format"));
+        assertFalse(body.has("enable_thinking"));
+        assertFalse(body.has("thinking"));
+    }
+
+    public void testThinkingModeSkipsSuppressorsAndRaisesOutputBudget() {
+        // 思考模式：不再注入任何“关闭思考”参数、不发 JSON 模式参数，输出预算抬到下限以上。
+        LlmConfig config = new LlmConfig();
+        config.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        config.setModel("qwen-plus");
+        config.setMaxTokens(4096);
+        config.setThinkingMode(true);
+
+        OpenAiCompatibleLlmClient client = new OpenAiCompatibleLlmClient(config);
+        JSONObject body = client.requestBody("return JSON", "generate JSON");
+        assertFalse(body.has("response_format"));
+        assertFalse(body.has("enable_thinking"));
+        assertEquals(LlmConfig.THINKING_MIN_OUTPUT_TOKENS, body.getInt("max_tokens"));
+
+        LlmConfig deepSeek = new LlmConfig();
+        deepSeek.setApiUrl("https://api.deepseek.com");
+        deepSeek.setModel("deepseek-v4-flash");
+        deepSeek.setThinkingMode(true);
+        JSONObject deepSeekBody = new OpenAiCompatibleLlmClient(deepSeek)
+                .requestBody("return JSON", "generate JSON");
+        assertFalse(deepSeekBody.has("thinking"));
+        assertFalse(deepSeekBody.has("response_format"));
+    }
+
+    public void testThinkingModeKeepsUserBudgetAboveMinimum() {
+        LlmConfig config = new LlmConfig();
+        config.setApiUrl("https://api.deepseek.com");
+        config.setModel("deepseek-v4-flash");
+        config.setMaxTokens(49152);
+        config.setThinkingMode(true);
+        assertEquals(49152, new OpenAiCompatibleLlmClient(config).effectiveMaxTokens());
+
+        config.setThinkingMode(false);
+        assertEquals(49152, new OpenAiCompatibleLlmClient(config).effectiveMaxTokens());
+
+        config.setMaxTokens(4096);
+        config.setThinkingMode(false);
+        assertEquals(4096, new OpenAiCompatibleLlmClient(config).effectiveMaxTokens());
+    }
+
+    public void testConnectionBudgetGrowsForThinkingCapableModels() {
+        // 思考模型连通性探测：第三方推理模型或开启思考模式时，16 token 会被推理内容耗尽
+        // 必然 finish_reason=length，必须给足探测预算。
+        LlmConfig hosted = new LlmConfig();
+        hosted.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        hosted.setModel("MiniMax/MiniMax-M2.7");
+        assertEquals(1024, new OpenAiCompatibleLlmClient(hosted).testConnectionBody().getInt("max_tokens"));
+
+        LlmConfig thinking = new LlmConfig();
+        thinking.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        thinking.setModel("qwen-plus");
+        thinking.setThinkingMode(true);
+        assertEquals(1024, new OpenAiCompatibleLlmClient(thinking).testConnectionBody().getInt("max_tokens"));
+
+        LlmConfig plain = new LlmConfig();
+        plain.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        plain.setModel("qwen-plus");
+        assertEquals(16, new OpenAiCompatibleLlmClient(plain).testConnectionBody().getInt("max_tokens"));
+    }
+
+    public void testConnectionTreatsTruncatedReplyAsSuccess() {
+        // 连通性视角：HTTP 200 + 合法结构即连接成功，finish_reason=length 不是失败。
+        OpenAiCompatibleLlmClient client = new OpenAiCompatibleLlmClient(new LlmConfig());
+        assertEquals("{\"status\":\"ok\"}", client.connectivityReply(
+                "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"{\\\"status\\\":\\\"ok\\\"}\"}}]}"));
+        assertEquals("", client.connectivityReply(
+                "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"\",\"reasoning_content\":\"thinking...\"}}]}"));
+        try {
+            client.connectivityReply("{\"error\":{}}");
+            fail("无 choices 的响应应视为格式错误");
+        } catch (LlmResponseFormatException ex) {
+            assertTrue(ex.getMessage().contains("choices"));
+        }
     }
 
     public void testRejectsContentFilteredCompletion() {

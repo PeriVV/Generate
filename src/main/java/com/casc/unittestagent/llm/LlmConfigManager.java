@@ -19,6 +19,7 @@ public final class LlmConfigManager {
     private static final String MAX_COMPILE_REPAIR_ROUNDS = PREFIX + "maxCompileRepairRounds";
     private static final String TEMPERATURE = PREFIX + "temperature";
     private static final String FALLBACK = PREFIX + "fallbackToRuleBased";
+    private static final String THINKING_MODE = PREFIX + "thinkingMode";
     private static final String PRIVACY_CONFIRMED = PREFIX + "privacyConfirmed";
     private static final String API_KEY_ENV = "UNITMIND_API_KEY";
     private static final String API_KEY_SERVICE = "UnitMind LLM API Key";
@@ -37,6 +38,7 @@ public final class LlmConfigManager {
         config.setMaxCompileRepairRounds(parseInt(properties.getValue(MAX_COMPILE_REPAIR_ROUNDS), 5));
         config.setTemperature(parseDouble(properties.getValue(TEMPERATURE), 0.2));
         config.setFallbackToRuleBased(properties.getBoolean(FALLBACK, true));
+        config.setThinkingMode(properties.getBoolean(THINKING_MODE, false));
         config.setApiKey(resolveApiKey());
         return config;
     }
@@ -52,6 +54,7 @@ public final class LlmConfigManager {
                 Integer.toString(config.getMaxCompileRepairRounds()));
         properties.setValue(TEMPERATURE, Double.toString(config.getTemperature()));
         properties.setValue(FALLBACK, Boolean.toString(config.isFallbackToRuleBased()));
+        properties.setValue(THINKING_MODE, Boolean.toString(config.isThinkingMode()));
         if (apiKeyToStore != null && !apiKeyToStore.isBlank()) {
             PasswordSafe.getInstance().set(credentialsAttributes(), new Credentials("UnitMind", apiKeyToStore.trim()));
         }
