@@ -69,9 +69,20 @@ goto fail
 
 set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
 
+@rem The JDK 17 Windows launcher converts command-line paths through the ANSI
+@rem codepage. Use a relative ASCII pathing JAR, whose manifest stores the real
+@rem wrapper path as an escaped URL, so Chinese checkout paths work on any locale.
+set "UNITMIND_BOOTSTRAP=.unitmind-gradle-%RANDOM%-%RANDOM%.jar"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\wrapper\windows-classpath.ps1" -WrapperJar "%CLASSPATH%" -Destination "%UNITMIND_BOOTSTRAP%"
+if not "%ERRORLEVEL%"=="0" goto fail
+set "CLASSPATH=%UNITMIND_BOOTSTRAP%"
+
 
 @rem Execute Gradle
 "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
+set "UNITMIND_GRADLE_EXIT=%ERRORLEVEL%"
+del /q "%UNITMIND_BOOTSTRAP%" >NUL 2>&1
+cmd /d /c exit %UNITMIND_GRADLE_EXIT%
 
 :end
 @rem End local scope for the variables with windows NT shell
