@@ -129,6 +129,7 @@ public class ProjectTestEnvironmentResolver {
 
     private ProjectTestEnvironment resolveInReadAction(Project project, PsiFile sourceFile,
                                                         ProjectTestEnvironment environment) {
+        environment.sourceFilePath = sourceFile.getVirtualFile().getPath();
         Module module = ProjectFileIndex.getInstance(project).getModuleForFile(sourceFile.getVirtualFile());
         if (module == null) {
             environment.error("MODULE_NOT_FOUND", "源文件不属于任何已导入的 IntelliJ 模块。");

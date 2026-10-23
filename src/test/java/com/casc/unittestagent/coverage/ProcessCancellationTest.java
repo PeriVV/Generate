@@ -29,7 +29,15 @@ public class ProcessCancellationTest extends TestCase {
         exercise(false, true, false);
     }
 
+    public void testCompilerCancellationFlagStopsWorkerWithoutInterruptingItsThread() throws Exception {
+        exercise(true, false, false, true);
+    }
+
     private void exercise(boolean compiler, boolean timeout, boolean versionProbe) throws Exception {
+        exercise(compiler, timeout, versionProbe, false);
+    }
+
+    private void exercise(boolean compiler, boolean timeout, boolean versionProbe, boolean tokenOnly) throws Exception {
         Path root = Files.createTempDirectory("unitmind-process-cleanup-");
         ProcessHandle parent = null;
         ProcessHandle child = null;
@@ -67,7 +75,7 @@ public class ProcessCancellationTest extends TestCase {
                 try {
                     if (compiler) {
                         if (versionProbe) TestSandboxCompiler.detectJavacMajorVersion(javac.toString());
-                        else new TestSandboxCompiler().compileTargetWithModuleJdk(environment, sources, classes, source, "Subject");
+                        else new TestSandboxCompiler(cancelled::get).compileTargetWithModuleJdk(environment, sources, classes, source, "Subject");
                         failure.set(new AssertionError("compiler interruption must propagate cancellation"));
                     } else {
                         var config = new CoverageConfig();
@@ -75,7 +83,7 @@ public class ProcessCancellationTest extends TestCase {
                         execution.set(new JacocoCoverageExecutor().executeTestsOnly(artifact, config, cancelled::get));
                     }
                 } catch (ProcessCanceledException expected) {
-                    cancellationPreserved.set(Thread.currentThread().isInterrupted());
+                    cancellationPreserved.set(tokenOnly ? cancelled.get() : Thread.currentThread().isInterrupted());
                 } catch (Throwable error) {
                     failure.set(error);
                 }
@@ -86,7 +94,8 @@ public class ProcessCancellationTest extends TestCase {
                     && System.nanoTime() < deadline) Thread.sleep(20);
             parent = ProcessHandle.of(Long.parseLong(Files.readString(root.resolve("parent.pid")).trim())).orElseThrow();
             child = ProcessHandle.of(Long.parseLong(Files.readString(root.resolve("child.pid")).trim())).orElseThrow();
-            if (compiler) task.interrupt();
+            if (compiler && !tokenOnly) task.interrupt();
+            else if (compiler) cancelled.set(true);
             else if (!timeout) cancelled.set(true);
             task.join(10000);
             assertFalse("cancelled worker must finish promptly", task.isAlive());

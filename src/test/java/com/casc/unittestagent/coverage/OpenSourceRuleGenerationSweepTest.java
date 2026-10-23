@@ -30,6 +30,8 @@ public class OpenSourceRuleGenerationSweepTest extends TestCase {
     public void testSweepAcrossProjectsAndMethods() throws Exception {
         List<OpenSourceSweepTargets.Target> targets = OpenSourceSweepTargets.extract();
         if (targets.isEmpty()) {
+            assertFalse("ossRuleSweep requires prepared fixtures; run evaluation/opensource/prepare-oss-matrix.sh first.",
+                    Boolean.getBoolean("unitmind.oss.requireFixtures"));
             // 全新克隆未运行 prepare-oss-matrix.sh：与矩阵契约测试同语义地跳过，
             // 不让默认 ./gradlew test 在未准备环境上变红。
             System.out.println("[sweep] 没有已准备的开源仓库（tmp/oss/*），跳过批量扫描。"

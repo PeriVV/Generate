@@ -35,6 +35,13 @@ public class ProjectCompileVerifier implements TestCodeValidator {
     private final TestSandboxCompiler sandboxCompiler = new TestSandboxCompiler();
     @Override
     public ValidationResult validate(Project project, PsiFile sourceFile, GeneratedTestFile generatedFile, String code) {
+        return validate(project, sourceFile, generatedFile, code, null);
+    }
+
+    @Override
+    public ValidationResult validate(Project project, PsiFile sourceFile, GeneratedTestFile generatedFile, String code,
+                                     java.util.function.BooleanSupplier cancelled) {
+        com.casc.unittestagent.util.OperationContext.capture(cancelled).checkCancelled();
         long started = System.currentTimeMillis();
         ValidationResult result = new ValidationResult();
         result.setCodeHash(CodeFingerprint.sha256(code));
@@ -77,7 +84,7 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                         -1, -1, "", true)));
                 return result;
             }
-            return compileWithSharedSandbox(environment, sourceFile, generatedFile, code, result);
+            return compileWithSharedSandbox(environment, sourceFile, generatedFile, code, result, cancelled);
         } catch (ProcessCanceledException ex) {
             // 用户取消必须按取消语义向上传递，不能归类为环境错误。
             throw ex;
@@ -96,10 +103,11 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                                                       PsiFile sourceFile,
                                                       GeneratedTestFile generatedFile,
                                                       String code,
-                                                      ValidationResult result) {
+                                                      ValidationResult result, java.util.function.BooleanSupplier cancelled) {
         String targetClassName = targetClassName(sourceFile, environment);
         try (CompiledTestArtifact artifact = sandboxCompiler.compile(
-                environment, generatedFile, code, targetClassName)) {
+                environment, generatedFile, code, targetClassName, cancelled)) {
+            result.setCandidateEvidence(artifact.getCandidateEvidence());
             result.setDiagnostics(new ArrayList<>(artifact.getDiagnostics()));
             if (artifact.isSuccessful()) {
                 result.setStatus(ValidationStatus.PASSED);

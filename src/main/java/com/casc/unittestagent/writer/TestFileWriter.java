@@ -5,7 +5,6 @@ import com.casc.unittestagent.model.ClassJUnitRepairReport;
 import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.RunnableTestSelectionReport;
-import com.casc.unittestagent.ui.TestWriteModeDialog;
 import com.casc.unittestagent.util.CodeFingerprint;
 import com.casc.unittestagent.util.ProjectFileText;
 import com.intellij.openapi.application.ReadAction;
@@ -31,6 +30,15 @@ public class TestFileWriter {
     /** 测试类合并器，负责追加时去重 import、字段和测试方法。 */
     private static final com.intellij.openapi.diagnostic.Logger LOG = com.intellij.openapi.diagnostic.Logger.getInstance(TestFileWriter.class);
     private final TestClassMerger merger = new TestClassMerger();
+    private final WriteModeSelector modeSelector;
+
+    public TestFileWriter() {
+        this((project, target, hasRegion) -> { throw new IllegalStateException("目标文件已存在，请明确选择写入方式。"); });
+    }
+
+    public TestFileWriter(WriteModeSelector modeSelector) {
+        this.modeSelector = java.util.Objects.requireNonNull(modeSelector);
+    }
 
     /**
      * 计算本次真正准备落盘的最终内容，追加模式会在此阶段完成合并。
@@ -137,8 +145,18 @@ public class TestFileWriter {
                 preparedWrite.content, runtimeReport.getFinalExecution()).isEmpty()) {
             throw new IllegalStateException("最终测试文件存在未获真实执行证明的方法组，已阻止写入。");
         }
+        if (!force) {
+            var evidence = runtimeReport.getCandidateEvidence();
+            if (evidence == null || !evidence.matches(finalHash, preparedWrite.sourceContentHash)
+                    || !com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(project, evidence)
+                    || validationResult.getCandidateEvidence() == null
+                    || !evidence.identity().equals(validationResult.getCandidateEvidence().identity()))
+                throw new IllegalStateException("验证证据缺失或 SDK、依赖、构建配置已变化，已阻止写入。请重新验证。");
+        }
         WriteCommandAction.runWriteCommandAction(project, () -> {
             try {
+                if (!force && !com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(project, runtimeReport.getCandidateEvidence()))
+                    throw new IllegalStateException("执行环境在提交前已变化，已阻止写入。请重新验证。");
                 if (preparedWrite.sourceFile != null && !preparedWrite.sourceContentHash.equals(
                         CodeFingerprint.sha256(sourceContent(preparedWrite.sourceFile)))) {
                     throw new IllegalStateException(
@@ -211,11 +229,8 @@ public class TestFileWriter {
             return new WriteDecision(requestedMode, true);
         }
         boolean hasRegion = merger.hasRegion(existingContent, generationTarget);
-        TestWriteModeDialog dialog = new TestWriteModeDialog(project, targetFile, hasRegion);
-        if (!dialog.showAndGet()) {
-            return new WriteDecision(TestWriteMode.CANCEL, true);
-        }
-        return new WriteDecision(dialog.getSelectedMode(), dialog.isReplaceExistingRegion());
+        var choice = modeSelector.select(project, targetFile, hasRegion);
+        return new WriteDecision(choice.mode(), choice.replaceExistingRegion());
     }
 
     /**

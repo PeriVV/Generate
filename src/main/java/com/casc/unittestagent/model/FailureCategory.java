@@ -89,6 +89,7 @@ public enum FailureCategory {
     MOCKITO_NOT_FOUND("Mockito 依赖缺失", RepairStrategy.ENVIRONMENT, "请在 IDE 中检查模块 SDK、JUnit 5 / Mockito 测试依赖与项目索引后重试。", false, false),
     RUNTIME_CONFIGURATION_UNAVAILABLE("项目测试运行配置不可用", RepairStrategy.ENVIRONMENT,
             "请检查项目 Maven/Gradle 配置导出；不能复用运行配置时不会按默认环境继续执行。", false, false),
+    VERIFICATION_INPUT_CHANGED("验证期间执行环境已变化", RepairStrategy.ENVIRONMENT, "SDK、依赖或构建配置在验证期间发生变化。请重新分析并运行验证，不要修复测试断言来绕过。", false, false),
     TEMP_IO_FAILURE("沙箱临时目录 IO 失败", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),
     JDK_COMPILER_NOT_FOUND("模块 JDK 缺少 javac", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),
     SANDBOX_COMPILE_TIMEOUT("沙箱编译超时", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),

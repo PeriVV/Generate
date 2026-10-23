@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0.51"
+version = "1.0.52"
 
 // Old IDEA test launchers cannot decode Unicode classpath arguments on an ANSI Windows locale.
 // Keep the source checkout unchanged and allow CI to place JVM bootstrap artifacts in an ASCII path.
@@ -142,7 +142,17 @@ tasks {
     }
 
     named<Test>("test") {
-        exclude("**/UnitMindRealApiEvaluationTest.class")
+        exclude("**/UnitMindRealApiEvaluationTest.class", "**/OpenSourceRuleGenerationSweepTest.class")
+    }
+
+    register<Test>("ossRuleSweep") {
+        group = "verification"
+        description = "Explores raw rule-generation quality separately from deterministic release regressions."
+        testClassesDirs = sourceSets["test"].output.classesDirs
+        classpath = sourceSets["test"].runtimeClasspath
+        include("**/OpenSourceRuleGenerationSweepTest.class")
+        outputs.upToDateWhen { false }
+        systemProperty("unitmind.oss.requireFixtures", "true")
     }
 
     register<Test>("windowsCompatibilityTest") {
@@ -151,7 +161,9 @@ tasks {
         testClassesDirs = sourceSets["test"].output.classesDirs
         classpath = sourceSets["test"].runtimeClasspath
         outputs.upToDateWhen { false }
-        include("**/WindowsBatchExecutionTest.class", "**/LongCommandLineLauncherTest.class",
+        include("**/LlmCancellationTest.class", "**/CandidateEvidenceTest.class",
+                "**/ExecutionEnvironmentSessionTest.class", "**/TestWriteValidationServiceTest.class",
+                "**/WindowsBatchExecutionTest.class", "**/LongCommandLineLauncherTest.class",
                 "**/BundledMockitoRuntimeTest.class",
                 "**/ProcessTreeLifecycleTest.class", "**/ProcessCancellationTest.class",
                 "**/JacocoReportIntegrityTest.class", "**/ProjectFileEncodingIntegrationTest.class",

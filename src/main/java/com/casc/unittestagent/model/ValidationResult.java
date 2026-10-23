@@ -7,6 +7,10 @@ import java.util.List;
  * 一次候选测试源码编译验证的完整结果。
  */
 public class ValidationResult {
+    private CandidateEvidence candidateEvidence;
+    public CandidateEvidence getCandidateEvidence() { return candidateEvidence; }
+    public void setCandidateEvidence(CandidateEvidence value) { candidateEvidence = value; }
+
     private ValidationStatus status = ValidationStatus.NOT_RUN;
     private String codeHash = "";
     private List<CompileDiagnostic> diagnostics = new ArrayList<>();

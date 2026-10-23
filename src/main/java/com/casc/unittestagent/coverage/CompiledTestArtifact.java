@@ -12,6 +12,10 @@ import java.util.List;
 
 /** 一次临时编译的产物；关闭后递归清理临时目录。 */
 public class CompiledTestArtifact implements AutoCloseable {
+    private final com.casc.unittestagent.model.CandidateEvidence candidateEvidence;
+    public com.casc.unittestagent.model.CandidateEvidence getCandidateEvidence() { return candidateEvidence; }
+    private final com.intellij.openapi.project.Project project;
+    public com.intellij.openapi.project.Project getProject() { return project; }
     private final Path root;
     private final Path classes;
     private final String testClassName;
@@ -42,6 +46,16 @@ public class CompiledTestArtifact implements AutoCloseable {
                          String javaExecutable, List<File> runtimeClasspath,
                          List<CompileDiagnostic> diagnostics, boolean previewLanguage,
                          File workingDirectory, TestRuntimeConfiguration runtimeConfiguration) {
+        this(root, classes, testClassName, targetClassName, javaExecutable, runtimeClasspath, diagnostics,
+                previewLanguage, workingDirectory, runtimeConfiguration, null, null);
+    }
+
+    CompiledTestArtifact(Path root, Path classes, String testClassName, String targetClassName,
+                         String javaExecutable, List<File> runtimeClasspath, List<CompileDiagnostic> diagnostics,
+                         boolean previewLanguage, File workingDirectory, TestRuntimeConfiguration runtimeConfiguration,
+                         com.casc.unittestagent.model.CandidateEvidence candidateEvidence, com.intellij.openapi.project.Project project) {
+        this.project = project;
+        this.candidateEvidence = candidateEvidence;
         this.root = root;
         this.classes = classes;
         this.testClassName = testClassName;

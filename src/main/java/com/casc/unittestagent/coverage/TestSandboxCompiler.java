@@ -23,6 +23,21 @@ import java.util.concurrent.TimeUnit;
 public class TestSandboxCompiler {
     private static final com.intellij.openapi.diagnostic.Logger LOG =
             com.intellij.openapi.diagnostic.Logger.getInstance(TestSandboxCompiler.class);
+    private final java.util.function.BooleanSupplier cancelled;
+
+    public TestSandboxCompiler() { this(null); }
+    public TestSandboxCompiler(java.util.function.BooleanSupplier cancelled) { this.cancelled = cancelled; }
+
+    public CompiledTestArtifact compileGeneratedCandidate(ProjectTestEnvironment environment, GeneratedTestFile testFile,
+            String code, String target, List<String> sources, java.util.function.BooleanSupplier cancelled) {
+        return new TestSandboxCompiler(cancelled).compileGeneratedCandidate(environment, testFile, code, target, sources);
+    }
+
+    public CompiledTestArtifact compile(ProjectTestEnvironment environment, GeneratedTestFile testFile,
+            String code, String target, java.util.function.BooleanSupplier cancelled) {
+        return new TestSandboxCompiler(cancelled).compile(environment, testFile, code, target);
+    }
+
     public CompiledTestArtifact compileGeneratedCandidate(ProjectTestEnvironment environment, GeneratedTestFile testFile,
                                                            String code, String target, List<String> sources) {
         List<CompileDiagnostic> diagnostics = new ArrayList<>(MockWiringAnalyzer.preflight(sources, code));
@@ -35,6 +50,8 @@ public class TestSandboxCompiler {
                                         GeneratedTestFile testFile,
                                         String testCode,
                                         String targetClassName) {
+        var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
+        operation.checkCancelled();
         Path root = null;
         List<CompileDiagnostic> diagnostics = new ArrayList<>();
         try {
@@ -43,6 +60,8 @@ public class TestSandboxCompiler {
                 if (diagnostics.isEmpty()) diagnostics.add(environmentError("PROJECT_CONTEXT_MISSING", "缺少测试编译环境。"));
                 return new CompiledTestArtifact(null, null, "", targetClassName, "", Collections.emptyList(), diagnostics);
             }
+            var evidence = CandidateEvidenceFactory.capture(environment, value(testCode));
+            operation.checkCancelled();
             root = Files.createTempDirectory("unitmind-coverage-");
             Path sourceRoot = root.resolve("source");
             Path classes = root.resolve("classes");
@@ -102,9 +121,10 @@ public class TestSandboxCompiler {
                     sources.add(copySourceToSandbox(dependency, sourceRoot));
                 }
             }
+            operation.checkCancelled();
             sources.add(targetSource.toFile());
             sources.add(testSource.toFile());
-            try {
+            try (var registration = operation.watchProgressCancellation()) {
                 CompilerManager.getInstance(environment.project).compileJavaCode(
                         compilerOptions(environment),
                         environment.platformClasspath,
@@ -123,6 +143,7 @@ public class TestSandboxCompiler {
             // without emitting one or both explicitly supplied sources into the sandbox. Coverage
             // must execute this round's exact target and test code, so verify both class files and
             // use the module JDK compiler as a deterministic fallback.
+            operation.checkCancelled();
             String testFqn = qualifiedName(testPackage, testSimpleName);
             if (diagnostics.isEmpty()
                     && (!classExists(classes, targetClassName) || !classExists(classes, testFqn))) {
@@ -135,12 +156,14 @@ public class TestSandboxCompiler {
             isolateCascadingSourceErrors(environment, root, targetSource, testSource,
                     targetClassName, sources, diagnostics);
 
+            if (!CandidateEvidenceFactory.isCurrent(environment.project, evidence))
+                diagnostics.add(environmentError("VERIFICATION_INPUT_CHANGED", "编译期间 SDK、依赖或构建配置已变化，请重新验证。"));
             List<File> runtime = new ArrayList<>();
             runtime.add(classes.toFile());
             runtime.addAll(environment.getRuntimeClasspath());
             return new CompiledTestArtifact(root, classes, testFqn, targetClassName,
                     environment.javaExecutable, runtime, diagnostics, environment.previewLanguage,
-                    environment.workingDirectory, environment.getRuntimeConfiguration());
+                    environment.workingDirectory, environment.getRuntimeConfiguration(), evidence, environment.project);
         } catch (IOException ex) {
             diagnostics.add(environmentError("TEMP_IO_FAILURE", safeMessage(ex)));
             return new CompiledTestArtifact(root, root == null ? null : root.resolve("classes"), "",
@@ -333,6 +356,7 @@ public class TestSandboxCompiler {
                                              List<Path> sources,
                                              List<String> expectedClasses,
                                              boolean repairableFailure) {
+        com.casc.unittestagent.util.OperationContext.capture(cancelled).checkCancelled();
         File java = new File(environment.javaExecutable);
         File javac = new File(java.getParentFile(), isWindows() ? "javac.exe" : "javac");
         if (!javac.isFile()) {
@@ -382,7 +406,7 @@ public class TestSandboxCompiler {
             Thread drain = new Thread(() -> drain(worker, output), "unitmind-target-javac-output");
             drain.setDaemon(true);
             drain.start();
-            boolean finished = process.waitFor(60, TimeUnit.SECONDS);
+            boolean finished = com.casc.unittestagent.util.OperationContext.capture(cancelled).waitFor(process, 60, TimeUnit.SECONDS);
             if (!finished) {
                 ProcessCleanup.terminate(process);
                 drain.join(1000);
@@ -483,11 +507,16 @@ public class TestSandboxCompiler {
             return 0;
         }
         return JAVAC_VERSION_CACHE.computeIfAbsent(javac.getAbsolutePath(),
-                TestSandboxCompiler::detectJavacMajorVersion);
+                path -> detectJavacMajorVersion(path, cancelled));
     }
 
     /** 探测 javac 主版本；失败返回 0 表示未知，调用方按不支持处理。 */
     static int detectJavacMajorVersion(String javacPath) {
+        return detectJavacMajorVersion(javacPath, null);
+    }
+
+    private static int detectJavacMajorVersion(String javacPath, java.util.function.BooleanSupplier cancelled) {
+        com.casc.unittestagent.util.OperationContext.capture(cancelled).checkCancelled();
         Process process = null;
         try {
             process = new ProcessBuilder(javacPath, "-version")
@@ -499,7 +528,7 @@ public class TestSandboxCompiler {
             Thread drain = new Thread(() -> drain(worker, output), "unitmind-javac-version");
             drain.setDaemon(true);
             drain.start();
-            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            if (!com.casc.unittestagent.util.OperationContext.capture(cancelled).waitFor(process, 10, TimeUnit.SECONDS)) {
                 return 0;
             }
             drain.join(1000);
@@ -518,6 +547,7 @@ public class TestSandboxCompiler {
             Thread.currentThread().interrupt();
             throw new com.intellij.openapi.progress.ProcessCanceledException();
         } catch (Exception ex) {
+            if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
             return 0;
         } finally {
             ProcessCleanup.terminate(process);

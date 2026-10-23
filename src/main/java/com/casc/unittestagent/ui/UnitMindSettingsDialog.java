@@ -46,6 +46,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JCheckBox fallbackToRuleBased = new JCheckBox("失败时使用规则兜底");
     private final JCheckBox thinkingMode = new JCheckBox("启用思考模式（推理模型）");
     private final JLabel apiKeyStatus = new JLabel();
+    private final java.util.concurrent.atomic.AtomicBoolean connectionCancelled = new java.util.concurrent.atomic.AtomicBoolean();
     private final JButton testConnection = new JButton("测试连接");
     private final JSpinner lineCoverage = new JSpinner(new SpinnerNumberModel(90, 0, 100, 1));
     private final JSpinner branchCoverage = new JSpinner(new SpinnerNumberModel(80, 0, 100, 1));
@@ -63,6 +64,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         setCancelButtonText("取消");
         load();
         init();
+        com.intellij.openapi.util.Disposer.register(getDisposable(), () -> connectionCancelled.set(true));
     }
 
     @Override
@@ -272,13 +274,19 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         testConnection.setText("测试中...");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
-                String message = new OpenAiCompatibleLlmClient(config).testConnection();
-                SwingUtilities.invokeLater(() -> Messages.showInfoMessage(project, message, "UnitMind 大模型连接成功"));
+                String message = new OpenAiCompatibleLlmClient(config,
+                        () -> connectionCancelled.get() || project != null && project.isDisposed()).testConnection();
+                SwingUtilities.invokeLater(() -> { if (!connectionCancelled.get() && (project == null || !project.isDisposed()))
+                    Messages.showInfoMessage(project, message, "UnitMind 大模型连接成功"); });
+            } catch (com.intellij.openapi.progress.ProcessCanceledException ignored) {
+                // Closing the settings dialog revokes ownership of its network request.
             } catch (Exception ex) {
                 String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                SwingUtilities.invokeLater(() -> Messages.showErrorDialog(project, message, "UnitMind 大模型连接失败"));
+                SwingUtilities.invokeLater(() -> { if (!connectionCancelled.get() && (project == null || !project.isDisposed()))
+                    Messages.showErrorDialog(project, message, "UnitMind 大模型连接失败"); });
             } finally {
                 SwingUtilities.invokeLater(() -> {
+                    if (connectionCancelled.get() || project != null && project.isDisposed()) return;
                     testConnection.setEnabled(true);
                     testConnection.setText("测试连接");
                 });

@@ -5,4 +5,9 @@ package com.casc.unittestagent.llm;
  */
 public interface LlmClientFactory {
     LlmClient create(LlmConfig config);
+
+    /** Existing local/test implementations remain valid; transports can attach task cancellation. */
+    default LlmClient create(LlmConfig config, java.util.function.BooleanSupplier cancelled) {
+        return create(config);
+    }
 }

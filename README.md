@@ -250,6 +250,15 @@ API Key 读取顺序：
 
 候选测试必须全部运行通过后覆盖率才有效。测试代码或被测源码变化后报告会标记为失效。覆盖率未达标不阻止独立运行门禁通过的测试写入；写入前始终重新验证最终完整测试类。
 
+## Windows 原生验收（1.0.51）
+
+Windows x64 原生全量回归 721 项、专项 166 项均为 0 失败、0 错误、0 跳过；验证了项目 JDK 8、11、17、21、25。
+最终安装包通过 IDEA 2022.2.5、2025.3、2026.2.0.1 的 API 兼容检查，取自同一轮通过验收的 Windows 构建。
+本轮修复中文路径启动、批处理参数、JaCoCo 代理加载、CRLF 写入证明和编译诊断等问题。
+
+原始规则探索覆盖 3 个仓库的 42 个方法，26 个方法的全部生成候选通过、16 个仍有候选断言失败；这与平台验收测试计数分别记录。
+外部旧版 Gradle 的中文输出路径限制、API 提示与验收范围见 [Windows 原生验收记录](docs/windows-native-acceptance-1.0.51.md)。
+
 ## Windows 专项适配（1.0.50）
 
 修复长命令参数中的反斜杠/引号、`javac` 参数文件编码与 `-J` 选项、相对/通配符 classpath、
@@ -574,7 +583,7 @@ Maven Help 使用的 `output` / `expression` 用户/项目属性发生冲突时�
 插件包输出路径：
 
 ```text
-build/distributions/UnitMind-1.0.50.zip
+build/distributions/UnitMind-1.0.51.zip
 ```
 
 本地安装：
@@ -583,7 +592,7 @@ build/distributions/UnitMind-1.0.50.zip
 2. 进入 `Settings | Plugins`。
 3. 点击齿轮菜单。
 4. 选择 `Install Plugin from Disk...`。
-5. 选择 `build/distributions/UnitMind-1.0.50.zip`。
+5. 选择 `build/distributions/UnitMind-1.0.51.zip`。
 6. 重启 IDE。
 
 1.0.29 修复了 1.0.27/1.0.28 的 Kotlin 运行时冲突：旧发行包通过 OkHttp/Okio

@@ -40,14 +40,21 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             .build();
 
     private final LlmConfig config;
+    private final java.util.function.BooleanSupplier cancelled;
     private final LlmPromptBuilder promptBuilder = new LlmPromptBuilder();
     private final LlmResponseParser responseParser = new LlmResponseParser();
     private final OkHttpClient httpClient;
     private boolean loggedModelRewrite;
 
     public OpenAiCompatibleLlmClient(LlmConfig config) {
+        this(config, null);
+    }
+
+    public OpenAiCompatibleLlmClient(LlmConfig config, java.util.function.BooleanSupplier cancelled) {
         this.config = config;
+        this.cancelled = cancelled;
         this.httpClient = SHARED_HTTP_CLIENT.newBuilder()
+                .callTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
@@ -130,12 +137,19 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                 .addHeader("Content-Type", "application/json")
                 .build();
 
-        try (Response response = httpClient.newCall(httpRequest).execute()) {
+        var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
+        operation.checkCancelled();
+        var call = httpClient.newCall(httpRequest);
+        try (var registration = operation.watch(call::cancel); Response response = call.execute()) {
             String body = response.body() == null ? "" : response.body().string();
+            operation.checkCancelled();
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
             }
             return extractMessageContent(body, maxTokens);
+        } catch (IOException ex) {
+            operation.checkCancelled();
+            throw ex;
         }
     }
 
@@ -153,8 +167,12 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
                 .build();
-        try (Response response = httpClient.newCall(httpRequest).execute()) {
+        var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
+        operation.checkCancelled();
+        var call = httpClient.newCall(httpRequest);
+        try (var registration = operation.watch(call::cancel); Response response = call.execute()) {
             String responseBody = response.body() == null ? "" : response.body().string();
+            operation.checkCancelled();
             if (!response.isSuccessful()) {
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(responseBody));
             }
@@ -162,6 +180,9 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             // finish_reason=length 仅说明探测预算小，连接本身是通的，不应按生成截断报错。
             String content = connectivityReply(responseBody);
             return content == null || content.isBlank() ? "连接成功。" : "连接成功：" + content.trim();
+        } catch (IOException ex) {
+            operation.checkCancelled();
+            throw ex;
         }
     }
 

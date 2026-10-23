@@ -9,6 +9,10 @@ import java.util.List;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class MethodModel {
+    private String analysisLimitation = "";
+    public String getAnalysisLimitation() { return analysisLimitation; }
+    public void setAnalysisLimitation(String value) { analysisLimitation = value == null ? "" : value; }
+
     /** Binds source line ranges and callable identity to the source analyzed, not a later editor revision. */
     private String analyzedSourceHash = "";
     public String getAnalyzedSourceHash() { return analyzedSourceHash; }

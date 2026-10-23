@@ -6,6 +6,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /** 一次覆盖率闭环的完整、可展示结果。 */
 public class CoverageReport {
+    private CandidateEvidence candidateEvidence;
+    public CandidateEvidence getCandidateEvidence() { return candidateEvidence; }
+    public void setCandidateEvidence(CandidateEvidence value) { candidateEvidence = value; }
+
     private CoverageStatus status = CoverageStatus.NOT_RUN;
     private CoverageStopReason stopReason = CoverageStopReason.NONE;
     private CoverageSnapshot generated = new CoverageSnapshot();

@@ -58,7 +58,8 @@ import java.util.Arrays;
  * 主面板只负责上下文、状态、步骤导航、分析和写入，具体页面交给 ui.step 下的步骤面板。
  * 前端当前只开放单方法生成，整类生成保留在服务与评测链路中，不在此处接线。
  */
-public class UnitMindToolWindowPanel extends JPanel {
+public class UnitMindToolWindowPanel extends JPanel implements com.intellij.openapi.Disposable {
+    private volatile boolean disposed;
     /** 步骤名称。 */
     private static final String[] STEPS = {
             "静态分析结果", "测试场景", "Mock策略", "测试代码", "写入测试文件"
@@ -67,7 +68,7 @@ public class UnitMindToolWindowPanel extends JPanel {
     /** 当前项目。 */
     private final Project project;
     /** 写入服务。 */
-    private final TestFileWriter testFileWriter = new TestFileWriter();
+    private final TestFileWriter testFileWriter = new TestFileWriter(new com.casc.unittestagent.ui.SwingWriteModeSelector());
     /** 顶部 Header。 */
     private final UnitMindHeaderPanel headerPanel;
     /** 步骤条。 */
@@ -217,6 +218,21 @@ public class UnitMindToolWindowPanel extends JPanel {
         }
     }
 
+    @Override
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        analysisSequence++;
+        coverageSequence++;
+        if (coverageIndicator != null) coverageIndicator.cancel();
+        coverageIndicator = null;
+        coverageRunning = false;
+        cancelWriteValidation();
+        currentEditor = null;
+        currentPsiFile = null;
+        generationResult = null;
+    }
+
     /**
      * 设置当前编辑器上下文。
      * 右键菜单打开工具窗口时会调用该方法，使窗口进入方法概要步骤。
@@ -324,17 +340,30 @@ public class UnitMindToolWindowPanel extends JPanel {
         int requestId = ++analysisSequence;
         Editor editor = currentEditor;
         PsiFile psiFile = currentPsiFile;
-        new Task.Backgroundable(project, "UnitMind 正在分析方法", false) {
+        new Task.Backgroundable(project, "UnitMind 正在分析方法", true) {
             private GenerationResult result;
             private String error;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = new UnitTestGenerationService().analyzeMethod(project, psiFile, editor);
+                    result = new UnitTestGenerationService(() -> indicator.isCanceled() || disposed || requestId != analysisSequence || project.isDisposed()).analyzeMethod(project, psiFile, editor);
                 } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
+            }
+
+            @Override
+            public void onCancel() {
+                queueCurrentRequestUpdate(requestId, psiFile, null, () -> {
+                    generationStatus = generationResult == null || generationResult.getGeneratedTestFile() == null
+                            ? GenerationStatus.IDLE : GenerationStatus.SUCCESS;
+                    mockStrategyLlmRunning = false;
+                    stepStatuses[0] = StepStatus.WARNING;
+                    lastError = "任务已取消。";
+                    rebuildSteps();
+                });
             }
 
             @Override
@@ -434,17 +463,30 @@ public class UnitMindToolWindowPanel extends JPanel {
         GenerationResult currentResult = generationResult;
         GenerationResult taskResult = generationCandidate(currentResult);
         PsiFile requestFile = currentPsiFile;
-        new Task.Backgroundable(project, "UnitMind 正在生成测试代码", false) {
+        new Task.Backgroundable(project, "UnitMind 正在生成测试代码", true) {
             private GenerationResult result;
             private String error;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = new UnitTestGenerationService().generateTestCode(project, requestFile, taskResult);
+                    result = new UnitTestGenerationService(() -> indicator.isCanceled() || !isCurrentRequest(requestId, requestFile, currentResult)).generateTestCode(project, requestFile, taskResult);
                 } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
+            }
+
+            @Override
+            public void onCancel() {
+                queueCurrentRequestUpdate(requestId, requestFile, currentResult, () -> {
+                    generationStatus = generationResult == null || generationResult.getGeneratedTestFile() == null
+                            ? GenerationStatus.IDLE : GenerationStatus.SUCCESS;
+                    mockStrategyLlmRunning = false;
+                    stepStatuses[3] = StepStatus.WARNING;
+                    lastError = "任务已取消。";
+                    rebuildSteps();
+                });
             }
 
             @Override
@@ -631,17 +673,30 @@ public class UnitMindToolWindowPanel extends JPanel {
         GenerationResult currentResult = generationResult;
         GenerationResult taskResult = generationCandidate(currentResult);
         PsiFile requestFile = currentPsiFile;
-        new Task.Backgroundable(project, "UnitMind 正在生成大模型 Mock 策略", false) {
+        new Task.Backgroundable(project, "UnitMind 正在生成大模型 Mock 策略", true) {
             private GenerationResult result;
             private String error;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = new UnitTestGenerationService().generateLlmMockStrategy(taskResult);
+                    result = new UnitTestGenerationService(() -> indicator.isCanceled() || !isCurrentRequest(requestId, requestFile, currentResult)).generateLlmMockStrategy(taskResult);
                 } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
+            }
+
+            @Override
+            public void onCancel() {
+                queueCurrentRequestUpdate(requestId, requestFile, currentResult, () -> {
+                    generationStatus = generationResult == null || generationResult.getGeneratedTestFile() == null
+                            ? GenerationStatus.IDLE : GenerationStatus.SUCCESS;
+                    mockStrategyLlmRunning = false;
+                    stepStatuses[2] = StepStatus.WARNING;
+                    lastError = "任务已取消。";
+                    rebuildSteps();
+                });
             }
 
             @Override
@@ -771,6 +826,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                     generationResult.getGeneratedTestFile(), code, mode, GenerationTarget.method(methodTargetId),
                     generationResult.getRunnableTestSelectionReport());
         } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
             stepStatuses[4] = StepStatus.FAILED;
             lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
             Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
@@ -794,7 +850,6 @@ public class UnitMindToolWindowPanel extends JPanel {
         stepStatuses[4] = StepStatus.RUNNING;
         rebuildSteps();
         new Task.Backgroundable(project, "UnitMind 正在验证测试并执行最终回归", true) {
-            private final UnitTestGenerationService generationService = new UnitTestGenerationService();
             private TestFileWriter.PreparedWrite finalWrite = preparedWrite;
             private GenerationResult finalResult;
             private String error;
@@ -807,35 +862,17 @@ public class UnitMindToolWindowPanel extends JPanel {
                 java.util.function.BooleanSupplier cancelled =
                         () -> indicator.isCanceled() || writeId != writeSequence || project.isDisposed();
                 try {
-                    if (force) {
-                        finalResult = runtimeCandidate(candidate, finalWrite.getContent());
-                        finalResult.setValidationResult(generationService.validateCode(project, requestFile,
-                                finalResult.getGeneratedTestFile(), finalWrite.getContent()));
-                        return;
-                    }
-                    com.casc.unittestagent.coverage.CoverageProgressListener candidateProgress = (text, fraction) -> {
-                                indicator.setText("运行验证：" + text);
-                                indicator.setFraction(Math.max(0d, Math.min(0.7d, fraction * 0.7d)));
-                            };
-                    if (currentResult.getRunnableTestSelectionReport().hasActiveExclusions()) {
-                        generationService.runFinalTestRegression(project, requestFile, candidate, code, cancelled, candidateProgress);
-                    } else {
-                        generationService.runRuntimeValidation(project, requestFile, candidate, code, cancelled, candidateProgress);
-                    }
-                    finalResult = candidate;
-                    if (cancelled.getAsBoolean()
-                            || candidate.getRuntimeValidationReport().getStatus() != ClassJUnitStatus.PASSED) return;
-                    finalWrite = testFileWriter.prepareRepaired(preparedWrite,
-                            candidate.getGeneratedTestFile().getContent());
-                    finalResult = runtimeCandidate(candidate, finalWrite.getContent());
-                    generationService.runFinalTestRegressionWithCoverage(project, requestFile, finalResult,
-                            finalWrite.getContent(), finalWrite.getTargetFile().getAbsolutePath(), cancelled, (text, fraction) -> {
-                                indicator.setText("最终合并回归：" + text);
-                                indicator.setFraction(0.7d + Math.max(0d, Math.min(1d, fraction)) * 0.3d);
+                    var outcome = new com.casc.unittestagent.service.TestWriteValidationService(testFileWriter,
+                            new UnitTestGenerationService(cancelled)).validate(project, requestFile, candidate, code,
+                            preparedWrite, force, cancelled, (text, fraction) -> {
+                                indicator.setText(text); indicator.setFraction(fraction);
                             });
+                    finalWrite = outcome.preparedWrite();
+                    finalResult = outcome.result();
                 } catch (com.intellij.openapi.progress.ProcessCanceledException ex) {
                     throw ex;
                 } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
             }
@@ -927,6 +964,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                     Messages.showInfoMessage(project,
                             force ? "未验证草稿已强制写入。" : "最终测试类编译和完整 JUnit 回归通过，写入完成。", "UnitMind");
                 } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                     currentResult.getFinalTestFileReport().markStale("最终写入未完成，覆盖率仅属于此前验证的快照。");
                     stepStatuses[4] = StepStatus.FAILED;
                     lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
@@ -968,32 +1006,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
     /** Background generation owns its editable inputs and output; initial generation has no file yet. */
     static GenerationResult generationCandidate(GenerationResult original) {
-        GenerationResult copy = new GenerationResult();
-        copy.setGenerationScope(original.getGenerationScope());
-        copy.setClassMethodSignatures(new java.util.ArrayList<>(original.getClassMethodSignatures()));
-        copy.setSharedFixtureSummary(original.getSharedFixtureSummary());
-        copy.setMethodModel(original.getMethodModel());
-        copy.setScenarios(new java.util.ArrayList<>(original.getScenarios().stream().map(com.casc.unittestagent.model.TestScenario::copy).toList()));
-        copy.setSymbolSnapshot(original.getSymbolSnapshot());
-        copy.setMockStrategy(original.getMockStrategy() == null ? null : original.getMockStrategy().copy());
-        copy.setLlmMockStrategy(original.getLlmMockStrategy() == null ? null : original.getLlmMockStrategy().copy());
-        copy.setUseLlmMockStrategy(original.isUseLlmMockStrategy());
-        copy.setWarnings(new java.util.ArrayList<>(original.getWarnings()));
-        copy.setEvidenceResumeCount(original.getEvidenceResumeCount());
-        copy.setGeneratedByLlm(original.isGeneratedByLlm());
-        copy.setRuleBasedFallback(original.isRuleBasedFallback());
-        copy.setLlmMessage(original.getLlmMessage());
-        copy.setRunnableTestSelectionReport(original.getRunnableTestSelectionReport().copy());
-        GeneratedTestFile template = original.getGeneratedTestFile();
-        if (template != null) {
-            GeneratedTestFile file = new GeneratedTestFile();
-            file.setPackageName(template.getPackageName());
-            file.setClassName(template.getClassName());
-            file.setFileName(template.getFileName());
-            file.setContent(template.getContent());
-            copy.setGeneratedTestFile(file);
-        }
-        return copy;
+        return com.casc.unittestagent.service.GenerationSnapshotFactory.generationCandidate(original);
     }
 
     private static String currentSourceHash(PsiFile file) {
@@ -1054,31 +1067,13 @@ public class UnitMindToolWindowPanel extends JPanel {
         if (generationResult == null) {
             return;
         }
-        if (!generationResult.getFinalTestFileReport().getTargetPath().isBlank()) {
-            generationResult.getFinalTestFileReport().markStale("测试预览已修改，请重新验证最终合并文件。");
-        }
-        ValidationResult stale = ValidationResult.status(ValidationStatus.STALE);
-        stale.setCodeHash(CodeFingerprint.sha256(editedCode));
-        generationResult.setValidationResult(stale);
-        generationResult.getRuntimeValidationReport().setStatus(ClassJUnitStatus.STALE);
-        generationResult.getRuntimeValidationReport().setMessage("测试代码已修改，运行验证结果失效。");
-        if (generationResult.getRunnableTestSelectionReport().getStatus()
-                == RunnableTestSelectionReport.Status.PASSED) {
-            generationResult.getRunnableTestSelectionReport().setStatus(
-                    RunnableTestSelectionReport.Status.STALE);
-        }
+        com.casc.unittestagent.service.GenerationEvidenceInvalidator.testEdited(generationResult, editedCode);
         if (writeRunning) cancelWriteValidation();
         if (coverageRunning) {
             coverageSequence++;
             if (coverageIndicator != null) coverageIndicator.cancel();
             coverageIndicator = null;
             coverageRunning = false;
-        }
-        CoverageReport coverage = generationResult.getCoverageReport();
-        if (coverage != null && coverage.getStatus() != CoverageStatus.NOT_RUN) {
-            if (coverageRunning && coverageIndicator != null) coverageIndicator.cancel();
-            coverage.setStatus(CoverageStatus.STALE);
-            coverage.setMessage("测试代码已修改，覆盖率结果失效。");
         }
         stepStatuses[3] = StepStatus.WARNING;
     }
@@ -1466,7 +1461,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         stepStatuses[3] = StepStatus.RUNNING;
         rebuildSteps();
         GenerationResult currentResult = generationResult;
-        new Task.Backgroundable(project, "UnitMind 正在重新校验测试代码", false) {
+        new Task.Backgroundable(project, "UnitMind 正在重新校验测试代码", true) {
             private ValidationResult validation;
 
             @Override
@@ -1535,7 +1530,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         GenerationResult taskResult = runtimeCandidate(requestResult, currentCode);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
-                GenerationResult regenerated = new UnitTestGenerationService().regenerateWithLlmFeedback(
+                GenerationResult regenerated = new UnitTestGenerationService(() -> !isCurrentRequest(requestId, requestFile, requestResult)).regenerateWithLlmFeedback(
                         project, requestFile, taskResult, currentCode, feedback);
                 queueCurrentRequestUpdate(requestId, requestFile, requestResult, () -> {
                     generationResult = regenerated;
@@ -1551,6 +1546,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                     rebuildSteps();
                 });
             } catch (Exception ex) {
+                    if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                 String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 queueCurrentRequestUpdate(requestId, requestFile, requestResult, () -> {
                     generationStatus = GenerationStatus.SUCCESS;
@@ -1564,7 +1560,7 @@ public class UnitMindToolWindowPanel extends JPanel {
     }
 
     private boolean isCurrentRequest(int requestId, PsiFile requestFile, GenerationResult requestResult) {
-        return requestId == analysisSequence && requestFile == currentPsiFile
+        return !disposed && requestId == analysisSequence && requestFile == currentPsiFile
                 && requestResult == generationResult && !project.isDisposed();
     }
 
@@ -1633,7 +1629,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             if (generationResult.getLlmMessage() != null && generationResult.getLlmMessage().startsWith("大模型生成失败")) {
                 return generationResult.getLlmMessage() + " 当前显示规则兜底测试代码。";
             }
-            return "当前测试代码为规则兜底生成，大模型生成失败或未启用。";
+            return "当前测试代码为规则兜底生成。部分普通场景仅验证调用不抛异常，请补充返回值、状态变化或交互断言；运行通过不代表业务预期已充分验证。";
         }
         return generationResult.getLlmMessage() == null ? "" : generationResult.getLlmMessage();
     }

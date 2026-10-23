@@ -105,6 +105,36 @@ public class RuntimeWriteGateIntegrationTest extends LightJavaCodeInsightFixture
         assertEquals(1, result.getRuntimeValidationReport().getFinalExecution().getSucceeded());
     }
 
+    public void testChangedBuildConfigurationCannotReusePassingRuntimeEvidence() throws Exception {
+        PsiFile source = source();
+        var result = execute(service(config -> { throw new AssertionError("no model expected"); }),
+                source, candidate(PASSING), PASSING, false, () -> false);
+        assertPassed(result, PASSING, source);
+        var evidence = result.getRuntimeValidationReport().getCandidateEvidence();
+        assertNotNull(evidence);
+        assertTrue(com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(getProject(), evidence));
+        var writer = new TestFileWriter();
+        var prepared = writer.prepare(getProject(), source, result.getGeneratedTestFile(), PASSING, TestWriteMode.CREATE_NEW, "normalize");
+        Files.writeString(testRoot.resolve("pom.xml"), "<project/>");
+        assertFalse(com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(getProject(), evidence));
+        try {
+            writer.commit(getProject(), prepared, result.getValidationResult(), result.getRuntimeValidationReport(), false);
+            fail("changed build configuration must invalidate passing evidence");
+        } catch (IllegalStateException expected) { assertTrue(expected.getMessage(), expected.getMessage().contains("证据")); }
+        assertFalse(prepared.getTargetFile().exists());
+    }
+
+    public void testChangedModuleLanguageLevelInvalidatesPassingRuntimeEvidence() throws Exception {
+        PsiFile source = source();
+        var result = execute(service(config -> { throw new AssertionError("no model expected"); }),
+                source, candidate(PASSING), PASSING, false, () -> false);
+        assertPassed(result, PASSING, source);
+        var evidence = result.getRuntimeValidationReport().getCandidateEvidence();
+        assertTrue(com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(getProject(), evidence));
+        IdeaTestUtil.setModuleLanguageLevel(getModule(), LanguageLevel.JDK_11, getTestRootDisposable());
+        assertFalse(com.casc.unittestagent.coverage.CandidateEvidenceFactory.isCurrent(getProject(), evidence));
+    }
+
     public void testUndiscoveredPrivateMethodCannotBorrowAnotherTestsPassingGate() throws Exception {
         PsiFile source = source();
         String code = PASSING.replace("class SubjectTest {", "class SubjectTest { @Test private void neverDiscovered() { fail(); }");

@@ -421,6 +421,8 @@ public class ClassUnitTestGenerationService {
             item.getResult().setRuleBasedFallback(true);
             item.setStatus(MethodGenerationStatus.RULE_FALLBACK);
             item.setMessage(reason);
+        } catch (ProcessCanceledException ex) {
+            throw ex;
         } catch (Exception ex) {
             item.setStatus(MethodGenerationStatus.FAILED);
             item.setMessage(reason + "；规则草稿也生成失败：" + safeMessage(ex));

@@ -103,7 +103,7 @@ jobs:
         shell: pwsh
         working-directory: '工作区 UnitMind'
         run: |
-          & ./.github/scripts/invoke-windows-gradle.ps1 -GradleArguments @('test', '--tests', '*OpenSourceRuleGenerationSweepTest')
+          & ./.github/scripts/invoke-windows-gradle.ps1 -GradleArguments @('ossRuleSweep')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Full Windows compatibility regression
         shell: pwsh
@@ -134,7 +134,7 @@ jobs:
         working-directory: '工作区 UnitMind'
         run: |
           $results = @()
-          foreach ($task in @('test', 'windowsCompatibilityTest')) {
+          foreach ($task in @('test', 'windowsCompatibilityTest', 'ossRuleSweep')) {
             $files = @(Get-ChildItem "$env:UNITMIND_NATIVE_BUILD/test-results/$task/TEST-*.xml")
             if ($files.Count -eq 0) { throw "No XML test results for $task" }
             $counts = @{ tests = 0; failures = 0; errors = 0; skipped = 0 }
@@ -186,6 +186,7 @@ jobs:
             ${{ env.UNITMIND_NATIVE_BUILD }}/reports/tests/windowsCompatibilityTest/
             ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/test/
             ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/windowsCompatibilityTest/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/ossRuleSweep/
             ${{ env.UNITMIND_NATIVE_BUILD }}/reports/pluginVerifier/
             ${{ env.UNITMIND_NATIVE_BUILD }}/reports/unitmind/
       - uses: actions/upload-artifact@v4

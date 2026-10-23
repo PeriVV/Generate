@@ -24,6 +24,23 @@ public class TestCodeStateTest extends LightJavaCodeInsightFixtureTestCase {
         call("applyGenerationResult", new Class<?>[]{GenerationResult.class}, original);
     }
 
+    public void testDisposedPanelCancelsIndicatorsAndRejectsQueuedResults() throws Exception {
+        var coverage = new com.intellij.openapi.progress.EmptyProgressIndicator();
+        var writing = new com.intellij.openapi.progress.EmptyProgressIndicator();
+        for (var name : java.util.List.of("coverageIndicator", "writeIndicator")) {
+            var field = UnitMindToolWindowPanel.class.getDeclaredField(name); field.setAccessible(true);
+            field.set(panel, name.equals("coverageIndicator") ? coverage : writing);
+        }
+        var sequence = UnitMindToolWindowPanel.class.getDeclaredField("analysisSequence"); sequence.setAccessible(true);
+        int request = sequence.getInt(panel);
+        panel.dispose(); panel.dispose();
+        assertTrue(coverage.isCanceled()); assertTrue(writing.isCanceled());
+        var invoked = new java.util.concurrent.atomic.AtomicBoolean();
+        panel.queueCurrentRequestUpdate(request, source, original, () -> invoked.set(true));
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+        assertFalse(invoked.get());
+    }
+
     public void testSelectedTextReportsAndWriteInputStayTogetherAcrossRebuilds() throws Exception {
         original.getFinalTestFileReport().setTargetPath("/previous/SubjectTest.java");
         GenerationResult selected = selected();

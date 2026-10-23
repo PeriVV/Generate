@@ -64,6 +64,7 @@ public class JacocoCoverageExecutor {
                                               BooleanSupplier cancelled) {
         CoverageRunResult result = new CoverageRunResult();
         CoverageSnapshot snapshot = new CoverageSnapshot();
+        snapshot.setCandidateEvidence(artifact == null ? null : artifact.getCandidateEvidence());
         result.setSnapshot(snapshot);
         if (artifact == null || !artifact.isSuccessful()) {
             result.setEnvironmentError(true);
@@ -113,6 +114,7 @@ public class JacocoCoverageExecutor {
                                      BooleanSupplier cancelled) {
         CoverageRunResult result = new CoverageRunResult();
         CoverageSnapshot snapshot = new CoverageSnapshot();
+        snapshot.setCandidateEvidence(artifact == null ? null : artifact.getCandidateEvidence());
         result.setSnapshot(snapshot);
         if (artifact == null || !artifact.isSuccessful()) {
             result.setEnvironmentError(true);
@@ -228,6 +230,8 @@ public class JacocoCoverageExecutor {
         Path stagedAgents = stageWindowsAgents(builder.command(), workingDirectory);
         Process process = null;
         try {
+            com.casc.unittestagent.util.OperationContext.capture(cancelled).checkCancelled();
+            requireCurrentEvidence(artifact);
             process = LongCommandLineLauncher.start(builder, artifact.getRoot());
             long deadline = System.nanoTime() + Duration.ofSeconds(config.getExecutionTimeoutSeconds()).toNanos();
             boolean finished = false;
@@ -247,6 +251,7 @@ public class JacocoCoverageExecutor {
             ensureFailureDiagnostic(summary, artifact.getTestClassName());
             SpringRuntimeFailureAnalyzer.enrich(summary.getDiagnostics());
             if (!summary.isFullySuccessful()) RuntimeEvidenceArchive.preserve(reports, summary);
+            requireCurrentEvidence(artifact);
             return summary;
         } finally {
             // Cancellation/interruption must not leave a JVM writing into a deleted sandbox.
@@ -750,4 +755,10 @@ public class JacocoCoverageExecutor {
         int branchCovered;
         int branchMissed;
     }
+    private static void requireCurrentEvidence(CompiledTestArtifact artifact) {
+        if (artifact.getCandidateEvidence() != null
+                && !CandidateEvidenceFactory.isCurrent(artifact.getProject(), artifact.getCandidateEvidence()))
+            throw new IllegalStateException("测试执行期间 SDK、依赖或构建配置已变化，请重新验证。");
+    }
+
 }

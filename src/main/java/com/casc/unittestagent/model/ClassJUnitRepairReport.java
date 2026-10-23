@@ -5,6 +5,10 @@ import java.util.List;
 
 /** 完整 JUnit 执行、模型修复和全量回归报告；单方法与整类生成共用。 */
 public class ClassJUnitRepairReport {
+    private CandidateEvidence candidateEvidence;
+    public CandidateEvidence getCandidateEvidence() { return candidateEvidence; }
+    public void setCandidateEvidence(CandidateEvidence value) { candidateEvidence = value; }
+
     private ClassJUnitStatus status = ClassJUnitStatus.NOT_RUN;
     private ClassJUnitStopReason stopReason = ClassJUnitStopReason.NONE;
     private TestExecutionSummary initialExecution = new TestExecutionSummary();

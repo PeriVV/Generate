@@ -28,7 +28,7 @@ public class UnitMindToolWindowFactory implements ToolWindowFactory {
         Content content = contentFactory.createContent(panel, "", false);
         // 面板强引用 Project/Editor/PSI，注册表条目必须在内容销毁或项目关闭时注销，
         // 否则静态集合会在项目关闭后长期持有整个面板。
-        content.setDisposer(() -> UnitMindToolWindowRegistry.unregister(project));
+        content.setDisposer(() -> { panel.dispose(); UnitMindToolWindowRegistry.unregister(project); });
         toolWindow.getContentManager().addContent(content);
         Disposer.register(project, new Disposable() {
             @Override

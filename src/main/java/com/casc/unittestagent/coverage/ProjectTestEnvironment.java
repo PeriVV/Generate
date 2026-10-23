@@ -23,6 +23,8 @@ public class ProjectTestEnvironment {
         return runtimeConfiguration == null ? TestRuntimeConfiguration.defaults(workingDirectory) : runtimeConfiguration;
     }
     String sourceFileName = "";
+    String sourceFilePath = "";
+    public String getSourceFilePath() { return sourceFilePath; }
     String sourceText = "";
     String sourcePackage = "";
     int languageFeature;

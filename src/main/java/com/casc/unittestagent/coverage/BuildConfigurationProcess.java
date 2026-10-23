@@ -41,11 +41,8 @@ final class BuildConfigurationProcess {
         drain.setDaemon(true);
         drain.start();
         try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
-            while (!process.waitFor(100, TimeUnit.MILLISECONDS)) {
-                checkCancelled(cancelled);
-                if (System.nanoTime() >= deadline) throw new IOException("构建工具导出测试配置超时。");
-            }
+            if (!com.casc.unittestagent.util.OperationContext.capture(cancelled).waitFor(process, timeoutSeconds, TimeUnit.SECONDS))
+                throw new IOException("构建工具导出测试配置超时。");
             checkCancelled(cancelled);
             if (process.exitValue() != 0) {
                 com.intellij.openapi.diagnostic.Logger.getInstance(BuildConfigurationProcess.class).warn(

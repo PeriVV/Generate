@@ -30,6 +30,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             assertEquals(expected, prepared.getContent());
             var validation = ValidationResult.status(ValidationStatus.PASSED);
             validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             writer.commit(getProject(), prepared, validation, runtimePassed(prepared, source), false);
             assertEquals(expected, com.casc.unittestagent.util.ProjectFileText.read(prepared.getTargetFile().toPath()));
         } finally { delete(root); }
@@ -56,6 +57,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             var prepared = writer.prepare(getProject(), source, generated, generated.getContent(), TestWriteMode.APPEND_TO_EXISTING, "work");
             var validation = ValidationResult.status(ValidationStatus.PASSED);
             validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             writer.commit(getProject(), prepared, validation, runtimePassed(prepared, source), false);
             assertEquals(prepared.getContent(), com.casc.unittestagent.util.ProjectFileText.read(target));
             assertTrue(Files.readString(target, gbk).contains("原有中文"));
@@ -76,6 +78,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             var prepared = writer.prepare(getProject(), source, generated, generated.getContent(), TestWriteMode.CREATE_NEW, "work");
             var validation = ValidationResult.status(ValidationStatus.PASSED);
             validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             writer.commit(getProject(), prepared, validation, runtimePassed(prepared, source), false);
             assertTrue(prepared.getTargetFile().exists());
         } finally { delete(root); }
@@ -185,6 +188,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
 
             ValidationResult passed = ValidationResult.status(ValidationStatus.PASSED);
             passed.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            passed.setCandidateEvidence(evidenceFor(prepared, source));
             writer.commit(getProject(), prepared, passed, runtimePassed(prepared, source), false);
 
             assertEquals(prepared.getContent(),
@@ -251,6 +255,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
 
             ValidationResult passed = ValidationResult.status(ValidationStatus.PASSED);
             passed.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            passed.setCandidateEvidence(evidenceFor(prepared, source));
             try {
                 writer.commit(getProject(), prepared, passed, runtimePassed(prepared, source), false);
                 fail("source changes must invalidate a prepared write");
@@ -272,6 +277,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
                     generated.getContent(), TestWriteMode.CREATE_NEW, "work");
             ValidationResult validation = ValidationResult.status(ValidationStatus.PASSED);
             validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             assertRuntimeRejected(writer, prepared, validation, null);
             for (ClassJUnitStatus status : ClassJUnitStatus.values()) {
                 if (status == ClassJUnitStatus.PASSED) continue;
@@ -319,6 +325,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
                     generated.getContent(), TestWriteMode.CREATE_NEW, "work");
             ValidationResult validation = ValidationResult.status(ValidationStatus.PASSED);
             validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             ClassJUnitRepairReport runtime = runtimePassed(prepared, source);
             Files.writeString(Path.of(source.getVirtualFile().getPath()),
                     "package sample; public class Subject { int externalEdit; }");
@@ -376,6 +383,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             var prepared = writer.prepare(getProject(), source, generated, generated.getContent(), TestWriteMode.APPEND_TO_EXISTING, "work");
             assertTrue(prepared.getContent().contains("humanUnsaved"));
             var validation = ValidationResult.status(ValidationStatus.PASSED); validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             writer.commit(getProject(), prepared, validation, runtimePassed(prepared, source), false);
             assertEquals(prepared.getContent(), document.getText());
             documents.saveAllDocuments();
@@ -393,6 +401,7 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             report.getFinalExecution().setTestCases(java.util.List.of(new com.casc.unittestagent.model.TestCaseExecution("sample.SubjectTest#visible()", true, false)));
             report.getFinalExecution().setFound(1); report.getFinalExecution().setSucceeded(1);
             var validation = ValidationResult.status(ValidationStatus.PASSED); validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            validation.setCandidateEvidence(evidenceFor(prepared, source));
             try { writer.commit(getProject(), prepared, validation, report, false); fail("Missing method evidence must block commit"); }
             catch (IllegalStateException expected) { assertTrue(expected.getMessage().contains("执行证明")); }
             assertFalse(prepared.getTargetFile().exists());
@@ -409,9 +418,18 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
         }
     }
 
+    private com.casc.unittestagent.model.CandidateEvidence evidenceFor(TestFileWriter.PreparedWrite prepared, PsiFile source) {
+        return new com.casc.unittestagent.model.CandidateEvidence(
+                new com.casc.unittestagent.model.CandidateIdentity(CodeFingerprint.sha256(source.getText()),
+                        CodeFingerprint.sha256(prepared.getContent()), "synthetic-writer-contract"),
+                com.intellij.openapi.roots.ProjectRootModificationTracker.getInstance(getProject()).getModificationCount(),
+                java.util.Map.of());
+    }
+
     private ClassJUnitRepairReport runtimePassed(TestFileWriter.PreparedWrite prepared, PsiFile source) {
         ClassJUnitRepairReport report = ClassJUnitRepairReport.status(ClassJUnitStatus.PASSED);
         report.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            report.setCandidateEvidence(evidenceFor(prepared, source));
         report.setSourceHash(CodeFingerprint.sha256(source.getText()));
         TestExecutionSummary execution = new TestExecutionSummary();
         execution.setExitCode(0);

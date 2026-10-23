@@ -8,4 +8,9 @@ public class DefaultLlmClientFactory implements LlmClientFactory {
     public LlmClient create(LlmConfig config) {
         return new OpenAiCompatibleLlmClient(config);
     }
+
+    @Override
+    public LlmClient create(LlmConfig config, java.util.function.BooleanSupplier cancelled) {
+        return new OpenAiCompatibleLlmClient(config, cancelled);
+    }
 }

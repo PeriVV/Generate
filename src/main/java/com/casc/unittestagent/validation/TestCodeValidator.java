@@ -10,4 +10,12 @@ import com.intellij.psi.PsiFile;
  */
 public interface TestCodeValidator {
     ValidationResult validate(Project project, PsiFile sourceFile, GeneratedTestFile generatedFile, String code);
+    default ValidationResult validate(Project project, PsiFile sourceFile, GeneratedTestFile generatedFile,
+                                      String code, java.util.function.BooleanSupplier cancelled) {
+        var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
+        operation.checkCancelled();
+        var result = validate(project, sourceFile, generatedFile, code);
+        operation.checkCancelled();
+        return result;
+    }
 }
