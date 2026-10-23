@@ -147,11 +147,11 @@ public class LongCommandLineLauncherTest extends TestCase {
         Path output = folder.resolve("record.txt");
         String value = "中文 C:\\project\\new\\tab\\ trailing\\ \"quoted\" # ' tab\t newline\n";
         String javac = Path.of(System.getProperty("java.home"), "bin", BuildConfigurationProcess.isWindows() ? "javac.exe" : "javac").toString();
-        var command = LongCommandLineLauncher.adaptForWindows(List.of(javac, "-J-Dfile.encoding=windows-1252", "-encoding", "UTF-8",
+        var command = LongCommandLineLauncher.adapt(List.of(javac, "-J-Dfile.encoding=windows-1252", "-encoding", "UTF-8",
                 "-processorpath", processors.toString(), "-processor", "Recorder", "-proc:only",
-                "-Aout=" + output, "-Avalue=" + value, source.toString()), folder);
+                "-Aout=" + output, "-Avalue=" + value, source.toString()), folder, folder.toFile());
         assertTrue(command.toString(), command.contains("-J-Dfile.encoding=windows-1252"));
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        var process = new ProcessBuilder(command).directory(folder.toFile()).redirectErrorStream(true).start();
         assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
         assertEquals(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, process.exitValue());
         assertEquals(value, Files.readString(output));
@@ -192,13 +192,34 @@ public class LongCommandLineLauncherTest extends TestCase {
         Path source = folder.resolve("Input.java");
         Files.writeString(source, "public class Input { public static void main(String[] args) { System.out.print(\"中文\"); } }");
         String suffix = BuildConfigurationProcess.isWindows() ? ".exe" : "";
-        var command = LongCommandLineLauncher.adaptForWindows(List.of(Path.of(home, "bin", "javac" + suffix).toString(),
-                "-encoding", "UTF-8", "-d", folder.toString(), source.toString()), folder);
-        var compile = new ProcessBuilder(command).redirectErrorStream(true).start();
+        var command = LongCommandLineLauncher.adapt(List.of(Path.of(home, "bin", "javac" + suffix).toString(),
+                "-encoding", "UTF-8", "-d", folder.toString(), source.toString()), folder, folder.toFile());
+        var compile = new ProcessBuilder(command).directory(folder.toFile()).redirectErrorStream(true).start();
         assertTrue(compile.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
         assertEquals(new String(compile.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, compile.exitValue());
-        var run = new ProcessBuilder(Path.of(home, "bin", "java" + suffix).toString(), "-Dfile.encoding=UTF-8", "-cp", folder.toString(), "Input").redirectErrorStream(true).start();
+        var runtime = LongCommandLineLauncher.adapt(List.of(Path.of(home, "bin", "java" + suffix).toString(), "-Dfile.encoding=UTF-8", "-cp", folder.toString(), "Input"), folder, folder.toFile());
+        var run = new ProcessBuilder(runtime).directory(folder.toFile()).redirectErrorStream(true).start();
         assertTrue(run.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
         assertEquals("中文", new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); assertEquals(0, run.exitValue());
+    }
+
+    public void testShortUnicodeSourceAndClasspathUseSafeWindowsLaunch() throws Exception {
+        Path folder = Files.createDirectories(auxiliaryDirectory.resolve("中文 short launch"));
+        Path source = folder.resolve("Input.java");
+        Files.writeString(source, "public class Input { public static void main(String[] args) { System.out.print(\"中文\"); } }");
+        String suffix = BuildConfigurationProcess.isWindows() ? ".exe" : "";
+        String home = System.getProperty("java.home");
+        Process compiler = LongCommandLineLauncher.start(new ProcessBuilder(
+                Path.of(home, "bin", "javac" + suffix).toString(), "-encoding", "UTF-8",
+                "-d", folder.toString(), source.toString()).redirectErrorStream(true), auxiliaryDirectory);
+        assertTrue(compiler.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(new String(compiler.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, compiler.exitValue());
+        Process runtime = LongCommandLineLauncher.start(new ProcessBuilder(
+                Path.of(home, "bin", "java" + suffix).toString(), "-Dfile.encoding=UTF-8",
+                "-cp", folder.toString(), "Input").redirectErrorStream(true), auxiliaryDirectory);
+        assertTrue(runtime.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        String output = new String(runtime.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(output, 0, runtime.exitValue());
+        assertEquals("中文", output);
     }
 }

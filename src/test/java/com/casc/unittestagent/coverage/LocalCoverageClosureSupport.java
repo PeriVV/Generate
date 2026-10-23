@@ -103,9 +103,12 @@ final class LocalCoverageClosureSupport {
         command.add("-d");
         command.add(classes.toString());
         command.add(source.toString());
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(output, 0, process.waitFor());
+        Path auxiliary = Files.createTempDirectory("unitmind-test-javac-");
+        try {
+            Process process = LongCommandLineLauncher.start(new ProcessBuilder(command).redirectErrorStream(true), auxiliary);
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(output, 0, process.waitFor());
+        } finally { CompiledTestArtifact.deleteRecursively(auxiliary); }
     }
 
     /** 在沙箱上执行一次覆盖率闭环，返回带 JaCoCo 行/分支数据的执行结果。 */

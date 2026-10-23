@@ -19,7 +19,7 @@ public class WindowsBatchExecutionTest extends TestCase {
             Path batch = folder.resolve("gradlew.bat");
             Files.writeString(batch, "@echo off\r\n\"%JAVA_HOME%\\bin\\java.exe\" -cp \"%~dp0classes\" Recorder %*\r\nexit /b %errorlevel%\r\n");
             Path output = root.resolve("中文 result file.txt");
-            String literal = "中文 value & (x) !literal! %UNITMIND_MUST_NOT_EXPAND% C:\\path\\new\\";
+            String literal = "中文 value & (x) !literal! %JAVA_HOME% C:\\path\\new\\";
             List<String> command = BuildConfigurationProcess.windowsExecutable(batch);
             command.addAll(List.of(output.toString(), literal));
             BuildConfigurationProcess.run(command, root.toFile(),

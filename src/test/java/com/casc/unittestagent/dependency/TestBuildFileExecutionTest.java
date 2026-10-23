@@ -16,7 +16,6 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             new TestBuildFileEditor.Dependency("org.mockito", "mockito-junit-jupiter", "5.18.0"));
 
     public void testGeneratedMavenConfigurationExecutesJUnitWithMockito() throws Exception {
-        if (isWindows()) return; // Existing Maven fixture relies on PATH as well.
         Path root = fixture();
         try {
             String before = """
@@ -27,7 +26,7 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
                     </project>
                     """;
             Files.writeString(root.resolve("pom.xml"), TestBuildFileEditor.maven(getProject(), before, DEPENDENCIES, true));
-            List<String> command = new ArrayList<>(List.of("mvn", "-B", "-q", "-ntp"));
+            List<String> command = new ArrayList<>(List.of(isWindows() ? "mvn.cmd" : "mvn", "-B", "-q", "-ntp"));
             if (!online()) command.add("--offline");
             command.add("test");
             run(root, command);
@@ -39,7 +38,6 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
     public void testGeneratedGradleKotlinConfigurationExecutesJUnitWithMockito() throws Exception { gradle(true); }
 
     private void gradle(boolean kotlin) throws Exception {
-        if (isWindows()) return;
         Path root = fixture();
         try {
             Files.writeString(root.resolve("settings.gradle"), "rootProject.name='unitmind-dependency-button'\n");
@@ -56,7 +54,7 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
     }
 
     private Path fixture() throws Exception {
-        Path root = Files.createTempDirectory("unitmind-dependency-build-");
+        Path root = Files.createTempDirectory("unitmind dependency build 中文 ");
         Path source = root.resolve("src/main/java/example/Subject.java");
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
@@ -91,13 +89,26 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
 
     private void run(Path root, List<String> command) throws Exception {
         Path output = root.resolve("build-output.txt");
-        ProcessBuilder builder = new ProcessBuilder(command).directory(root.toFile()).redirectErrorStream(true)
-                .redirectOutput(output.toFile());
-        builder.environment().put("JAVA_HOME", System.getProperty("java.home"));
-        Process process = builder.start();
+        if (isWindows() && command.get(0).toLowerCase(java.util.Locale.ROOT).matches(".*\\.(cmd|bat)$")) {
+            command = new ArrayList<>(command);
+            command.addAll(0, List.of("cmd.exe", "/d", "/v:off", "/c"));
+        }
+        var builder = new com.intellij.execution.configurations.GeneralCommandLine(command)
+                .withWorkDirectory(root.toFile()).withRedirectErrorStream(true)
+                .withEnvironment("JAVA_HOME", System.getProperty("java.home"));
+        Process process = builder.createProcess();
+        var drain = new Thread(() -> {
+            try (var input = process.getInputStream(); var target = Files.newOutputStream(output)) {
+                input.transferTo(target);
+            } catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+        }, "unitmind-build-fixture-output");
+        drain.setDaemon(true);
+        drain.start();
         process.getOutputStream().close();
         try {
             assertTrue("Build exceeded 180 seconds", process.waitFor(180, TimeUnit.SECONDS));
+            drain.join(5000);
+            assertFalse("Build output drain did not finish", drain.isAlive());
             assertEquals(Files.readString(output), 0, process.exitValue());
         } finally {
             if (process.isAlive()) {

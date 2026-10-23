@@ -11,6 +11,12 @@ plugins {
 group = "com.example"
 version = "1.0.51"
 
+// Old IDEA test launchers cannot decode Unicode classpath arguments on an ANSI Windows locale.
+// Keep the source checkout unchanged and allow CI to place JVM bootstrap artifacts in an ASCII path.
+providers.gradleProperty("unitmindBuildDirectory").orNull?.let {
+    layout.buildDirectory.set(file(it))
+}
+
 base {
     archivesName.set("UnitMind")
 }
@@ -139,7 +145,8 @@ tasks {
                 "**/TestSandboxCompilerTest.class", "**/TestRuntimeExecutionTest.class",
                 "**/TestFileWriterGateTest.class", "**/FinalTestFileReportPanelTest.class",
                 "**/PluginHttpClassLoadingTest.class", "**/TestDependencySetupTest.class",
-                "**/RuntimeWriteGateIntegrationTest.class", "**/TestClassMergerTest.class")
+                "**/RuntimeWriteGateIntegrationTest.class", "**/TestClassMergerTest.class",
+                "**/TestBuildFileExecutionTest.class")
         doFirst {
             check(System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
                 "windowsCompatibilityTest requires a real Windows host; ordinary test can exercise portable contracts on other OSes."

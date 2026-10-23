@@ -13,6 +13,8 @@ jobs:
   native-windows:
     runs-on: windows-latest
     timeout-minutes: 75
+    env:
+      UNITMIND_NATIVE_BUILD: '${{ runner.temp }}/unitmind-native-build'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,7 +54,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mvn.cmd -B org.apache.maven.plugins:maven-help-plugin:3.5.2:help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\gradlew.bat test windowsCompatibilityTest buildPlugin "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" --no-daemon --console=plain
+          .\gradlew.bat test windowsCompatibilityTest buildPlugin "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" -PunitmindSetupFixturesOnline=true --no-daemon --console=plain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native evidence and package fingerprint
         shell: pwsh
@@ -60,7 +62,7 @@ jobs:
         run: |
           $results = @()
           foreach ($task in @('test', 'windowsCompatibilityTest')) {
-            $files = @(Get-ChildItem "build/test-results/$task/TEST-*.xml")
+            $files = @(Get-ChildItem "$env:UNITMIND_NATIVE_BUILD/test-results/$task/TEST-*.xml")
             if ($files.Count -eq 0) { throw "No XML test results for $task" }
             $counts = @{ tests = 0; failures = 0; errors = 0; skipped = 0 }
             foreach ($file in $files) {
@@ -74,7 +76,7 @@ jobs:
             }
             $results += @{ task = $task; counts = $counts }
           }
-          $package = @(Get-ChildItem 'build/distributions/UnitMind-*.zip')
+          $package = @(Get-ChildItem "$env:UNITMIND_NATIVE_BUILD/distributions/UnitMind-*.zip")
           if ($package.Count -ne 1) { throw 'Expected exactly one verified plugin package' }
           $evidence = @{
             status = 'PASSED_NATIVE_WINDOWS'
@@ -83,28 +85,30 @@ jobs:
             run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             java8 = $env:UNITMIND_JAVA8_HOME
             java17 = $env:JAVA_HOME
+            source_checkout = "$PWD"
+            build_directory = $env:UNITMIND_NATIVE_BUILD
             test_results = $results
             package = $package[0].Name
             package_bytes = $package[0].Length
             package_sha256 = (Get-FileHash -LiteralPath $package[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           }
-          New-Item -ItemType Directory -Path 'build/reports/windows-native' -Force | Out-Null
-          $evidence | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 'build/reports/windows-native/summary.json'
-          Get-Content 'build/reports/windows-native/summary.json'
+          New-Item -ItemType Directory -Path "$env:UNITMIND_NATIVE_BUILD/reports/windows-native" -Force | Out-Null
+          $evidence | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 "$env:UNITMIND_NATIVE_BUILD/reports/windows-native/summary.json"
+          Get-Content "$env:UNITMIND_NATIVE_BUILD/reports/windows-native/summary.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-test-diagnostics
           path: |
-            工作区 UnitMind/build/reports/tests/test/
-            工作区 UnitMind/build/reports/tests/windowsCompatibilityTest/
-            工作区 UnitMind/build/test-results/test/
-            工作区 UnitMind/build/test-results/windowsCompatibilityTest/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/reports/tests/test/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/reports/tests/windowsCompatibilityTest/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/test/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/windowsCompatibilityTest/
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: windows-verified-plugin
           if-no-files-found: error
           path: |
-            工作区 UnitMind/build/reports/windows-native/summary.json
-            工作区 UnitMind/build/distributions/UnitMind-*.zip
+            ${{ env.UNITMIND_NATIVE_BUILD }}/reports/windows-native/summary.json
+            ${{ env.UNITMIND_NATIVE_BUILD }}/distributions/UnitMind-*.zip

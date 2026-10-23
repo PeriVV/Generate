@@ -37,17 +37,31 @@ public final class LongCommandLineLauncher {
     }
 
     /**
-     * 启动子进程。仅在 Windows 且预估命令行超限时改写命令，其余平台与短命令
-     * 保持原样直启，避免改变已验证路径的行为。
+     * 启动子进程。在 Windows 上处理超长命令，以及会被旧 JDK 的 ANSI 启动器
+     * 损坏的 Unicode 编译参数和 classpath；其他命令保持直接启动。
      *
      * @param auxiliaryDirectory 存放参数文件/pathing jar 的目录（沙箱临时目录），必须已存在。
      */
     public static Process start(ProcessBuilder builder, Path auxiliaryDirectory) throws IOException {
         List<String> command = builder.command();
-        if (isWindows() && exceedsWindowsLimit(command)) {
+        if (isWindows() && (exceedsWindowsLimit(command) || hasUnicodeCompilerOrClasspathArguments(command))) {
             builder.command(adapt(command, auxiliaryDirectory, builder.directory()));
         }
         return builder.start();
+    }
+
+    private static boolean hasUnicodeCompilerOrClasspathArguments(List<String> command) {
+        String executable = command.get(0).replace('\\', '/');
+        executable = executable.substring(executable.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
+        if (executable.equals("javac") || executable.equals("javac.exe")) {
+            return command.stream().skip(1).anyMatch(LongCommandLineLauncher::hasUnicode);
+        }
+        int index = classpathValueIndex(command);
+        return index >= 0 && hasUnicode(command.get(index));
+    }
+
+    private static boolean hasUnicode(String text) {
+        return text.chars().anyMatch(value -> value > 127);
     }
 
     /** 预估 ProcessBuilder 生成的 Windows 命令行长度是否可能触碰 CreateProcess 上限。 */
@@ -75,7 +89,7 @@ public final class LongCommandLineLauncher {
             // -J options are consumed by the launcher, never by javac's @file parser.
             command.stream().skip(1).filter(arg -> arg.startsWith("-J")).forEach(adapted::add);
             adapted.add("-J-Dfile.encoding=UTF-8");
-            adapted.add("@" + writeJavacArgumentFile(command, auxiliaryDirectory));
+            adapted.add("@" + commandPath(writeJavacArgumentFile(command, auxiliaryDirectory), workingDirectory));
             return adapted;
         }
         return rewriteJavaClasspathWithPathingJar(command, auxiliaryDirectory, workingDirectory);
@@ -139,8 +153,22 @@ public final class LongCommandLineLauncher {
             zip.closeEntry();
         }
         List<String> adapted = new ArrayList<>(command);
-        adapted.set(classpathValueIndex, pathingJar.toAbsolutePath().toString());
+        adapted.set(classpathValueIndex, commandPath(pathingJar, workingDirectory));
         return adapted;
+    }
+
+    private static String commandPath(Path file, File workingDirectory) {
+        Path absolute = file.toAbsolutePath().normalize();
+        if (hasUnicode(absolute.toString())) {
+            Path base = (workingDirectory == null ? Path.of("") : workingDirectory.toPath()).toAbsolutePath().normalize();
+            try {
+                Path relative = base.relativize(absolute);
+                if (!hasUnicode(relative.toString())) return relative.toString();
+            } catch (IllegalArgumentException differentRoots) {
+                // A different drive cannot be expressed relative to the process directory.
+            }
+        }
+        return absolute.toString();
     }
 
     private static void appendClasspath(StringBuilder value, File entry) {
