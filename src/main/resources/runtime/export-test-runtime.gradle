@@ -1,0 +1,53 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import org.gradle.api.tasks.testing.Test
+
+// 本脚本仅注册配置导出任务，不执行 Test 及其 dependsOn/doFirst/doLast。
+def input = new JsonSlurper().parse(new File('__UNITMIND_INPUT__'))
+gradle.projectsEvaluated {
+    gradle.rootProject.tasks.create(input.exportTask.toString()) {
+        doLast {
+          try {
+            def source = new File(input.sourceFile.toString()).canonicalFile.toPath()
+            def projects = gradle.rootProject.allprojects.findAll {
+                source.startsWith(it.projectDir.canonicalFile.toPath())
+            }.sort { a, b -> b.projectDir.canonicalPath.length() <=> a.projectDir.canonicalPath.length() }
+            if (projects.isEmpty()) throw new GradleException('UnitMind: no project owns source')
+            def owner = projects.first()
+            def tests = owner.tasks.withType(Test).toList()
+            def selected
+            if (input.gradleTask) {
+                selected = gradle.rootProject.tasks.findByPath(input.gradleTask.toString())
+                if (!(selected instanceof Test)) throw new GradleException('UnitMind: selected task is not Test')
+            } else {
+                selected = tests.find { it.name == 'test' }
+                if (selected == null && tests.size() == 1) selected = tests.first()
+                if (selected == null) throw new GradleException('UnitMind: select gradleTask explicitly')
+            }
+            if (selected.project != owner) throw new GradleException('UnitMind: task belongs to another project')
+            // 运行阶段动作可任意修改环境，不能通过执行导出任务重现；禁止静默忽略。
+            if (selected.actions.size() > 1) throw new GradleException('UnitMind: Test has execution-time actions; use explicit runtime export')
+            def args = new ArrayList(selected.allJvmArgs)
+            def payload = [
+                jvmArgs: args.collect { it.toString() },
+                systemProperties: [:],
+                environment: selected.environment.collectEntries { k, v -> [(k.toString()): v.toString()] },
+                inheritEnvironment: false,
+                excludedEnvironment: [],
+                workingDirectory: selected.workingDir.canonicalPath,
+                javaExecutable: selected.hasProperty('javaLauncher')
+                    ? selected.javaLauncher.get().executablePath.asFile.absolutePath : selected.executable,
+                task: selected.path
+            ]
+            // allJvmArgs 已按 Gradle 的规则合并系统属性、堆参数和 argument providers。
+            new File(input.output.toString()).setText(JsonOutput.toJson(payload), 'UTF-8')
+          } catch (Exception failure) {
+            def known = ['UnitMind: no project owns source', 'UnitMind: selected task is not Test',
+                'UnitMind: task belongs to another project', 'UnitMind: select gradleTask explicitly',
+                'UnitMind: Test has execution-time actions; use explicit runtime export']
+            def reason = known.contains(failure.message) ? failure.message : 'UnitMind: runtime export evaluation failed'
+            new File(input.output.toString()).setText(JsonOutput.toJson([error: reason]), 'UTF-8')
+          }
+        }
+    }
+}

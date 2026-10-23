@@ -20,6 +20,9 @@ import java.util.List;
  * 发送给大模型的单元测试生成上下文。
  */
 public class LlmGenerationRequest {
+    private java.util.List<com.casc.unittestagent.model.SpringPropertyBinding> springPropertyBindings = java.util.List.of();
+    public java.util.List<com.casc.unittestagent.model.SpringPropertyBinding> getSpringPropertyBindings() { return springPropertyBindings; }
+    public void setSpringPropertyBindings(java.util.List<com.casc.unittestagent.model.SpringPropertyBinding> value) { springPropertyBindings = java.util.List.copyOf(value); }
     private GenerationScope generationScope = GenerationScope.METHOD;
     private String methodId;
     private List<String> classMethodSignatures = new ArrayList<>();

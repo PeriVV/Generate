@@ -24,7 +24,10 @@ final class OpenSourceMatrixCases {
                 hikariCpUtilityElf(),
                 jacksonCoreNumberInput(),
                 springPetclinicPetValidator(),
-                mybatis3GenericTokenParser());
+                mybatis3GenericTokenParser(),
+                jodaTimeFieldUtilsSafeMultiply(),
+                gsonIso8601UtilsFormat(),
+                junitPioneerNullSafeToString());
     }
 
     private static Case mybatis3GenericTokenParser() {
@@ -71,6 +74,142 @@ final class OpenSourceMatrixCases {
                     }
                     @Test void unclosedTokenKeepsTailLiteral() {
                         assertEquals("a#{b", parser().parse("a#{b"));
+                    }
+                }
+                """);
+    }
+
+    /** joda-time：JDK8 世代的溢出守卫算术——边界分支密集（溢出抛 ArithmeticException）。 */
+    private static Case jodaTimeFieldUtilsSafeMultiply() {
+        return new Case(
+                "joda-time",
+                "",
+                "org/joda/time/field/FieldUtils.java",
+                "public static int safeMultiply(int val1, int val2)",
+                "org.joda.time.field.FieldUtils",
+                """
+                package org.joda.time.field;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                class UnitMindMatrixInitialTest {
+                    @Test void multipliesTwoValues() {
+                        assertEquals(6, FieldUtils.safeMultiply(2, 3));
+                    }
+                }
+                """,
+                """
+                package org.joda.time.field;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                import static org.junit.jupiter.api.Assertions.assertThrows;
+                class UnitMindMatrixImprovedTest {
+                    @Test void multipliesTwoValues() {
+                        assertEquals(6, FieldUtils.safeMultiply(2, 3));
+                    }
+                    @Test void multipliesByZero() {
+                        assertEquals(0, FieldUtils.safeMultiply(Integer.MAX_VALUE, 0));
+                    }
+                    @Test void multipliesByOne() {
+                        assertEquals(Integer.MAX_VALUE, FieldUtils.safeMultiply(Integer.MAX_VALUE, 1));
+                    }
+                    @Test void multipliesMinimumValueByMinusOneOverflows() {
+                        assertThrows(ArithmeticException.class,
+                        () -> FieldUtils.safeMultiply(Integer.MIN_VALUE, -1));
+                    }
+                    @Test void multipliesToOverflowThrows() {
+                        assertThrows(ArithmeticException.class,
+                        () -> FieldUtils.safeMultiply(Integer.MAX_VALUE, 2));
+                    }
+                }
+                """);
+    }
+
+    /** gson：时区敏感的 ISO8601 格式化——验证环境相关断言路径。 */
+    private static Case gsonIso8601UtilsFormat() {
+        return new Case(
+                "gson",
+                "gson",
+                "com/google/gson/internal/bind/util/ISO8601Utils.java",
+                "public static String format(Date date, boolean millis, TimeZone tz)",
+                "com.google.gson.internal.bind.util.ISO8601Utils",
+                """
+                package com.google.gson.internal.bind.util;
+                import java.util.Date;
+                import java.util.TimeZone;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                class UnitMindMatrixInitialTest {
+                    @Test void formatsEpochWithoutMillisInUtc() {
+                        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+                        assertEquals("1970-01-01T00:00:00Z", ISO8601Utils.format(new Date(0L), false, TimeZone.getTimeZone("UTC")));
+                    }
+                }
+                """,
+                """
+                package com.google.gson.internal.bind.util;
+                import java.util.Date;
+                import java.util.TimeZone;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                class UnitMindMatrixImprovedTest {
+                    @Test void formatsEpochWithoutMillisInUtc() {
+                        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+                        assertEquals("1970-01-01T00:00:00Z", ISO8601Utils.format(new Date(0L), false, TimeZone.getTimeZone("UTC")));
+                    }
+                    @Test void formatsEpochWithMillisInUtc() {
+                        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+                        assertEquals("1970-01-01T00:00:00.123Z", ISO8601Utils.format(new Date(123L), true, TimeZone.getTimeZone("UTC")));
+                    }
+                    @Test void formatsEndOfMonthWithoutMillisInUtc() {
+                        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+                        assertEquals("2024-02-29T12:34:56Z",
+                                ISO8601Utils.format(new Date(1709210096000L), false, TimeZone.getTimeZone("UTC")));
+                    }
+                }
+                """);
+    }
+
+    /** junit-pioneer：Gradle 构建 + JUnit 6 运行时——验证插件自带 JUnit 5 与项目 JUnit 6 共存。 */
+    private static Case junitPioneerNullSafeToString() {
+        return new Case(
+                "junit-pioneer",
+                "",
+                "org/junitpioneer/internal/PioneerUtils.java",
+                "public static String nullSafeToString(Object object)",
+                "org.junitpioneer.internal.PioneerUtils",
+                """
+                package org.junitpioneer.internal;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                class UnitMindMatrixInitialTest {
+                    @Test void rendersPlainObject() {
+                        assertEquals("pioneer", PioneerUtils.nullSafeToString("pioneer"));
+                    }
+                }
+                """,
+                """
+                package org.junitpioneer.internal;
+                import org.junit.jupiter.api.Test;
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                class UnitMindMatrixImprovedTest {
+                    @Test void rendersPlainObject() {
+                        assertEquals("pioneer", PioneerUtils.nullSafeToString("pioneer"));
+                    }
+                    @Test void rendersNull() {
+                        assertEquals("null", PioneerUtils.nullSafeToString(null));
+                    }
+                    @Test void rendersIntArray() {
+                        assertEquals("[1, 2, 3]", PioneerUtils.nullSafeToString(new int[] {1, 2, 3}));
+                    }
+                    @Test void rendersBooleanArray() {
+                        assertEquals("[true, false]", PioneerUtils.nullSafeToString(new boolean[] {true, false}));
+                    }
+                    @Test void rendersLongArray() {
+                        assertEquals("[1, 2]", PioneerUtils.nullSafeToString(new long[] {1L, 2L}));
+                    }
+                    @Test void rendersNestedObjectArrayDeeply() {
+                        assertEquals("[[a], b]", PioneerUtils.nullSafeToString(
+                        new Object[] {new Object[] {"a"}, "b"}));
                     }
                 }
                 """);
@@ -542,11 +681,17 @@ final class OpenSourceMatrixCases {
         }
 
         Path classesPath() {
-            return repoPath().resolve(moduleDir).resolve("target/classes");
+            Path maven = repoPath().resolve(moduleDir).resolve("target/classes");
+            if (Files.isDirectory(maven)) return maven;
+            // Gradle 布局（junit-pioneer 等）：compileJava 输出到 build/classes/java/main。
+            return repoPath().resolve(moduleDir).resolve("build/classes/java/main");
         }
 
         Path classpathFilePath() {
-            return repoPath().resolve(moduleDir).resolve("target/unitmind.classpath");
+            Path maven = repoPath().resolve(moduleDir).resolve("target/unitmind.classpath");
+            if (Files.isRegularFile(maven)) return maven;
+            // Gradle 布局：unitmindClasspath 任务导出到 build/unitmind.classpath。
+            return repoPath().resolve(moduleDir).resolve("build/unitmind.classpath");
         }
 
         Path sourcePathFile() {

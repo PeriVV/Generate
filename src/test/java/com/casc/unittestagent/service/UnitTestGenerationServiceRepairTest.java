@@ -122,6 +122,32 @@ public class UnitTestGenerationServiceRepairTest extends LightPlatformTestCase {
         assertEquals(0, harness.repairCalls.get());
     }
 
+    public void testResolvedSymbolsMayExposeMoreCheckedExceptions() {
+        var missing = new CompileDiagnostic("ERROR", "CANNOT_FIND_SYMBOL", "Mock", 1, 1, "@Mock", true);
+        var checked = new CompileDiagnostic("ERROR", "UNREPORTED_EXCEPTION", "throws Exception", 3, 1, "client.upload()", true);
+        assertFalse(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(missing), List.of(checked, checked)));
+        // Still reject a candidate retaining unresolved symbols or introducing other failures.
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(missing), List.of(missing, checked)));
+        var incompatible = new CompileDiagnostic("ERROR", "INCOMPATIBLE_TYPES", "bad type", 4, 1, "bad()", true);
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(missing), List.of(checked, incompatible)));
+        checked.setRepairable(false);
+        checked.setSourceOrigin("TARGET_SOURCE");
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(missing), List.of(checked, checked)));
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(), List.of(missing)));
+    }
+
+    public void testResolvingGenerationPreflightMayRevealMoreCompilerDiagnostics() {
+        var preflight = new CompileDiagnostic("ERROR", "FIXTURE_INITIALIZATION_CONFLICT", "Spy order", 2, 1, "@Spy", true);
+        preflight.setValidationStage(com.casc.unittestagent.model.ValidationStage.SOURCE_PREFLIGHT);
+        var compiler = new CompileDiagnostic("ERROR", "CANNOT_FIND_SYMBOL", "missing", 5, 1, "missing()", true);
+        assertFalse(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(preflight), List.of(compiler, compiler)));
+        compiler.setValidationStage(com.casc.unittestagent.model.ValidationStage.SOURCE_PREFLIGHT);
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(preflight), List.of(compiler, compiler)));
+        compiler.setValidationStage(com.casc.unittestagent.model.ValidationStage.JAVA_COMPILATION);
+        compiler.setRepairable(false); compiler.setSourceOrigin("TARGET_SOURCE");
+        assertTrue(UnitTestGenerationService.isCompileDiagnosticRegression(List.of(preflight), List.of(compiler, compiler)));
+    }
+
     public void testClassRepairUsesMethodContextOwningDiagnosticLine() {
         MethodModel first = method("first", "sample.Subject#first()");
         MethodModel second = method("second", "sample.Subject#second()");

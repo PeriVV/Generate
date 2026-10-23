@@ -3,11 +3,14 @@ package com.casc.unittestagent.toolwindow;
 import com.casc.unittestagent.coverage.CoverageConfig;
 import com.casc.unittestagent.coverage.CoverageConfigManager;
 import com.casc.unittestagent.model.GeneratedTestFile;
+import com.casc.unittestagent.model.ClassJUnitRepairReport;
+import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.model.CoverageReport;
 import com.casc.unittestagent.model.CoverageStatus;
 import com.casc.unittestagent.model.CoverageStopReason;
 import com.casc.unittestagent.model.GenerationResult;
 import com.casc.unittestagent.model.GenerationStatus;
+import com.casc.unittestagent.model.RunnableTestSelectionReport;
 import com.casc.unittestagent.model.MethodModel;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.StepStatus;
@@ -15,6 +18,8 @@ import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.service.UnitTestGenerationService;
 import com.casc.unittestagent.ui.UnitMindSettingsDialog;
+import com.casc.unittestagent.ui.TestDependencySetupDialog;
+import com.casc.unittestagent.dependency.TestDependencySetupService;
 import com.casc.unittestagent.ui.component.UnitMindHeaderPanel;
 import com.casc.unittestagent.ui.component.UnitMindStepperPanel;
 import com.casc.unittestagent.ui.step.MockStrategyStepPanel;
@@ -61,8 +66,6 @@ public class UnitMindToolWindowPanel extends JPanel {
 
     /** 当前项目。 */
     private final Project project;
-    /** 生成服务。 */
-    private final UnitTestGenerationService generationService = new UnitTestGenerationService();
     /** 写入服务。 */
     private final TestFileWriter testFileWriter = new TestFileWriter();
     /** 顶部 Header。 */
@@ -85,31 +88,35 @@ public class UnitMindToolWindowPanel extends JPanel {
     /** 当前编辑器。 */
     private Editor currentEditor;
     /** 当前 Java 文件。 */
-    private PsiFile currentPsiFile;
+    private volatile PsiFile currentPsiFile;
     /** 生成结果。 */
-    private GenerationResult generationResult;
+    private volatile GenerationResult generationResult;
     /** 当前步骤索引。 */
     private int currentStepIndex;
     /** 测试代码生成状态。 */
     private GenerationStatus generationStatus = GenerationStatus.IDLE;
     /** 原始生成代码。 */
     private String generatedCode = "";
-    /** 用户当前编辑后的测试代码。 */
+    /** 当前测试文本的唯一状态；用户编辑由 DocumentListener 同步，后台结果在 EDT 替换。 */
     private String editedCode = "";
     /** 最近一次错误详情。 */
     private String lastError = "";
     /** 当前测试代码步骤面板。 */
     private TestCodeStepPanel testCodeStepPanel;
     /** 分析任务序号，用于忽略过期后台任务结果。 */
-    private int analysisSequence;
+    private volatile int analysisSequence;
     /** 是否正在调用大模型生成候选 Mock 策略。 */
     private boolean mockStrategyLlmRunning;
     /** 是否正在隔离执行覆盖率闭环。 */
-    private boolean coverageRunning;
+    private volatile boolean coverageRunning;
     /** 当前可取消的覆盖率后台进度。 */
     private ProgressIndicator coverageIndicator;
     /** 覆盖率任务序号，用于忽略切换方法后的过期回调。 */
-    private int coverageSequence;
+    private volatile int coverageSequence;
+    private boolean writeRunning;
+    private volatile ProgressIndicator writeIndicator;
+    private volatile int writeSequence;
+    private boolean dependencySetupRunning;
 
     /**
      * 创建 UnitMind 工具窗口主面板。
@@ -124,7 +131,8 @@ public class UnitMindToolWindowPanel extends JPanel {
 
         headerPanel = new UnitMindHeaderPanel(
                 () -> new UnitMindSettingsDialog(project).show(),
-                this::analyzeCurrentMethod
+                this::analyzeCurrentMethod,
+                this::configureTestDependencies
         );
         stepperPanel = new UnitMindStepperPanel(STEPS, this::switchStep);
 
@@ -140,6 +148,75 @@ public class UnitMindToolWindowPanel extends JPanel {
         rebuildSteps();
     }
 
+    private void configureTestDependencies() {
+        if (dependencySetupRunning || coverageRunning || writeRunning || generationStatus == GenerationStatus.RUNNING) return;
+        if (!(currentPsiFile instanceof PsiJavaFile)) detectCurrentEditorContext();
+        if (!(currentPsiFile instanceof PsiJavaFile)) {
+            Messages.showInfoMessage(project, "请先打开目标模块的 Java 源文件，再点击配置测试依赖。", "配置测试依赖");
+            return;
+        }
+        PsiFile source = currentPsiFile;
+        TestDependencySetupService service = new TestDependencySetupService();
+        dependencySetupRunning = true;
+        headerPanel.setDependenciesEnabled(false);
+        new Task.Backgroundable(project, "分析当前模块的测试依赖", true) {
+            private TestDependencySetupService.Context context;
+            @Override public void run(@NotNull ProgressIndicator indicator) {
+                indicator.checkCanceled();
+                try { context = service.inspect(project, source); }
+                catch (java.io.IOException error) { throw new IllegalStateException(error.getMessage(), error); }
+                indicator.checkCanceled();
+            }
+            @Override public void onSuccess() {
+                if (project.isDisposed()) return;
+                try {
+                    TestDependencySetupDialog dialog = new TestDependencySetupDialog(service, context);
+                    if (!dialog.showAndGet()) return;
+                    var plan = dialog.getPlan();
+                    var applied = service.apply(plan);
+                    if (generationResult != null && generationResult.getGeneratedTestFile() != null) {
+                        markValidationStale(currentCode());
+                        generationResult.getCoverageReport().setStatus(CoverageStatus.STALE);
+                        generationResult.getCoverageReport().setMessage("测试依赖已变更，请重新运行验证。");
+                    }
+                    String refresh = plan.mode() == TestDependencySetupService.Mode.PROJECT ? refreshDependencyProject(context) : "请等待 IDEA 索引完成后重新验证。";
+                    Messages.showInfoMessage(project, applied.message() + "\n" + refresh
+                            + (applied.backup() == null ? "" : "\n修改前备份：" + applied.backup()), "测试依赖配置结果");
+                    rebuildSteps();
+                } catch (Exception error) {
+                    Messages.showErrorDialog(project, error.getMessage(), "测试依赖配置未完成");
+                } finally { dependencySetupRunning = false; showCurrentStep(); }
+            }
+            @Override public void onCancel() { dependencySetupRunning = false; if (!project.isDisposed()) showCurrentStep(); }
+            @Override public void onThrowable(@NotNull Throwable error) {
+                dependencySetupRunning = false;
+                if (!project.isDisposed()) {
+                    Messages.showErrorDialog(project, error.getMessage(), "测试依赖分析失败");
+                    showCurrentStep();
+                }
+            }
+        }.queue();
+    }
+
+    private String refreshDependencyProject(TestDependencySetupService.Context context) {
+        try {
+            if (context.buildFile().getFileName().toString().equals("pom.xml")) {
+                var action = com.intellij.openapi.actionSystem.ActionManager.getInstance().getAction("Maven.Reimport");
+                if (action == null) return "当前 IDE 没有 Maven 刷新入口，请在 Maven 窗口重新导入。";
+                var data = com.intellij.openapi.actionSystem.impl.SimpleDataContext.getProjectContext(project);
+                com.intellij.openapi.actionSystem.ex.ActionUtil.invokeAction(action, data, "UnitMind.TestDependencies", null, null);
+            } else {
+                var system = new com.intellij.openapi.externalSystem.model.ProjectSystemId("GRADLE");
+                com.intellij.openapi.externalSystem.util.ExternalSystemUtil.refreshProject(context.refreshRoot().toString(),
+                        new com.intellij.openapi.externalSystem.importing.ImportSpecBuilder(project, system)
+                                .use(com.intellij.openapi.externalSystem.service.execution.ProgressExecutionMode.IN_BACKGROUND_ASYNC));
+            }
+            return "已请求构建工具刷新；请等待同步和索引结束。同步失败可查看 Maven/Gradle 窗口，文件写入不等于依赖解析通过。";
+        } catch (RuntimeException error) {
+            return "配置文件已更新，但未能请求自动刷新，请在 Maven/Gradle 窗口重新导入。";
+        }
+    }
+
     /**
      * 设置当前编辑器上下文。
      * 右键菜单打开工具窗口时会调用该方法，使窗口进入方法概要步骤。
@@ -149,6 +226,7 @@ public class UnitMindToolWindowPanel extends JPanel {
      */
     public void setCurrentContext(Editor editor, PsiFile psiFile) {
         analysisSequence++;
+        cancelWriteValidation();
         coverageSequence++;
         if (coverageIndicator != null) coverageIndicator.cancel();
         coverageIndicator = null;
@@ -230,6 +308,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         for (int index = 1; index < stepStatuses.length; index++) stepStatuses[index] = StepStatus.NOT_STARTED;
         // 重新分析开启新会话：必须使正在运行的覆盖率闭环失效（与 setCurrentContext 一致），
         // 否则旧任务的进度回调与 onSuccess 会把旧方法的结果整体替换进新会话。
+        cancelWriteValidation();
         coverageSequence++;
         if (coverageIndicator != null) coverageIndicator.cancel();
         coverageRunning = false;
@@ -252,7 +331,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = generationService.analyzeMethod(project, psiFile, editor);
+                    result = new UnitTestGenerationService().analyzeMethod(project, psiFile, editor);
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
@@ -260,18 +339,15 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onSuccess() {
-                if (requestId != analysisSequence) {
-                    return;
-                }
-                if (error != null) {
-                    ApplicationManager.getApplication().invokeLater(() -> {
+                queueCurrentRequestUpdate(requestId, psiFile, null, () -> {
+                    if (error != null) {
                         lastError = error;
                         markAnalysisFailed();
                         rebuildSteps();
-                    });
-                    return;
-                }
-                ApplicationManager.getApplication().invokeLater(() -> applyAnalysisResult(result));
+                    } else {
+                        applyAnalysisResult(result);
+                    }
+                });
             }
         }.queue();
     }
@@ -317,7 +393,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         if (!generationResult.getScenarios().isEmpty()) {
             return;
         }
-        generationResult = generationService.planScenarios(generationResult);
+        generationResult = new UnitTestGenerationService().planScenarios(generationResult);
         stepStatuses[1] = StepStatus.SUCCESS;
         rebuildSteps();
     }
@@ -333,7 +409,7 @@ public class UnitMindToolWindowPanel extends JPanel {
         if (generationResult.getMockStrategy() != null) {
             return;
         }
-        generationResult = generationService.planMockStrategy(generationResult);
+        generationResult = new UnitTestGenerationService().planMockStrategy(generationResult);
         stepStatuses[2] = StepStatus.SUCCESS;
         rebuildSteps();
     }
@@ -346,7 +422,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             return;
         }
         planMockStrategyIfNeeded();
-        if (generationResult.getGeneratedTestFile() != null || generationStatus == GenerationStatus.RUNNING) {
+        if (generationResult.getGeneratedTestFile() != null || generationStatus == GenerationStatus.RUNNING || mockStrategyLlmRunning) {
             return;
         }
 
@@ -356,6 +432,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
         int requestId = analysisSequence;
         GenerationResult currentResult = generationResult;
+        GenerationResult taskResult = generationCandidate(currentResult);
         PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在生成测试代码", false) {
             private GenerationResult result;
@@ -364,7 +441,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = generationService.generateTestCode(project, requestFile, currentResult);
+                    result = new UnitTestGenerationService().generateTestCode(project, requestFile, taskResult);
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
@@ -372,19 +449,16 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onSuccess() {
-                if (!isCurrentRequest(requestId, requestFile, currentResult)) {
-                    return;
-                }
-                if (error != null) {
-                    ApplicationManager.getApplication().invokeLater(() -> {
+                queueCurrentRequestUpdate(requestId, requestFile, currentResult, () -> {
+                    if (error != null) {
                         lastError = error;
                         stepStatuses[3] = StepStatus.FAILED;
                         generationStatus = GenerationStatus.FAILED;
                         rebuildSteps();
-                    });
-                    return;
-                }
-                ApplicationManager.getApplication().invokeLater(() -> applyGenerationResult(result));
+                    } else {
+                        applyGenerationResult(result);
+                    }
+                });
             }
         }.queue();
     }
@@ -428,9 +502,19 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 重建步骤内容。
      */
     private void rebuildSteps() {
-        if (testCodeStepPanel != null && testCodeStepPanel.hasEditor()) {
-            editedCode = testCodeStepPanel.getCode();
+        // Source edits invalidate measurements as well as write gates; old line ranges are not current evidence.
+        if (generationResult != null && currentPsiFile != null) {
+            String sourceHash = currentSourceHash(currentPsiFile);
+            var coverage = generationResult.getCoverageReport();
+            if (!coverage.getSourceHash().isBlank() && !coverage.getSourceHash().equals(sourceHash)) {
+                coverage.setStatus(CoverageStatus.STALE); coverage.setMessage("被测源码已修改，请重新分析并测量。");
+            }
+            var finalCoverage = generationResult.getFinalTestFileReport().getMethodCoverage();
+            if (!finalCoverage.getSourceHash().isBlank() && !finalCoverage.getSourceHash().equals(sourceHash)) {
+                generationResult.getFinalTestFileReport().markStale("被测源码已修改，最终文件覆盖率已失效。");
+            }
         }
+        // 页面只呈现当前状态，不能从已被后台结果替换的旧编辑器反向覆盖文本。
         updateHeader();
         stepperPanel.update(currentStepIndex, stepStatuses);
         contentPanel.removeAll();
@@ -461,8 +545,8 @@ public class UnitMindToolWindowPanel extends JPanel {
                 generationNote(),
                 generationResult == null ? null : generationResult.getValidationResult(),
                 generationResult == null ? null : generationResult.getCoverageReport(),
-                null,
-                coverageRunning,
+                generationResult == null ? null : generationResult.getRuntimeValidationReport(),
+                coverageRunning || writeRunning,
                 true,
                 true,
                 false,
@@ -473,6 +557,10 @@ public class UnitMindToolWindowPanel extends JPanel {
                 this::stopCoverageLoop,
                 this::resumeWithEvidence,
                 generationResult == null ? 0 : generationResult.getEvidenceResumeCount());
+        testCodeStepPanel.configureRunnableSelection(
+                generationResult == null ? null : generationResult.getRunnableTestSelectionReport(),
+                this::retainRunnableTests, this::restoreBeforeRunnableSelection, this::openBeforeRunnableSelection,
+                coverageRunning || writeRunning);
         contentPanel.add(testCodeStepPanel, STEPS[3]);
         contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[4]);
         showCurrentStep();
@@ -499,7 +587,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             return;
         }
         currentStepIndex = index;
-        showCurrentStep();
+        if (index == 4) rebuildSteps(); else showCurrentStep();
         if (index == 1) {
             planScenariosIfNeeded();
         } else if (index == 2) {
@@ -518,10 +606,12 @@ public class UnitMindToolWindowPanel extends JPanel {
         previousButton.setEnabled(currentStepIndex > 0);
         nextButton.setEnabled(currentStepIndex < STEPS.length - 1);
         analyzeButton.setEnabled(generationStatus != GenerationStatus.RUNNING);
+        headerPanel.setDependenciesEnabled(!dependencySetupRunning && !coverageRunning && !writeRunning
+                && generationStatus != GenerationStatus.RUNNING);
         writeButton.setEnabled(generationResult != null
                 && generationResult.getGeneratedTestFile() != null
                 && generationStatus == GenerationStatus.SUCCESS
-                && !coverageRunning
+                && !coverageRunning && !writeRunning && !dependencySetupRunning
                 && currentCode() != null
                 && !currentCode().trim().isEmpty());
     }
@@ -530,7 +620,8 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 手动调用大模型生成候选 Mock 策略，不覆盖静态策略。
      */
     private void generateLlmMockStrategy() {
-        if (generationResult == null || generationResult.getMethodModel() == null || mockStrategyLlmRunning) {
+        if (generationResult == null || generationResult.getMethodModel() == null || mockStrategyLlmRunning
+                || generationStatus == GenerationStatus.RUNNING || coverageRunning || writeRunning) {
             return;
         }
         planMockStrategyIfNeeded();
@@ -538,6 +629,8 @@ public class UnitMindToolWindowPanel extends JPanel {
         rebuildSteps();
         int requestId = analysisSequence;
         GenerationResult currentResult = generationResult;
+        GenerationResult taskResult = generationCandidate(currentResult);
+        PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在生成大模型 Mock 策略", false) {
             private GenerationResult result;
             private String error;
@@ -545,7 +638,7 @@ public class UnitMindToolWindowPanel extends JPanel {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 try {
-                    result = generationService.generateLlmMockStrategy(currentResult);
+                    result = new UnitTestGenerationService().generateLlmMockStrategy(taskResult);
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
@@ -553,21 +646,20 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onSuccess() {
-                if (requestId != analysisSequence) {
-                    return;
-                }
-                mockStrategyLlmRunning = false;
-                if (error != null) {
-                    lastError = error;
-                    ApplicationManager.getApplication().invokeLater(() -> {
+                queueCurrentRequestUpdate(requestId, requestFile, currentResult, () -> {
+                    mockStrategyLlmRunning = false;
+                    if (error != null) {
+                        lastError = error;
                         Messages.showErrorDialog(project, error, "UnitMind 大模型 Mock 策略生成失败");
-                        rebuildSteps();
-                    });
-                    return;
-                }
-                generationResult = result;
-                currentStepIndex = 2;
-                ApplicationManager.getApplication().invokeLater(() -> rebuildSteps());
+                    } else {
+                        currentResult.setLlmMockStrategy(result.getLlmMockStrategy());
+                        for (String warning : result.getWarnings()) {
+                            if (!currentResult.getWarnings().contains(warning)) currentResult.getWarnings().add(warning);
+                        }
+                        currentStepIndex = 2;
+                    }
+                    rebuildSteps();
+                });
             }
         }.queue();
     }
@@ -613,12 +705,17 @@ public class UnitMindToolWindowPanel extends JPanel {
      * Mock 策略切换与场景/策略表格编辑共用该入口，保证“所见规划”与“生成代码”一致。
      */
     private void invalidateGeneratedTestCode() {
+        // Editing the inputs revokes all generation callbacks, including already queued EDT updates.
+        analysisSequence++;
+        mockStrategyLlmRunning = false;
+        cancelWriteValidation();
         coverageSequence++;
         if (coverageRunning && coverageIndicator != null) coverageIndicator.cancel();
         coverageRunning = false;
         coverageIndicator = null;
         if (generationResult != null) {
             generationResult.setGeneratedTestFile(null);
+            generationResult.getRuntimeValidationReport().setStatus(ClassJUnitStatus.STALE);
             CoverageReport coverage = generationResult.getCoverageReport();
             if (coverage != null && coverage.getStatus() != CoverageStatus.NOT_RUN) {
                 coverage.setStatus(CoverageStatus.STALE);
@@ -651,17 +748,13 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 写入测试文件。
      */
     private void writeTestFile(TestWriteMode mode, boolean force) {
-        if (mode == TestWriteMode.CANCEL) {
-            return;
-        }
+        if (mode == TestWriteMode.CANCEL) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null) {
             Messages.showWarningDialog(project, "请先生成测试代码。", "UnitMind");
             return;
         }
-        // 覆盖率闭环运行期间结论未定，写入会写过时快照；两个写入入口都汇聚于此，统一拦截。
-        if (coverageRunning) {
-            Messages.showWarningDialog(project,
-                    "覆盖率闭环仍在运行，结论未定；请等待结束或先停止再写入。", "UnitMind");
+        if (coverageRunning || writeRunning) {
+            Messages.showWarningDialog(project, "测试验证仍在运行，请等待结束或先停止。", "UnitMind");
             return;
         }
         String code = currentCode();
@@ -675,7 +768,8 @@ public class UnitMindToolWindowPanel extends JPanel {
             String methodTargetId = method == null ? "未知方法"
                     : firstNonBlank(method.getMethodId(), method.getSignature(), method.getMethodName());
             preparedWrite = testFileWriter.prepare(project, currentPsiFile,
-                    generationResult.getGeneratedTestFile(), code, mode, GenerationTarget.method(methodTargetId));
+                    generationResult.getGeneratedTestFile(), code, mode, GenerationTarget.method(methodTargetId),
+                    generationResult.getRunnableTestSelectionReport());
         } catch (Exception ex) {
             stepStatuses[4] = StepStatus.FAILED;
             lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
@@ -683,179 +777,276 @@ public class UnitMindToolWindowPanel extends JPanel {
             rebuildSteps();
             return;
         }
-        if (preparedWrite.isCancelled()) {
-            return;
-        }
+        if (preparedWrite.isCancelled()) return;
 
-        generationResult.setValidationResult(ValidationResult.status(ValidationStatus.RUNNING));
+        GenerationResult currentResult = generationResult;
+        GenerationResult candidate = runtimeCandidate(currentResult,
+                currentResult.getGeneratedTestFile().getContent());
+        int requestId = analysisSequence;
+        int writeId = ++writeSequence;
+        PsiFile requestFile = currentPsiFile;
+        writeRunning = true;
+        var pendingFinalFile = new com.casc.unittestagent.model.FinalTestFileReport();
+        pendingFinalFile.setTargetPath(preparedWrite.getTargetFile().getAbsolutePath());
+        pendingFinalFile.getMethodCoverage().setStatus(CoverageStatus.RUNNING);
+        currentResult.setFinalTestFileReport(pendingFinalFile);
+        currentResult.setRuntimeValidationReport(ClassJUnitRepairReport.status(ClassJUnitStatus.RUNNING));
         stepStatuses[4] = StepStatus.RUNNING;
         rebuildSteps();
-        GenerationResult currentResult = generationResult;
-        int requestId = analysisSequence;
-        PsiFile requestFile = currentPsiFile;
-        new Task.Backgroundable(project, "UnitMind 正在校验最终测试文件", false) {
-            private ValidationResult validation;
+        new Task.Backgroundable(project, "UnitMind 正在验证测试并执行最终回归", true) {
+            private final UnitTestGenerationService generationService = new UnitTestGenerationService();
+            private TestFileWriter.PreparedWrite finalWrite = preparedWrite;
+            private GenerationResult finalResult;
             private String error;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
+                if (!registerExecutionIndicator(indicator,
+                        () -> writeId == writeSequence && isCurrentRequest(requestId, requestFile, currentResult), true)) return;
+                indicator.setIndeterminate(false);
+                java.util.function.BooleanSupplier cancelled =
+                        () -> indicator.isCanceled() || writeId != writeSequence || project.isDisposed();
                 try {
-                    validation = generationService.validateCode(
-                            project,
-                            requestFile,
-                            currentResult.getGeneratedTestFile(),
-                            preparedWrite.getContent());
+                    if (force) {
+                        finalResult = runtimeCandidate(candidate, finalWrite.getContent());
+                        finalResult.setValidationResult(generationService.validateCode(project, requestFile,
+                                finalResult.getGeneratedTestFile(), finalWrite.getContent()));
+                        return;
+                    }
+                    com.casc.unittestagent.coverage.CoverageProgressListener candidateProgress = (text, fraction) -> {
+                                indicator.setText("运行验证：" + text);
+                                indicator.setFraction(Math.max(0d, Math.min(0.7d, fraction * 0.7d)));
+                            };
+                    if (currentResult.getRunnableTestSelectionReport().hasActiveExclusions()) {
+                        generationService.runFinalTestRegression(project, requestFile, candidate, code, cancelled, candidateProgress);
+                    } else {
+                        generationService.runRuntimeValidation(project, requestFile, candidate, code, cancelled, candidateProgress);
+                    }
+                    finalResult = candidate;
+                    if (cancelled.getAsBoolean()
+                            || candidate.getRuntimeValidationReport().getStatus() != ClassJUnitStatus.PASSED) return;
+                    finalWrite = testFileWriter.prepareRepaired(preparedWrite,
+                            candidate.getGeneratedTestFile().getContent());
+                    finalResult = runtimeCandidate(candidate, finalWrite.getContent());
+                    generationService.runFinalTestRegressionWithCoverage(project, requestFile, finalResult,
+                            finalWrite.getContent(), finalWrite.getTargetFile().getAbsolutePath(), cancelled, (text, fraction) -> {
+                                indicator.setText("最终合并回归：" + text);
+                                indicator.setFraction(0.7d + Math.max(0d, Math.min(1d, fraction)) * 0.3d);
+                            });
+                } catch (com.intellij.openapi.progress.ProcessCanceledException ex) {
+                    throw ex;
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 }
             }
 
+            private boolean finishTask() {
+                if (writeId != writeSequence) return false;
+                writeRunning = false;
+                writeIndicator = null;
+                return isCurrentRequest(requestId, requestFile, currentResult)
+                        && !project.isDisposed();
+            }
+
             @Override
             public void onSuccess() {
-                if (!isCurrentRequest(requestId, requestFile, currentResult)) return;
-                if (error != null) {
+                if (!finishTask()) return;
+                if (error != null || finalResult == null) {
+                    currentResult.getFinalTestFileReport().getMethodCoverage().setStatus(CoverageStatus.ENVIRONMENT_ERROR);
+                    currentResult.getFinalTestFileReport().getMethodCoverage().setMessage("最终验证未完成，未写入。");
                     stepStatuses[4] = StepStatus.FAILED;
-                    lastError = error;
-                    Messages.showErrorDialog(project, error, "UnitMind 最终文件校验失败");
+                    lastError = error == null ? "测试验证未返回结果。" : error;
+                    Messages.showErrorDialog(project, lastError, "UnitMind 最终文件验证失败");
                     rebuildSteps();
                     return;
                 }
-                currentResult.setValidationResult(validation);
-                boolean passed = validation.getStatus() == ValidationStatus.PASSED
-                        && validation.isPassedFor(CodeFingerprint.sha256(preparedWrite.getContent()));
-                if (!passed && !force) {
+                // 编辑器或输入在验证期间变化时，旧任务绝不能覆盖用户的新内容。
+                if (!CodeFingerprint.sha256(code).equals(CodeFingerprint.sha256(currentCode()))) {
+                    currentResult.getFinalTestFileReport().markStale("测试代码在验证期间已修改，未写入。");
                     stepStatuses[4] = StepStatus.WARNING;
-                    lastError = validationSummary(validation);
-                    Messages.showErrorDialog(project,
-                            lastError + "\n\n正常写入已阻止。如确需保留草稿，请使用“强制写入”。",
-                            "UnitMind 编译未通过");
+                    lastError = "测试代码在验证期间已修改，请重新执行写入验证。";
                     rebuildSteps();
                     return;
                 }
-                if (!passed) {
-                    int answer = Messages.showYesNoDialog(
-                            project,
-                            validationSummary(validation) + "\n\n该文件可能无法编译，确定仍要写入草稿吗？",
-                            "强制写入未验证草稿",
-                            "仍然写入草稿",
-                            "取消",
-                            Messages.getWarningIcon());
+                ClassJUnitRepairReport runtime = finalResult.getRuntimeValidationReport();
+                ValidationResult validation = finalResult.getValidationResult();
+                if (runtime != candidate.getRuntimeValidationReport()) {
+                    runtime.includeRepairHistory(candidate.getRuntimeValidationReport());
+                }
+                if (!runtime.getSourceHash().isBlank()
+                        && !runtime.getSourceHash().equals(currentSourceHash(requestFile))) {
+                    runtime.setStatus(ClassJUnitStatus.STALE);
+                    runtime.setMessage("被测源码已修改，运行验证结果失效，请重新分析后写入。");
+                }
+                currentResult.setRuntimeValidationReport(runtime);
+                currentResult.setValidationResult(validation);
+                currentResult.setWarnings(candidate.getWarnings());
+                currentResult.setFinalTestFileReport(finalResult.getFinalTestFileReport());
+                if (runtime.getStatus() == ClassJUnitStatus.STALE) {
+                    currentResult.getFinalTestFileReport().markStale(runtime.getMessage());
+                }
+                if (!force) {
+                    String repairedCode = candidate.getGeneratedTestFile().getContent();
+                    if (!code.equals(repairedCode)) {
+                        currentResult.setGeneratedTestFile(candidate.getGeneratedTestFile());
+                        generatedCode = repairedCode;
+                        editedCode = repairedCode;
+                        currentResult.getCoverageReport().setStatus(CoverageStatus.STALE);
+                        currentResult.getCoverageReport().setMessage("运行修复已修改测试代码，覆盖率结果失效。");
+                    }
+                    boolean verified = runtimeWriteGateAction(runtime.getStatus(), false) == WriteGateAction.ALLOW
+                            && validation != null
+                            && validation.isPassedFor(CodeFingerprint.sha256(finalWrite.getContent()))
+                            && runtime.isPassedFor(CodeFingerprint.sha256(finalWrite.getContent()),
+                            currentSourceHash(requestFile));
+                    if (!verified) {
+                        stepStatuses[4] = StepStatus.WARNING;
+                        lastError = runtimeFailureText(validation, runtime);
+                        Messages.showErrorDialog(project, lastError + "\n\n正常写入已阻止；"
+                                + "可在测试代码页查看诊断并修复，或显式保存未验证草稿。", "UnitMind 运行门禁未通过");
+                        rebuildSteps();
+                        return;
+                    }
+                } else {
+                    int answer = Messages.showYesNoDialog(project,
+                            "本次将跳过运行门禁，保存未验证草稿；该文件不代表测试运行通过。\n\n"
+                                    + validationSummary(validation) + "\n\n确定仍要写入吗？",
+                            "强制写入未验证草稿", "仍然写入草稿", "取消", Messages.getWarningIcon());
                     if (answer != Messages.YES) {
                         stepStatuses[4] = StepStatus.WARNING;
                         rebuildSteps();
                         return;
                     }
                 }
-                boolean executionConfirmed = !passed || confirmCoverageWrite(currentResult.getCoverageReport(), force);
-                if (passed && !executionConfirmed) {
-                    stepStatuses[4] = StepStatus.WARNING;
-                    rebuildSteps();
-                    return;
-                }
                 try {
-                    testFileWriter.commit(project, preparedWrite, validation, !passed);
-                    stepStatuses[4] = StepStatus.SUCCESS;
+                    testFileWriter.commit(project, finalWrite, validation, runtime, force);
+                    if (!force) currentResult.getFinalTestFileReport().setWritten(true);
+                    currentStepIndex = 4;
+                    stepStatuses[4] = force ? StepStatus.WARNING : StepStatus.SUCCESS;
                     lastError = "";
                     Messages.showInfoMessage(project,
-                            passed ? "测试文件写入完成。" : "未验证草稿已强制写入。",
-                            "UnitMind");
+                            force ? "未验证草稿已强制写入。" : "最终测试类编译和完整 JUnit 回归通过，写入完成。", "UnitMind");
                 } catch (Exception ex) {
+                    currentResult.getFinalTestFileReport().markStale("最终写入未完成，覆盖率仅属于此前验证的快照。");
                     stepStatuses[4] = StepStatus.FAILED;
                     lastError = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                     Messages.showErrorDialog(project, lastError, "UnitMind 写入失败");
                 }
                 rebuildSteps();
             }
+
+            @Override
+            public void onCancel() {
+                if (!finishTask()) return;
+                currentResult.getFinalTestFileReport().getMethodCoverage().setStatus(CoverageStatus.CANCELLED);
+                currentResult.getFinalTestFileReport().getMethodCoverage().setMessage("最终验证已取消，未写入。");
+                currentResult.setRuntimeValidationReport(ClassJUnitRepairReport.status(ClassJUnitStatus.CANCELLED));
+                stepStatuses[4] = StepStatus.WARNING;
+                lastError = "写入验证已取消，未写入测试文件。";
+                rebuildSteps();
+            }
+
+            @Override
+            public void onThrowable(@NotNull Throwable failure) {
+                if (!finishTask()) return;
+                currentResult.getFinalTestFileReport().getMethodCoverage().setStatus(CoverageStatus.ENVIRONMENT_ERROR);
+                currentResult.getFinalTestFileReport().getMethodCoverage().setMessage("最终验证异常终止，未写入。");
+                currentResult.setRuntimeValidationReport(ClassJUnitRepairReport.status(ClassJUnitStatus.ENVIRONMENT_ERROR));
+                stepStatuses[4] = StepStatus.FAILED;
+                lastError = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+                rebuildSteps();
+            }
         }.queue();
     }
 
-    /** 写入门禁动作：由 coverageWriteGateAction(状态×force) 纯函数决定，可独立测试。 */
-    enum WriteGateAction {
-        /** 直接放行（未运行/已通过）。 */
-        ALLOW,
-        /** 闭环运行中，结论未定：无条件阻断（force 也不放行）。 */
-        BLOCK_RUNNING,
-        /** 受保护失败（测试失败/疑似缺陷/待确认）：普通写入阻断，force 走“写入原失败测试”确认。 */
-        BLOCK_PROTECTED,
-        /** 受保护失败 + force：弹“写入原失败测试”确认。 */
-        CONFIRM_FORCE_WRITE,
-        /** 取消/未达标/失效/环境错误：弹覆盖率警告确认。 */
-        CONFIRM_WARNING
+    /** 后台执行使用独立结果，防止过期任务污染当前会话。 */
+    static GenerationResult runtimeCandidate(GenerationResult original, String code) {
+        GenerationResult copy = generationCandidate(original);
+        copy.getGeneratedTestFile().setContent(code);
+        return copy;
     }
 
-    /** 写入门禁状态矩阵：RUNNING/CANCELLED 不得落入静默放行的兜底分支。 */
-    static WriteGateAction coverageWriteGateAction(CoverageStatus status, boolean force) {
-        if (status == null || status == CoverageStatus.NOT_RUN || status == CoverageStatus.PASSED) {
-            return WriteGateAction.ALLOW;
+    /** Background generation owns its editable inputs and output; initial generation has no file yet. */
+    static GenerationResult generationCandidate(GenerationResult original) {
+        GenerationResult copy = new GenerationResult();
+        copy.setGenerationScope(original.getGenerationScope());
+        copy.setClassMethodSignatures(new java.util.ArrayList<>(original.getClassMethodSignatures()));
+        copy.setSharedFixtureSummary(original.getSharedFixtureSummary());
+        copy.setMethodModel(original.getMethodModel());
+        copy.setScenarios(new java.util.ArrayList<>(original.getScenarios().stream().map(com.casc.unittestagent.model.TestScenario::copy).toList()));
+        copy.setSymbolSnapshot(original.getSymbolSnapshot());
+        copy.setMockStrategy(original.getMockStrategy() == null ? null : original.getMockStrategy().copy());
+        copy.setLlmMockStrategy(original.getLlmMockStrategy() == null ? null : original.getLlmMockStrategy().copy());
+        copy.setUseLlmMockStrategy(original.isUseLlmMockStrategy());
+        copy.setWarnings(new java.util.ArrayList<>(original.getWarnings()));
+        copy.setEvidenceResumeCount(original.getEvidenceResumeCount());
+        copy.setGeneratedByLlm(original.isGeneratedByLlm());
+        copy.setRuleBasedFallback(original.isRuleBasedFallback());
+        copy.setLlmMessage(original.getLlmMessage());
+        copy.setRunnableTestSelectionReport(original.getRunnableTestSelectionReport().copy());
+        GeneratedTestFile template = original.getGeneratedTestFile();
+        if (template != null) {
+            GeneratedTestFile file = new GeneratedTestFile();
+            file.setPackageName(template.getPackageName());
+            file.setClassName(template.getClassName());
+            file.setFileName(template.getFileName());
+            file.setContent(template.getContent());
+            copy.setGeneratedTestFile(file);
         }
-        if (status == CoverageStatus.RUNNING) {
-            return WriteGateAction.BLOCK_RUNNING;
-        }
-        boolean protectedFailure = status == CoverageStatus.TEST_FAILED
-                || status == CoverageStatus.SUSPECTED_SUT_BUG
-                || status == CoverageStatus.NEEDS_REVIEW;
-        if (protectedFailure) {
-            return force ? WriteGateAction.CONFIRM_FORCE_WRITE : WriteGateAction.BLOCK_PROTECTED;
-        }
-        if (status == CoverageStatus.CANCELLED || status == CoverageStatus.BELOW_THRESHOLD
-                || status == CoverageStatus.STALE || status == CoverageStatus.ENVIRONMENT_ERROR) {
-            return WriteGateAction.CONFIRM_WARNING;
-        }
-        return WriteGateAction.ALLOW;
+        return copy;
     }
 
-    private boolean confirmCoverageWrite(CoverageReport report, boolean force) {
-        WriteGateAction action = coverageWriteGateAction(report == null ? null : report.getStatus(), force);
-        switch (action) {
-            case ALLOW:
-                return true;
-            case BLOCK_RUNNING:
-                // 结论未定：写入内容会被最终候选替换，中途写入必然写过时快照；force 也必须先让闭环结束。
-                Messages.showErrorDialog(project,
-                        "覆盖率闭环仍在运行，结论未定；中途写入会写过时快照。\n请等待闭环结束或先停止再写入。",
-                        "UnitMind 写入保护");
-                return false;
-            case BLOCK_PROTECTED:
-                Messages.showErrorDialog(project,
-                        (report.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
-                        ? "测试可能发现了生产代码缺陷，插件已保留原断言并阻止普通写入。\n\n"
-                        : "候选测试执行未通过或 Oracle 待确认，正常写入已阻止。\n\n")
-                                + report.getMessage(),
-                        "UnitMind 需要人工确认");
-                return false;
-            case CONFIRM_FORCE_WRITE:
-                return Messages.showYesNoDialog(project,
-                        "原失败测试将按原样写入，用于复现疑似缺陷或等待 Oracle 确认。\n\n"
-                                + report.getMessage(),
-                        "写入失败回归测试",
-                        "写入原失败测试",
-                        "取消",
-                        Messages.getWarningIcon()) == Messages.YES;
-            case CONFIRM_WARNING:
-            default:
-                if (report.getStatus() != CoverageStatus.CANCELLED
-                        && report.getStatus() != CoverageStatus.BELOW_THRESHOLD
-                        && report.getStatus() != CoverageStatus.STALE
-                        && report.getStatus() != CoverageStatus.ENVIRONMENT_ERROR) {
-                    return true;
-                }
-                String metrics = report.getGenerated() != null && report.getGenerated().isAvailable()
-                        ? String.format(java.util.Locale.ROOT, "行 %.1f%%，分支 %s",
-                        report.getGenerated().getLine().getRate() * 100.0d,
-                        report.getGenerated().getBranch().isApplicable()
-                                ? String.format(java.util.Locale.ROOT, "%.1f%%", report.getGenerated().getBranch().getRate() * 100.0d)
-                                : "N/A")
-                        : report.getStatus() == CoverageStatus.CANCELLED
-                        ? "闭环已取消，未取得覆盖率结论" : "覆盖率不可用";
-                return Messages.showYesNoDialog(project,
-                        "当前覆盖率未达标或结果已失效，但测试代码编译通过。\n"
-                                + metrics + "，缺口 " + report.getGaps().size() + " 个。\n"
-                                + report.getMessage() + "\n\n仍然写入吗？",
-                        "UnitMind 覆盖率警告",
-                        "仍然写入",
-                        "取消",
-                        Messages.getWarningIcon()) == Messages.YES;
+    private static String currentSourceHash(PsiFile file) {
+        return ReadAction.compute(() -> {
+            com.intellij.openapi.editor.Document document = PsiDocumentManager.getInstance(file.getProject())
+                    .getDocument(file);
+            return CodeFingerprint.sha256(document == null ? file.getText() : document.getText());
+        });
+    }
+
+    private String runtimeFailureText(ValidationResult validation, ClassJUnitRepairReport report) {
+        if (validation != null && (validation.getStatus() == ValidationStatus.FAILED
+                || validation.getStatus() == ValidationStatus.ENVIRONMENT_ERROR)) {
+            return validationSummary(validation);
         }
+        StringBuilder message = new StringBuilder("完整 JUnit 运行验证未通过：")
+                .append(report.getStatus()).append("\n").append(report.getMessage());
+        report.getFinalExecution().getDiagnostics().stream().limit(5).forEach(item ->
+                message.append("\n").append(item.getTestId()).append("：")
+                        .append(item.getCategory()).append(" ").append(item.getMessage()));
+        return message.toString();
+    }
+
+    enum WriteGateAction { ALLOW, BLOCK_RUNNING, BLOCK_PROTECTED, CONFIRM_FORCE_WRITE }
+
+    /** 运行门禁只认独立 JUnit 状态；覆盖率不足不会阻止已验证的测试写入。 */
+    static WriteGateAction runtimeWriteGateAction(ClassJUnitStatus status, boolean force) {
+        if (status == ClassJUnitStatus.RUNNING) return WriteGateAction.BLOCK_RUNNING;
+        if (status == ClassJUnitStatus.PASSED) return WriteGateAction.ALLOW;
+        return force ? WriteGateAction.CONFIRM_FORCE_WRITE : WriteGateAction.BLOCK_PROTECTED;
+    }
+
+    /** Registration and revocation share the EDT so a late task cannot replace a new task's handle. */
+    boolean registerExecutionIndicator(ProgressIndicator indicator, java.util.function.BooleanSupplier ownsTask,
+                                       boolean writeTask) {
+        var registered = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable bind = () -> {
+            if (!ownsTask.getAsBoolean()) { indicator.cancel(); return; }
+            if (writeTask) writeIndicator = indicator;
+            else coverageIndicator = indicator;
+            registered.set(true);
+        };
+        var application = ApplicationManager.getApplication();
+        if (application.isDispatchThread()) bind.run();
+        else application.invokeAndWait(bind, com.intellij.openapi.application.ModalityState.any());
+        return registered.get();
+    }
+
+    private void cancelWriteValidation() {
+        writeSequence++;
+        if (writeIndicator != null) writeIndicator.cancel();
+        writeIndicator = null;
+        writeRunning = false;
     }
 
     private void markValidationStale(String code) {
@@ -863,9 +1054,26 @@ public class UnitMindToolWindowPanel extends JPanel {
         if (generationResult == null) {
             return;
         }
+        if (!generationResult.getFinalTestFileReport().getTargetPath().isBlank()) {
+            generationResult.getFinalTestFileReport().markStale("测试预览已修改，请重新验证最终合并文件。");
+        }
         ValidationResult stale = ValidationResult.status(ValidationStatus.STALE);
         stale.setCodeHash(CodeFingerprint.sha256(editedCode));
         generationResult.setValidationResult(stale);
+        generationResult.getRuntimeValidationReport().setStatus(ClassJUnitStatus.STALE);
+        generationResult.getRuntimeValidationReport().setMessage("测试代码已修改，运行验证结果失效。");
+        if (generationResult.getRunnableTestSelectionReport().getStatus()
+                == RunnableTestSelectionReport.Status.PASSED) {
+            generationResult.getRunnableTestSelectionReport().setStatus(
+                    RunnableTestSelectionReport.Status.STALE);
+        }
+        if (writeRunning) cancelWriteValidation();
+        if (coverageRunning) {
+            coverageSequence++;
+            if (coverageIndicator != null) coverageIndicator.cancel();
+            coverageIndicator = null;
+            coverageRunning = false;
+        }
         CoverageReport coverage = generationResult.getCoverageReport();
         if (coverage != null && coverage.getStatus() != CoverageStatus.NOT_RUN) {
             if (coverageRunning && coverageIndicator != null) coverageIndicator.cancel();
@@ -876,18 +1084,8 @@ public class UnitMindToolWindowPanel extends JPanel {
     }
 
     private void runCoverageLoop() {
-        if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning) return;
-        if (!CoverageConfigManager.isExecutionConfirmed()) {
-            int answer = Messages.showOkCancelDialog(project,
-                    "UnitMind 将在本机隔离 JVM 中真实执行本次生成测试和对应的已有测试。"
-                            + "测试代码仍可能访问网络、文件或外部服务，请确认当前代码适合执行。",
-                    "UnitMind 测试执行安全提示",
-                    "确认并运行",
-                    "取消",
-                    Messages.getWarningIcon());
-            if (answer != Messages.OK) return;
-            CoverageConfigManager.setExecutionConfirmed(true);
-        }
+        if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
+        if (!ensureTestExecutionConfirmed()) return;
         editedCode = currentCode();
         int requestId = ++coverageSequence;
         coverageRunning = true;
@@ -896,61 +1094,216 @@ public class UnitMindToolWindowPanel extends JPanel {
         rebuildSteps();
         GenerationResult currentResult = generationResult;
         String candidate = editedCode;
+        int analysisId = analysisSequence;
+        GenerationResult taskResult = runtimeCandidate(currentResult, candidate);
         PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在运行覆盖率闭环", true) {
             private GenerationResult completed;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                coverageIndicator = indicator;
+                if (!registerExecutionIndicator(indicator, this::current, false)) return;
                 indicator.setIndeterminate(false);
-                completed = generationService.runCoverageLoop(project, requestFile, currentResult,
-                        candidate, indicator::isCanceled, (text, fraction) -> {
+                completed = new UnitTestGenerationService().runCoverageLoop(project, requestFile, taskResult,
+                        candidate, () -> indicator.isCanceled() || !current(), (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
                             ApplicationManager.getApplication().invokeLater(() -> {
-                                if (requestId == coverageSequence && coverageRunning && !project.isDisposed()) {
+                                if (current() && coverageRunning) {
                                     if (testCodeStepPanel != null) {
-                                        testCodeStepPanel.updateCoverageReport(currentResult.getCoverageReport());
+                                        testCodeStepPanel.updateCoverageReport(taskResult.getCoverageReport());
                                     }
                                 }
                             });
                         });
             }
 
+            private boolean current() {
+                return requestId == coverageSequence && isCurrentRequest(analysisId, requestFile, currentResult);
+            }
+
             @Override
             public void onSuccess() {
-                if (requestId == coverageSequence) applyCoverageResult(completed);
+                if (current()) applyCoverageResult(completed);
             }
 
             @Override
             public void onCancel() {
-                if (requestId != coverageSequence) return;
+                if (!current()) return;
                 if (completed == null) {
-                    CoverageReport report = currentResult.getCoverageReport();
+                    CoverageReport report = taskResult.getCoverageReport();
                     report.setStatus(CoverageStatus.CANCELLED);
                     report.setStopReason(CoverageStopReason.CANCELLED);
                     report.setMessage("覆盖率执行已取消。");
-                    completed = currentResult;
+                    completed = taskResult;
                 }
                 applyCoverageResult(completed);
             }
 
             @Override
             public void onThrowable(@NotNull Throwable error) {
-                if (requestId != coverageSequence) return;
+                if (!current()) return;
                 String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-                CoverageReport report = currentResult.getCoverageReport();
+                CoverageReport report = taskResult.getCoverageReport();
                 report.setStatus(CoverageStatus.ENVIRONMENT_ERROR);
                 report.setStopReason(CoverageStopReason.ENVIRONMENT_ERROR);
                 report.setMessage(message);
-                applyCoverageResult(currentResult);
+                applyCoverageResult(taskResult);
             }
         }.queue();
     }
 
+    private boolean ensureTestExecutionConfirmed() {
+        if (!CoverageConfigManager.isExecutionConfirmed()) {
+            int answer = Messages.showOkCancelDialog(project,
+                    "UnitMind 将在本机隔离 JVM 中真实执行本次生成测试和对应的已有测试。"
+                            + "测试代码仍可能访问网络、文件或外部服务，请确认当前代码适合执行。",
+                    "UnitMind 测试执行安全提示",
+                    "确认并运行",
+                    "取消",
+                    Messages.getWarningIcon());
+            if (answer != Messages.OK) return false;
+            CoverageConfigManager.setExecutionConfirmed(true);
+        }
+        return true;
+    }
+
+    private void retainRunnableTests() {
+        if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
+        String originalCode = currentCode();
+        if (originalCode == null || originalCode.isBlank()) {
+            Messages.showWarningDialog(project, "测试代码为空，无法筛选。", "UnitMind"); return;
+        }
+        if (!ensureTestExecutionConfirmed()) return;
+        editedCode = originalCode;
+        int taskId = ++coverageSequence; int requestId = analysisSequence;
+        PsiFile requestFile = currentPsiFile; GenerationResult currentResult = generationResult;
+        GenerationResult candidate = runtimeCandidate(currentResult, originalCode);
+        var previousSelection = currentResult.getRunnableTestSelectionReport();
+        var priorIntent = new RunnableTestSelectionReport();
+        priorIntent.inheritExclusions(previousSelection.getActiveExclusionOrigins());
+        priorIntent.setSourceHash(previousSelection.getSourceHash());
+        priorIntent.setOriginalCode(previousSelection.getOriginalCode());
+        priorIntent.setArchivePath(previousSelection.getArchivePath());
+        candidate.setRunnableTestSelectionReport(priorIntent);
+        var running = new RunnableTestSelectionReport();
+        running.inheritExclusions(priorIntent.getActiveExclusionOrigins());
+        running.setSourceHash(currentSourceHash(requestFile));
+        running.setOriginalCode(originalCode);
+        running.setStatus(RunnableTestSelectionReport.Status.RUNNING);
+        currentResult.setRunnableTestSelectionReport(running);
+        coverageRunning = true; stepStatuses[3] = StepStatus.RUNNING; rebuildSteps();
+        new Task.Backgroundable(project, "UnitMind 保留可运行用例并测覆盖率", true) {
+            private GenerationResult completed;
+            @Override public void run(@NotNull ProgressIndicator indicator) {
+                if (!registerExecutionIndicator(indicator, this::current, false)) return; indicator.setIndeterminate(false);
+                completed = new UnitTestGenerationService().retainRunnableTests(project, requestFile, candidate, originalCode,
+                        () -> indicator.isCanceled() || !current(), (text, fraction) -> {
+                            indicator.setText(text); indicator.setFraction(Math.max(indicator.getFraction(), fraction));
+                        });
+            }
+            private boolean current() {
+                return taskId == coverageSequence && isCurrentRequest(requestId, requestFile, currentResult);
+            }
+            private void finish() {
+                if (!current()) return;
+                coverageRunning = false; coverageIndicator = null;
+                applyRunnableSelectionResult(completed == null ? candidate : completed, originalCode, requestFile);
+            }
+            @Override public void onSuccess() { finish(); }
+            @Override public void onCancel() {
+                var selected = candidate.getRunnableTestSelectionReport();
+                selected.setStatus(RunnableTestSelectionReport.Status.CANCELLED);
+                selected.setMessage("筛选已取消，原代码保留。"); completed = candidate; finish();
+            }
+            @Override public void onThrowable(@NotNull Throwable error) {
+                var selected = candidate.getRunnableTestSelectionReport();
+                selected.setStatus(RunnableTestSelectionReport.Status.BLOCKED);
+                selected.setMessage("筛选未完成，原代码保留：" + error.getMessage()); completed = candidate; finish();
+            }
+        }.queue();
+    }
+
+    /** 任务身份已由调用方核验；同一次 EDT 更新同时发布文本及其验证、覆盖率报告。 */
+    private void applyRunnableSelectionResult(GenerationResult completed, String originalCode, PsiFile requestFile) {
+        var selected = completed.getRunnableTestSelectionReport();
+        generationResult.setRunnableTestSelectionReport(selected);
+        boolean unchanged = CodeFingerprint.sha256(originalCode).equals(CodeFingerprint.sha256(currentCode()))
+                && selected.getSourceHash().equals(currentSourceHash(requestFile));
+        if (selected.getStatus() == RunnableTestSelectionReport.Status.PASSED && unchanged) {
+            generationResult.setFinalTestFileReport(new com.casc.unittestagent.model.FinalTestFileReport());
+            generationResult.setGeneratedTestFile(completed.getGeneratedTestFile());
+            generationResult.setValidationResult(completed.getValidationResult());
+            generationResult.setRuntimeValidationReport(completed.getRuntimeValidationReport());
+            generationResult.setCoverageReport(completed.getCoverageReport());
+            editedCode = completed.getGeneratedTestFile().getContent();
+            stepStatuses[3] = completed.getCoverageReport().getStatus() == CoverageStatus.PASSED
+                    ? StepStatus.SUCCESS : StepStatus.WARNING;
+        } else {
+            if (selected.getStatus() == RunnableTestSelectionReport.Status.PASSED) {
+                selected.setStatus(RunnableTestSelectionReport.Status.STALE);
+                selected.setMessage("源码或测试代码已变更，本次筛选结果未应用；请重新筛选。");
+                markValidationStale(currentCode());
+            }
+            stepStatuses[3] = StepStatus.WARNING;
+        }
+        rebuildSteps();
+    }
+
+    private void restoreBeforeRunnableSelection() {
+        if (coverageRunning || writeRunning || generationResult == null) return;
+        String original = generationResult.getRunnableTestSelectionReport().getOriginalCode();
+        if (original.isBlank()) return;
+        generationResult.getRunnableTestSelectionReport().releaseExclusions();
+        editedCode = original; generationResult.getGeneratedTestFile().setContent(original);
+        markValidationStale(original); rebuildSteps();
+    }
+
+    private void openBeforeRunnableSelection() {
+        if (generationResult == null) return;
+        String path = generationResult.getRunnableTestSelectionReport().getArchivePath();
+        if (path.isBlank()) return;
+        var file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByPath(path);
+        if (file != null) FileEditorManager.getInstance(project).openFile(file, true);
+        else Messages.showWarningDialog(project, "本地备份文件不可用；仍可通过“恢复筛选前代码”恢复。", "UnitMind");
+    }
+
     private void stopCoverageLoop() {
-        if (coverageIndicator != null) coverageIndicator.cancel();
+        if (writeRunning) {
+            cancelWriteValidation();
+            if (generationResult != null) {
+                generationResult.setRuntimeValidationReport(ClassJUnitRepairReport.status(ClassJUnitStatus.CANCELLED));
+                generationResult.getFinalTestFileReport().getMethodCoverage().setStatus(CoverageStatus.CANCELLED);
+                generationResult.getFinalTestFileReport().getMethodCoverage().setMessage("写入验证已取消，未写入。");
+            }
+            stepStatuses[4] = StepStatus.WARNING;
+            lastError = "写入验证已取消，未写入测试文件。";
+            rebuildSteps();
+            return;
+        }
+        if (coverageIndicator != null) {
+            // A running task returns its last verified checkpoint through the normal callback.
+            coverageIndicator.cancel();
+        } else if (coverageRunning) {
+            // A queued task has no indicator yet: revoke ownership before it can start work.
+            coverageSequence++;
+            coverageRunning = false;
+            if (generationResult != null) {
+                var coverage = generationResult.getCoverageReport();
+                if (coverage.getStatus() == CoverageStatus.RUNNING) {
+                    coverage.setStatus(CoverageStatus.CANCELLED);
+                    coverage.setStopReason(CoverageStopReason.CANCELLED);
+                    coverage.setMessage("覆盖率任务在启动前已取消。");
+                }
+                var selection = generationResult.getRunnableTestSelectionReport();
+                if (selection.getStatus() == RunnableTestSelectionReport.Status.RUNNING) {
+                    selection.setStatus(RunnableTestSelectionReport.Status.CANCELLED);
+                    selection.setMessage("筛选在启动前已取消，原代码保留。");
+                }
+            }
+            stepStatuses[3] = StepStatus.WARNING;
+            rebuildSteps();
+        }
     }
 
     /**
@@ -964,7 +1317,7 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 失败测试名单等续修赖以工作的诊断状态。RUNNING 报告由服务端 runCoverageLoop 自建。
      */
     private void resumeWithEvidence(String evidence) {
-        if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning) return;
+        if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
         if (evidence == null || evidence.isBlank()) {
             Messages.showWarningDialog(project, "请先在补充要求中填写证据内容。", "UnitMind");
             return;
@@ -1001,6 +1354,10 @@ public class UnitMindToolWindowPanel extends JPanel {
         rebuildSteps();
         GenerationResult currentResult = generationResult;
         String candidate = editedCode;
+        int analysisId = analysisSequence;
+        GenerationResult taskResult = runtimeCandidate(currentResult, candidate);
+        // The stopped report is read only until the service replaces it with a fresh report.
+        taskResult.setCoverageReport(stoppedReport);
         String userEvidence = evidence.strip();
         PsiFile requestFile = currentPsiFile;
         new Task.Backgroundable(project, "UnitMind 正在补充证据后继续修复", true) {
@@ -1008,31 +1365,35 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                coverageIndicator = indicator;
+                if (!registerExecutionIndicator(indicator, this::current, false)) return;
                 indicator.setIndeterminate(false);
-                completed = generationService.resumeCoverageLoopWithEvidence(project, requestFile,
-                        currentResult, candidate, userEvidence, indicator::isCanceled,
+                completed = new UnitTestGenerationService().resumeCoverageLoopWithEvidence(project, requestFile,
+                        taskResult, candidate, userEvidence, () -> indicator.isCanceled() || !current(),
                         (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
                             ApplicationManager.getApplication().invokeLater(() -> {
-                                if (requestId == coverageSequence && coverageRunning && !project.isDisposed()) {
+                                if (current() && coverageRunning) {
                                     if (testCodeStepPanel != null) {
-                                        testCodeStepPanel.updateCoverageReport(currentResult.getCoverageReport());
+                                        testCodeStepPanel.updateCoverageReport(taskResult.getCoverageReport());
                                     }
                                 }
                             });
                         });
             }
 
+            private boolean current() {
+                return requestId == coverageSequence && isCurrentRequest(analysisId, requestFile, currentResult);
+            }
+
             @Override
             public void onSuccess() {
-                if (requestId == coverageSequence) applyCoverageResult(completed);
+                if (current()) applyCoverageResult(completed);
             }
 
             @Override
             public void onCancel() {
-                if (requestId != coverageSequence) return;
+                if (!current()) return;
                 // 启动前取消：保留原 Oracle 停止态报告（含续修提示与失败名单），仅还原 UI，
                 // 用户仍可再次补充证据；服务端已返回结果则正常应用。
                 if (completed == null) {
@@ -1044,7 +1405,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void onThrowable(@NotNull Throwable error) {
-                if (requestId != coverageSequence) return;
+                if (!current()) return;
                 // 不改写覆盖率报告：原停止态诊断（oracleAssessment/失败名单/证据提示）必须
                 // 保留，否则按钮永久消失且证据上下文丢失。只还原 UI 并向用户说明原因。
                 String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
@@ -1067,6 +1428,10 @@ public class UnitMindToolWindowPanel extends JPanel {
         coverageIndicator = null;
         if (completed != null) {
             generationResult = completed;
+            if (!completed.getFinalTestFileReport().getTargetPath().isBlank()) {
+                completed.getFinalTestFileReport().markStale("覆盖率补测已更新预览，请重新验证最终合并文件。");
+            }
+            completed.getRuntimeValidationReport().setStatus(ClassJUnitStatus.STALE);
             GeneratedTestFile file = completed.getGeneratedTestFile();
             generatedCode = file == null ? generatedCode : file.getContent();
             editedCode = generatedCode;
@@ -1106,7 +1471,7 @@ public class UnitMindToolWindowPanel extends JPanel {
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                validation = generationService.validateCode(
+                validation = new UnitTestGenerationService().validateCode(
                         project,
                         validatingFile,
                         currentResult.getGeneratedTestFile(),
@@ -1152,12 +1517,14 @@ public class UnitMindToolWindowPanel extends JPanel {
      * 使用当前代码和用户补充要求再次请求大模型。
      */
     private void regenerateTestCode(String feedback) {
+        if (coverageRunning || writeRunning || mockStrategyLlmRunning || generationStatus == GenerationStatus.RUNNING) return;
         if (generationResult == null || generationResult.getMethodModel() == null) {
             Messages.showWarningDialog(project, "请先完成方法分析。", "UnitMind");
             return;
         }
         editedCode = currentCode();
         generationStatus = GenerationStatus.RUNNING;
+        generationResult.getRuntimeValidationReport().setStatus(ClassJUnitStatus.STALE);
         stepStatuses[3] = StepStatus.RUNNING;
         currentStepIndex = 3;
         rebuildSteps();
@@ -1165,12 +1532,12 @@ public class UnitMindToolWindowPanel extends JPanel {
         int requestId = analysisSequence;
         PsiFile requestFile = currentPsiFile;
         GenerationResult requestResult = generationResult;
+        GenerationResult taskResult = runtimeCandidate(requestResult, currentCode);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
-                GenerationResult regenerated = generationService.regenerateWithLlmFeedback(
-                        project, requestFile, requestResult, currentCode, feedback);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    if (!isCurrentRequest(requestId, requestFile, requestResult)) return;
+                GenerationResult regenerated = new UnitTestGenerationService().regenerateWithLlmFeedback(
+                        project, requestFile, taskResult, currentCode, feedback);
+                queueCurrentRequestUpdate(requestId, requestFile, requestResult, () -> {
                     generationResult = regenerated;
                     GeneratedTestFile file = generationResult.getGeneratedTestFile();
                     generatedCode = file == null ? "" : file.getContent();
@@ -1185,8 +1552,7 @@ public class UnitMindToolWindowPanel extends JPanel {
                 });
             } catch (Exception ex) {
                 String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    if (!isCurrentRequest(requestId, requestFile, requestResult)) return;
+                queueCurrentRequestUpdate(requestId, requestFile, requestResult, () -> {
                     generationStatus = GenerationStatus.SUCCESS;
                     stepStatuses[3] = StepStatus.WARNING;
                     lastError = message;
@@ -1202,6 +1568,12 @@ public class UnitMindToolWindowPanel extends JPanel {
                 && requestResult == generationResult && !project.isDisposed();
     }
 
+    void queueCurrentRequestUpdate(int requestId, PsiFile requestFile, GenerationResult requestResult, Runnable update) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (isCurrentRequest(requestId, requestFile, requestResult)) update.run();
+        });
+    }
+
     private String firstNonBlank(String... values) {
         if (values == null) return "";
         for (String value : values) {
@@ -1211,16 +1583,10 @@ public class UnitMindToolWindowPanel extends JPanel {
     }
 
     /**
-     * 获取当前编辑后的测试代码。
+     * 编辑器是文本状态的视图；写入、校验、筛选和页面重建始终使用同一份文本。
      */
     private String currentCode() {
-        if (testCodeStepPanel != null && testCodeStepPanel.hasEditor()) {
-            return testCodeStepPanel.getCode();
-        }
-        if (editedCode != null && !editedCode.isBlank()) {
-            return editedCode;
-        }
-        return generatedCode == null ? "" : generatedCode;
+        return editedCode == null ? "" : editedCode;
     }
 
     /**

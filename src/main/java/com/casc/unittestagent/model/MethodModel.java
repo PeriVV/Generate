@@ -9,12 +9,21 @@ import java.util.List;
  * 它与同包内的模型、生成器或 UI 组件协作，但自身只保留当前层级需要承担的职责。
  */
 public class MethodModel {
+    /** Binds source line ranges and callable identity to the source analyzed, not a later editor revision. */
+    private String analyzedSourceHash = "";
+    public String getAnalyzedSourceHash() { return analyzedSourceHash; }
+    public void setAnalyzedSourceHash(String value) { analyzedSourceHash = value == null ? "" : value; }
+
     /** 在类内稳定标识方法，参数使用擦除后类型以区分重载。 */
     private String methodId;
     /** 完整的可展示方法签名。 */
     private String signature;
     /** 被测方法是否为 static。 */
     private boolean staticMethod;
+    /** 被测主体是接口：无法实例化，@InjectMocks 必崩、直构不可行。 */
+    private boolean ownerInterface;
+    /** 被测主体是抽象类：同上，需具体实现才可测。 */
+    private boolean ownerAbstract;
     /** 源码语言标识，当前用于标明分析结果来自 Java。 */
     private String language;
     /** 生成测试类需要复用的包名，保证测试文件与被测类处于同一包上下文。 */
@@ -68,6 +77,11 @@ public class MethodModel {
     public void setSignature(String signature) {
         this.signature = signature;
     }
+
+    public boolean isOwnerInterface() { return ownerInterface; }
+    public void setOwnerInterface(boolean value) { this.ownerInterface = value; }
+    public boolean isOwnerAbstract() { return ownerAbstract; }
+    public void setOwnerAbstract(boolean value) { this.ownerAbstract = value; }
 
     public boolean isStaticMethod() {
         return staticMethod;

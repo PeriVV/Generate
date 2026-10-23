@@ -25,6 +25,10 @@ public enum FailureCategory {
     MOCKITO_WANTED_BUT_NOT_INVOKED("目标交互未发生", RepairStrategy.DETERMINISTIC, "", true, true),
     MOCKITO_WRONG_RETURN_TYPE("stub 返回类型不匹配", RepairStrategy.DETERMINISTIC, "", false, true),
     MOCKITO_INVALID_MATCHER_USAGE("matcher 用法非法", RepairStrategy.DETERMINISTIC, "", false, true),
+    MOCKITO_FIXTURE_WIRING_FAILURE("Mockito 依赖装配失效", RepairStrategy.DETERMINISTIC, "", true, true),
+    TEST_INTERNAL_STATE_ORACLE("内部实现验证无效", RepairStrategy.EVIDENCE_REQUIRED,
+            "请依据公开行为或已有契约重新设计验证；运行修复改变原 Oracle 仍需独立契约证据。", true, true),
+    MOCKITO_FIXTURE_INITIALIZATION_FAILURE("Mockito Fixture 初始化失败", RepairStrategy.DETERMINISTIC, "", false, true),
     ASSERTION_VALUE_MISMATCH("断言期望值不一致", RepairStrategy.EVIDENCE_REQUIRED,
             "请补充该输入下的真实期望值及依据（需求文档片段、Issue 链接、已有测试或合同常量），"
                     + "并注明适用测试：{tests}。例：“订单满 100 元应打 95 折（来源：PRD-3.2）”。", true, true),
@@ -56,6 +60,7 @@ public enum FailureCategory {
             "测试执行期间访问了真实外部资源（数据库/网络/端口：ConnectException/"
                     + "SocketTimeoutException/SQLException 等）。请为相关协作者提供 mock/替身，"
                     + "或确认该用例需要在可达环境中执行。", false, true),
+    SPRING_PROPERTY_BINDING_FAILURE("Spring 必需属性未绑定", RepairStrategy.DETERMINISTIC, "", false, true),
     FRAMEWORK_CONTEXT_BOOTSTRAP_FAILURE("框架上下文启动失败", RepairStrategy.ENVIRONMENT,
             "框架上下文（Spring/容器）启动失败（Failed to load ApplicationContext/"
                     + "BeanCreation/NoSuchBeanDefinition 等）。请检查配置、数据源与 Profile 是否"
@@ -79,7 +84,11 @@ public enum FailureCategory {
     SDK_NOT_CONFIGURED("SDK 未配置", RepairStrategy.ENVIRONMENT, "请在 IDE 中检查模块 SDK、JUnit 5 / Mockito 测试依赖与项目索引后重试。", false, false),
     JAVA_EXECUTABLE_NOT_FOUND("Java 可执行文件缺失", RepairStrategy.ENVIRONMENT, "请在 IDE 中检查模块 SDK、JUnit 5 / Mockito 测试依赖与项目索引后重试。", false, false),
     JUNIT5_NOT_FOUND("JUnit 5 依赖缺失", RepairStrategy.ENVIRONMENT, "请在 IDE 中检查模块 SDK、JUnit 5 / Mockito 测试依赖与项目索引后重试。", false, false),
+    BUNDLED_JUNIT_NOT_FOUND("插件内置 JUnit 缺失", RepairStrategy.ENVIRONMENT, "请重新安装完整插件包。", false, false),
+    BUNDLED_MOCKITO_UNAVAILABLE("插件内置 Mockito 不可用", RepairStrategy.ENVIRONMENT, "请检查模块 JDK、插件安装包与 IDE 缓存目录权限。", false, false),
     MOCKITO_NOT_FOUND("Mockito 依赖缺失", RepairStrategy.ENVIRONMENT, "请在 IDE 中检查模块 SDK、JUnit 5 / Mockito 测试依赖与项目索引后重试。", false, false),
+    RUNTIME_CONFIGURATION_UNAVAILABLE("项目测试运行配置不可用", RepairStrategy.ENVIRONMENT,
+            "请检查项目 Maven/Gradle 配置导出；不能复用运行配置时不会按默认环境继续执行。", false, false),
     TEMP_IO_FAILURE("沙箱临时目录 IO 失败", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),
     JDK_COMPILER_NOT_FOUND("模块 JDK 缺少 javac", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),
     SANDBOX_COMPILE_TIMEOUT("沙箱编译超时", RepairStrategy.ENVIRONMENT, "沙箱编译环境异常（JDK 编译器、临时目录或被测源编译失败）。请检查 JDK 配置与被测源可编译性后重试。", false, false),
@@ -96,6 +105,8 @@ public enum FailureCategory {
     TEST_PACKAGE_MISMATCH("测试包名不匹配", RepairStrategy.DETERMINISTIC, "", false, false),
     TEST_CLASS_NAME_MISMATCH("测试类名不匹配", RepairStrategy.DETERMINISTIC, "", false, false),
     MOCKITO_STATIC_MOCK_UNSUPPORTED("项目不支持静态 Mock", RepairStrategy.DETERMINISTIC, "", false, false),
+    /** 候选代码引用 org.mockito 但项目 classpath 缺 Mockito——删 mock 改直构可修。 */
+    MOCKITO_UNAVAILABLE("Mockito 依赖缺失", RepairStrategy.DETERMINISTIC, "", false, false),
     SANDBOX_JAVAC_FAILED("沙箱编译测试失败", RepairStrategy.DETERMINISTIC, "", false, false),
     CANNOT_FIND_SYMBOL("找不到符号", RepairStrategy.DETERMINISTIC, "", false, false),
     NO_SUITABLE_METHOD("无适用方法", RepairStrategy.DETERMINISTIC, "", false, false),
@@ -105,6 +116,7 @@ public enum FailureCategory {
     STATIC_CONTEXT("静态上下文错误", RepairStrategy.DETERMINISTIC, "", false, false),
     PACKAGE_NOT_FOUND("程序包不存在", RepairStrategy.DETERMINISTIC, "", false, false),
     JAVA_COMPILE("测试编译错误", RepairStrategy.DETERMINISTIC, "", false, false),
+    FIXTURE_INITIALIZATION_CONFLICT("Fixture 初始化顺序冲突", RepairStrategy.DETERMINISTIC, "", false, false),
     // --- AST 预检：coverage/CoverageCandidatePreflight ---
     REFLECTION_ASSERT_THROWS_WRAPS_CAUSE("反射断言包装根因异常", RepairStrategy.DETERMINISTIC, "", false, false),
     MOCKITO_MATCHER_OUTSIDE_STUBBING("matcher 脱离 stubbing 上下文", RepairStrategy.DETERMINISTIC, "", false, false),
@@ -114,7 +126,8 @@ public enum FailureCategory {
     MOCKITO_WHEN_ON_SPY("when 作用于 spy", RepairStrategy.DETERMINISTIC, "", false, false),
     REFLECTION_FIELD_ACCESS_UNSAFE("反射猜测私有字段", RepairStrategy.DETERMINISTIC, "", false, false),
     // --- 合成 rootCauseCategory（service 层） ---
-    UNSAFE_ORACLE_PATCH("补丁违反 Oracle 门禁", RepairStrategy.DETERMINISTIC, "", false, true),
+    /** Kept for legacy report display; candidate rejection is not a runtime root cause. */
+    UNSAFE_ORACLE_PATCH("补丁违反 Oracle 门禁", RepairStrategy.DETERMINISTIC, "", false, false),
     UNSUPPORTED_FIXTURE_CLASSIFICATION("Fixture 归类证据不足", RepairStrategy.UNCLASSIFIED,
             "模型未能证明 Fixture 缺失。请补充：真实异常栈中首个业务空指针位置、被测对象构造方式，"
                     + "或直接说明期望行为（适用测试：{tests}）。", false, true),

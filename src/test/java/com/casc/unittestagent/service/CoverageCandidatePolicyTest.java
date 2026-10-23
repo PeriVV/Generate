@@ -52,6 +52,7 @@ public class CoverageCandidatePolicyTest extends TestCase {
         execution.setSucceeded(1);
         execution.setFailed(0);
         execution.setExitCode(0);
+        execution.setTestCases(List.of(new com.casc.unittestagent.model.TestCaseExecution("T#exercise()", true, false)));
         snapshot.setExecution(execution);
         return snapshot;
     }

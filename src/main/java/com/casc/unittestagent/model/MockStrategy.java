@@ -134,4 +134,15 @@ public class MockStrategy {
     public void setStrategyItems(List<MockStrategyItem> strategyItems) {
         this.strategyItems = strategyItems;
     }
+
+    /** Detached editable inputs for a background execution task. */
+    public MockStrategy copy() {
+        var copy = new MockStrategy();
+        copy.mockFields = mockFields == null ? new ArrayList<>() : new ArrayList<>(mockFields);
+        copy.whenRules = whenRules == null ? new ArrayList<>() : new ArrayList<>(whenRules);
+        copy.verifyRules = verifyRules == null ? new ArrayList<>() : new ArrayList<>(verifyRules);
+        copy.neverRules = neverRules == null ? new ArrayList<>() : new ArrayList<>(neverRules);
+        copy.strategyItems = strategyItems == null ? new ArrayList<>() : new ArrayList<>(strategyItems.stream().map(MockStrategyItem::copy).toList());
+        return copy;
+    }
 }

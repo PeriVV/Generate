@@ -34,7 +34,39 @@ public class LlmPromptBuilder {
                 + "LOW 可信场景名不是精确契约，不得据此编造返回值、异常或 verify 次数。"
                 + "交互验证只能在源码或已有测试明确证明调用本身是契约时使用；其余情况优先验证返回值、对外状态或精确异常。"
                 + "生产类使用 @Slf4j/static logger 时，禁止创建 @Mock Logger 并 verify 日志调用；该 mock 与生产 logger 不是同一实例。"
-                + "禁止创造 projectSymbolSnapshot 中不存在的项目符号；但已在被测源码、import、currentTestCode 或 existingTestExamples 中出现的符号可视为有效证据。";
+                + "禁止创造 projectSymbolSnapshot 中不存在的项目符号；但已在被测源码、import、currentTestCode 或 existingTestExamples 中出现的符号可视为有效证据。"
+                + testDoubleTypeRules() + mockWiringRules() + springFixtureRules();
+    }
+
+    private String testDoubleTypeRules() {
+        return "手写测试替身必须遵守真实类型契约：implements 仅用于 interface，class 只能在非 final 且构造器可用时 extends；"
+                + "实现接口时必须根据真实 API 实现全部继承的抽象方法，@Override 的返回类型、参数和 throws 必须与真实签名兼容。"
+                + "符号快照中的方法列表可能不完整，不能据此猜写整个接口；API 不完整时使用已允许的 mock 或已知真实适配器。"
+                + "编译诊断明确说明生产源码已独立通过时，只修复候选测试，禁止为级联错误给生产类补造字段或修改其类型。";
+    }
+
+    private String springFixtureRules() {
+        return "\nSpring 属性与生命周期规则：context.springPropertyBindings 给出生产源码中真实 @Value 表达式、类型、属性键及无默认值的键；@ConfigurationProperties 列出简单字段的规范键，复杂嵌套/集合需结合源码，不能猜测。"
+                + "严格使用真实属性键，不得依据类名/字段名猜前缀。@ConfigurationProperties 必须使用项目支持的注册/绑定方式（如 EnableConfigurationProperties），不能用无效的 @Value 空方法替代绑定。保留默认值及 SpEL 语义，Boolean/数值属性需可转换；"
+                + "外部 application 配置可能已提供属性，不得把缺少本地声明直接当作环境缺失。"
+                + "构造器或可见 API 可达时优先纯单元测试；必须处理私有 @Value 时可使用只注册必要 Bean 的最小 Spring context，"
+                + "使用真实 PropertySource、属性解析/注入后处理器并显式关闭上下文。不要仅为绕过反射门禁启动整个 SpringBootTest。"
+                + "容器测试必须通过 @Autowired/context.getBean 获取被测对象，不得在字段初始化、setUp 或测试中重新 new 覆盖它；"
+                + "@Bean 工厂返回的对象可由容器继续初始化。禁止 @Value 空 setter 和未连接到被测对象的伪注入。"
+                + "sharedContextFailure=true 表示共享初始化失败，后续 failure threshold 是关联症状，不是业务前置条件失败；"
+                + "查看 primaryFailureTestId、rootCauseMessage 和 causeDetails，缺少首次根因时明确证据不足，不得编造原因或删除受影响用例。"
+                + "共享初始化修复只允许修改可证明错误的装配/属性绑定，全部测试正文、业务输入和 Oracle 必须保留。\n";
+    }
+
+    private String mockWiringRules() {
+        return "先检查 mock 对象图：每个 stub/verify 的 mock 必须能沿真实构造参数、可注入字段或方法参数接入被测对象。"
+                + "@InjectMocks 初始化后不得重新 new 覆盖被测对象并丢失注入；若选择手动构造，必须显式传入全部依赖。"
+                + "生产类自行初始化的 private final/static 容器属于内部状态，不能声明同名 @Mock 就假定替换成功；"
+                + "不要反射替换它们，应通过公开入口建立状态并验证返回值、对外状态或异常。"
+                + "禁止对真实对象及其真实返回值使用 verify；不要把 getter 调用次数、私有容器操作顺序当作业务契约，除非有独立契约证据。"
+                + "运行诊断的 mockWiringEvidence 是绑定当前源码的事实；零交互本身不能证明业务缺陷、空参数或另一实例被使用。"
+                + "MOCKITO_FIXTURE_WIRING_FAILURE 仅允许删除证据指定的覆盖赋值，保持所有测试正文、输入、stub 和 Oracle；"
+                + "TEST_INTERNAL_STATE_ORACLE 需要重新设计验证，禁止以 KEEP 偷换 Oracle，改变已有运行失败用例的 Oracle 仍须独立权威授权。";
     }
 
     public String userPrompt(LlmGenerationRequest request) {
@@ -61,6 +93,9 @@ public class LlmPromptBuilder {
                 + "9. 只有已选策略明确允许且 context.mockitoCapabilities.staticMockingSupported=true 时才允许使用 mockStatic/MockedStatic；否则必须真实执行无副作用静态方法，或改用可注入依赖，不得建议修改 pom/Gradle。\n"
                 + "10. 私有方法不要直接 stub；如果需要覆盖 private 方法路径，应通过调用公开入口或反射调用被测方法。\n"
                 + "11. 测试代码必须是完整 Java 测试类。\n"
+                + "11a. 使用 @Mock/@Spy/@Captor/@InjectMocks 时必须导入对应 org.mockito 注解。调用声明了受检异常的 API 时，"
+                + "Mockito 的 when/verify/doReturn 等也受 Java throws 规则约束；在所属测试或生命周期方法声明真实异常，必要时 throws java.lang.Exception，禁止吞异常或删除验证。\n"
+                + "11b. Mockito 同一次 stub/verify 调用使用了 matcher 时，其他参数也必须用保留原值的 eq(...) 等匹配器；不要把明确值替换成 any()。\n"
                 + "12. 不允许返回空代码。\n"
                 + "13. 如果 userInstruction 非空，请在不违反静态分析约束的前提下优先满足用户补充要求。\n"
                 + "14. 如果 existingTestCodeSummary 非空，请参考现有测试代码并整体重新输出完整测试类，不要只输出 diff。\n"
@@ -77,6 +112,10 @@ public class LlmPromptBuilder {
                 + "25. 如果 callContexts 中显示参数对象 getter、record accessor、字段读取或链式方法被当前方法或内部调用链使用，必须补齐这些 mock 返回值或构造真实对象；无法确认字段时生成 TODO，不要输出看似完整但会 NPE 的代码。\n"
                 + "25a. 被测类构造函数或 Lombok required-args 构造器中的依赖必须全部提供。使用 @InjectMocks 时，"
                 + "每个实际执行路径会访问的构造依赖都必须有类型匹配的 @Mock/真实对象；不得让 Mockito 以 null 填充缺失依赖。\n"
+                + "25b. 上述要求也适用于真实协作对象：沿 callContexts/nestedCalls 检查 Service/Repository 等内部调用链，"
+                + "不得以 new Collaborator(null) 占位已知会被访问的构造依赖；按已选策略提供完整真实依赖或允许的 mock。\n"
+                + "25c. 初始化顺序必须一致：MockitoExtension 先于 @BeforeEach 处理 @Spy。仅有有参构造器的类型不得声明未初始化的 @Spy 字段再期望 @BeforeEach 补救；"
+                + "应在依赖已初始化后手动构造并按策略显式 spy，保持原测试意图；字段初始化器中不要提前读取尚未初始化的 @Mock。\n"
                 + "26. callContexts.INTERNAL_METHOD_CALL 的 sourceCode 是当前方法直接调用的一层本类内部方法源码；nestedCalls 至少说明该内部方法继续调用的项目方法签名或静态调用摘要，生成测试时必须考虑这些真实执行路径。\n"
                 + "27. scenarios.oracle.confidence=LOW 或 expectedAssertions 为空时，场景名只表示覆盖目标，不是精确 Oracle。必须先从 existingTestExamples 或源码确定可观测契约；证据不足时保留 TODO/warnings，不得编造精确值或交互次数。\n"
                 + "28. 优先使用真实对象和 public/package-visible 可观测行为；verify/times(n) 仅在源码或已有测试明确支持该交互契约时使用。\n"
@@ -99,7 +138,13 @@ public class LlmPromptBuilder {
                 + "项目符号快照、被测源码、import、currentTestCode 和 existingTestExamples 都可作为真实符号证据。"
                 + "必须根据 compilerDiagnostics 的行列和错误信息进行最小修改，并返回完整测试类。"
                 + "整类测试修复时必须保留 // UnitMind method: <methodId> 标记和其他方法已通过的测试。"
-                + "当 MOCKITO_STATIC_MOCK_UNSUPPORTED 出现时，必须删除 mockStatic/MockedStatic 并改为真实调用或普通 mock，不得修改项目依赖。";
+                + "当 MOCKITO_STATIC_MOCK_UNSUPPORTED 出现时，必须删除 mockStatic/MockedStatic 并改为真实调用或普通 mock，不得修改项目依赖。"
+                + "UNREPORTED_EXCEPTION 表示未声明的受检异常；即使调用位于 Mockito when/verify 中也必须处理。"
+                + "优先为所属测试/生命周期方法添加 throws 声明，保留已有 throws、原断言和验证，不得吞异常、改成 assertThrows 或删除调用。"
+                + "FIXTURE_CONSTRUCTOR_DEPENDENCY 是生成阶段的构造依赖检查：按真实类型、作用域和初始化顺序补齐非空依赖，"
+                + "保持原断言及 Mock 策略；不要用 null 占位、反射注入或把失败改成期望异常。"
+                + "FIXTURE_INITIALIZATION_CONFLICT 表示 Mockito 与手动初始化的顺序冲突，修复字段注解及生命周期，保持测试方法正文不变；不要修改生产构造函数。"
+                + testDoubleTypeRules() + mockWiringRules() + springFixtureRules();
     }
 
     public String repairPrompt(LlmGenerationRequest request) {
@@ -124,7 +169,7 @@ public class LlmPromptBuilder {
         return "你是 Java 单元测试候选转换器。一次请求只执行 payload.taskMode 指定的一种任务。"
                 + "只能修改给定测试类，禁止修改被测代码，禁止删除测试、@Disabled、空断言、捕获并忽略异常。"
                 + "不得编造项目 API。已在项目符号快照、被测源码、import、currentTestCode 或 existingTestExamples 中出现的符号可作为有效证据。"
-                + "运行失败只是事实证据，不自动成为新的期望行为。";
+                + "运行失败只是事实证据，不自动成为新的期望行为。" + testDoubleTypeRules() + mockWiringRules() + springFixtureRules();
     }
 
     public String coveragePrompt(LlmGenerationRequest request) {
@@ -213,6 +258,11 @@ public class LlmPromptBuilder {
                 + "1. repairDisposition=REPAIR_TEST 时必须返回完整测试类，类名、package 和现有测试方法集合保持不变。\n"
                 + "2. passedTestIds 对应的测试已经真实通过，严禁修改、删除、改名或禁用。\n"
                 + "3. 局部输入、断言、stub 或 verify 错误选择 METHOD_ONLY；共享字段、@BeforeEach、@InjectMocks/@Mock 或 helper 错误选择 SHARED_FIXTURE。\n"
+                + "3s. 分类 SPRING_PROPERTY_BINDING_FAILURE 且 sharedContextFailure=true、lifecycleEvidence 有源码属性声明时，使用 SHARED_FIXTURE + REPAIR_TEST + KEEP + NONE；只允许向 TestPropertySource(properties=...) 追加被证明缺失的真实键，保留已有属性、所有测试正文和配置。其他共享上下文失败缺少可证明的修复范围时必须 INCONCLUSIVE。\n"
+                + "3b. runtimeDiagnostics 中 failurePhase=TEST_SETUP 且分类 MOCKITO_FIXTURE_INITIALIZATION_FAILURE，"
+                + "已由真实异常和当前测试字段声明证明初始化失败，必须选择 SHARED_FIXTURE + REPAIR_TEST + KEEP + NONE。"
+                + "测试方法尚未执行，只能调整字段/生命周期/构造顺序；所有测试方法正文必须保持不变，不需要业务 Oracle 证据或 NullPointerException。"
+                + "保留原本需要的 Spy 语义：依赖初始化后显式 Mockito.spy(new Type(...))；不得修改生产源码或为其增加无参构造器。\n"
                 + "3a. 本请求一次只仲裁 focusTestIds 中的一个失败测试。runtimeDiagnostics 只包含该测试的证据；"
                 + "allFailingTestIds 中其他失败不得修改、不得混入 diagnosis，它们会在后续请求中独立处理。\n"
                 + "4. 生产源码可用于路径定位，但不得单独用于修正生成断言；"
@@ -299,6 +349,9 @@ public class LlmPromptBuilder {
         return "公共契约：\n"
                 + codeContract
                 + "C2. compilerDiagnostics/runtimeDiagnostics 只是当前活动错误；previousAttempt 只用于避免重复已被拒绝的修改。\n"
+                + "C2a. runtimeDiagnostics.testId 是 JUnit 实际报错测试；originLocations 是框架报告并与候选源码核对的位置，"
+                + "可能属于前一个测试。不得混为同一测试，不得仅凭 matcher 遗留推断整个类的 beforeEach 失败；"
+                + "发生阶段以 failurePhase 和真实栈帧为准。修复必须遵守 repairScope，不能改无关测试来消除连带报错。\n"
                 + "C3. 只有 repairScope.passedTestIds 是已证明通过的测试，必须保持不变；allFailingTestIds 中的测试不得误当为已通过测试。\n"
                 + "C4. 严格遵守 context.mockUsagePolicy；FORBIDDEN 时不得新建 mock/spy/verify；"
                 + "PRESERVE_EXISTING 时只可调整已有 mock/spy 对象的 stub/verify，不得新建被 mock 类型、对象或字段。\n"
@@ -360,7 +413,8 @@ public class LlmPromptBuilder {
                 + "R9. oracleAuthorityRef 必须精确来自 oracleEvidence.authorityItems；当没有对应条目时必须用 NONE，不得虚构。\n"
                 + "R10. runtimeDiagnostics 已是 ASSERTION_VALUE_MISMATCH / ASSERTION_FAILURE / Mockito verify 语义不匹配时，"
                 + "不得返回 oracleDecision=KEEP 的 REPAIR_TEST 后通过改 Arrange 换掉触发 Bug 的输入。"
-                + "没有独立契约授权 CORRECT 时必须返回 INCONCLUSIVE 或 SUSPECTED_SUT_BUG。\n"
+                + "唯一装配例外是 runner 提供完整 mockWiringEvidence.removableAssignment：仅移除指定覆盖赋值，SHARED_FIXTURE + REPAIR_TEST + KEEP + NONE，保持全部测试正文。"
+                + "其他情况没有独立契约授权 CORRECT 时必须返回 INCONCLUSIVE 或 SUSPECTED_SUT_BUG。\n"
                 + "R11. ASSERTION_EXPECTED_EXCEPTION_NOT_THROWN 表示 assertThrows 的目标异常未发生，不是 Fixture 缺失。"
                 + "必须使用 context.classSourceCode 中的真实常量/字段定义、分支谓词和 currentTestCode 中的 stub 值核对路径；"
                 + "常量缺失或边界无法确定时返回 INCONCLUSIVE，严禁改期望异常类型。\n"
@@ -393,6 +447,8 @@ public class LlmPromptBuilder {
                 + "E3b. 若参数类型 sealed=true、permittedSubtypes 已列全且都无其他可实例化子类，"
                 + "不得为命中穷尽 instanceof 之后的 fallback 伪造匿名实现、mock 或非 permits 子类；"
                 + "应改选其他可达 gap，没有时保持代码不变并在 warnings 说明静态不可达证据。\n"
+                + "E3c. gap 位于 lambda 或延迟回调中时，仅构造/传递回调不算执行；若接收方被 mock，"
+                + "须通过捕获参数或 Answer，在满足真实入参约束的情况下执行回调并验证结果。不得用修改生产代码、反射调用合成方法或绕过断言制造覆盖。\n"
                 + "E4. 新测试在方法内独立 Arrange，不改写字段或生命周期方法。优先验证返回值/对外状态/精确异常，禁止在没有源码证据时编造 verify/times(n)。\n";
     }
 
@@ -469,6 +525,16 @@ public class LlmPromptBuilder {
                     .put("exceptionType", nullToEmpty(diagnostic.getExceptionType()))
                     .put("message", nullToEmpty(diagnostic.getMessage()))
                     .put("category", nullToEmpty(diagnostic.getCategory()))
+                    .put("failurePhase", diagnostic.getFailurePhase().name())
+                    .put("fixtureField", diagnostic.getFixtureField())
+                    .put("lifecycleEvidence", diagnostic.getLifecycleEvidence())
+                    .put("mockWiringEvidence", new JSONArray(diagnostic.getMockWiringEvidence().stream().map(e -> new JSONObject()
+                            .put("category", e.category()).put("subject", e.subject()).put("receiver", e.receiver())
+                            .put("line", e.line()).put("fact", e.fact()).put("testHash", e.testHash())
+                            .put("productionHash", e.productionHash()).put("removableAssignment", e.removableAssignment())).toList()))
+                    .put("originLocations", new JSONArray(diagnostic.getOriginLocations().stream().map(origin ->
+                            new JSONObject().put("testId", origin.testId()).put("sourceLine", origin.sourceLine())
+                                    .put("sourceSnippet", origin.sourceSnippet()).put("frame", origin.frame())).toList()))
                     .put("sourceLine", diagnostic.getSourceLine())
                     .put("sourceSnippet", nullToEmpty(diagnostic.getSourceSnippet()))
                     .put("suggestion", nullToEmpty(diagnostic.getSuggestion()))
@@ -477,6 +543,12 @@ public class LlmPromptBuilder {
                     .put("expectedExceptionType", nullToEmpty(diagnostic.getExpectedExceptionType()))
                     .put("actualExceptionType", nullToEmpty(diagnostic.getActualExceptionType()))
                     .put("rootCauseType", nullToEmpty(diagnostic.getRootCauseType()))
+                    .put("rootCauseMessage", nullToEmpty(diagnostic.getRootCauseMessage()))
+                    .put("causeDetails", diagnostic.getCauseDetails())
+                    .put("sharedContextFailure", diagnostic.isSharedContextFailure())
+                    .put("contextFailureSecondary", diagnostic.isContextFailureSecondary())
+                    .put("contextKey", diagnostic.getContextKey())
+                    .put("primaryFailureTestId", diagnostic.getPrimaryFailureTestId())
                     .put("expectedInvocationCount", diagnostic.getExpectedInvocationCount())
                     .put("actualInvocationCount", diagnostic.getActualInvocationCount())
                     .put("causeChain", diagnostic.getCauseChain())
@@ -530,6 +602,14 @@ public class LlmPromptBuilder {
         context.put("staticMethod", request.isStaticMethod());
         context.put("imports", nullToEmpty(request.getImports()));
         context.put("classFields", nullToEmpty(request.getClassFields()));
+        var properties = request.getSpringPropertyBindings().isEmpty()
+                ? com.casc.unittestagent.coverage.SpringFixtureAnalyzer.properties(java.util.List.of(nullToEmpty(request.getClassSourceCode())))
+                : request.getSpringPropertyBindings();
+        JSONArray bindings = new JSONArray();
+        properties.forEach(p -> bindings.put(new JSONObject().put("owner", p.owner()).put("member", p.member())
+                .put("type", p.type()).put("injectionSite", p.injectionSite()).put("expression", p.expression()).put("keys", p.keys())
+                .put("requiredKeys", p.requiredKeys()).put("spel", p.spel())));
+        context.put("springPropertyBindings", bindings);
         context.put("knownTypes", request.getKnownTypes());
         context.put("chainedCallReturnTypes", request.getChainedCallReturnTypes());
         context.put("filesystemTestingPolicy", "文件系统逻辑默认使用 @TempDir、真实 Path、真实 Files 临时文件；不要默认 mock Files、Paths 或 Path 目录变量。");
@@ -722,6 +802,7 @@ public class LlmPromptBuilder {
             JSONObject item = new JSONObject();
             item.put("severity", nullToEmpty(diagnostic.getSeverity()));
             item.put("code", nullToEmpty(diagnostic.getCode()));
+            item.put("validationStage", diagnostic.getValidationStage().name());
             item.put("message", nullToEmpty(diagnostic.getMessage()));
             item.put("line", diagnostic.getLine());
             item.put("column", diagnostic.getColumn());

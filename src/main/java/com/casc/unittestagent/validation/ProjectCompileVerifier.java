@@ -10,6 +10,7 @@ import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.GeneratedTestFile;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
+import com.casc.unittestagent.model.ValidationStage;
 import com.casc.unittestagent.util.CodeFingerprint;
 import com.intellij.ide.highlighter.JavaFileType;
 import com.intellij.openapi.application.ApplicationManager;
@@ -41,12 +42,14 @@ public class ProjectCompileVerifier implements TestCodeValidator {
             List<CompileDiagnostic> syntaxDiagnostics = syntaxDiagnostics(project, generatedFile, code);
             syntaxDiagnostics.addAll(CoverageCandidatePreflight.inspectGeneratedRegions(code));
             if (!syntaxDiagnostics.isEmpty()) {
+                syntaxDiagnostics.forEach(d -> d.setValidationStage(ValidationStage.SOURCE_PREFLIGHT));
                 result.setStatus(ValidationStatus.FAILED);
                 result.setDiagnostics(syntaxDiagnostics);
                 return result;
             }
 
             ProjectTestEnvironment environment = environmentResolver.resolve(project, sourceFile);
+            result.setTestEnvironmentNote(environment.getTestEnvironmentNote());
             if (!environment.getDiagnostics().isEmpty()) {
                 result.setStatus(ValidationStatus.ENVIRONMENT_ERROR);
                 result.setDiagnostics(environment.getDiagnostics());
@@ -59,6 +62,18 @@ public class ProjectCompileVerifier implements TestCodeValidator {
                         "ERROR", "MOCKITO_STATIC_MOCK_UNSUPPORTED",
                         "当前项目不支持 Mockito 静态 Mock：" + staticMockSupport.getDescription()
                                 + "。请删除 mockStatic/MockedStatic，不要通过修改项目依赖规避。",
+                        -1, -1, "", true)));
+                return result;
+            }
+            // Mockito 是可选依赖：只有候选代码实际引用 org.mockito 而 classpath 缺失时
+            // 才报错（可修复——删掉 mock 改直构/字面量），零 Mockito 候选不受影响。
+            if (codeReferencesMockito(code) && !classpathHasMockito(environment)) {
+                result.setStatus(ValidationStatus.FAILED);
+                result.setDiagnostics(Collections.singletonList(new CompileDiagnostic(
+                        "ERROR", "MOCKITO_UNAVAILABLE",
+                        "候选测试引用了 org.mockito，但当前模块测试 classpath 中没有 Mockito。"
+                                + "请删除 @Mock/mock()/when() 改用真实构造、字面量或可注入依赖；"
+                                + "不要通过修改项目依赖规避。",
                         -1, -1, "", true)));
                 return result;
             }
@@ -94,6 +109,19 @@ public class ProjectCompileVerifier implements TestCodeValidator {
             }
             return result;
         }
+    }
+
+    private boolean codeReferencesMockito(String code) {
+        return code != null && java.util.regex.Pattern
+                .compile("org\\.mockito|@Mock\\b|MockitoAnnotations|\\bmock\\s*\\(|\\bwhen\\s*\\(")
+                .matcher(code).find();
+    }
+
+    private boolean classpathHasMockito(ProjectTestEnvironment environment) {
+        for (java.io.File entry : environment.getClasspath()) {
+            if (entry != null && entry.getName().startsWith("mockito-core")) return true;
+        }
+        return false;
     }
 
     private String targetClassName(PsiFile sourceFile, ProjectTestEnvironment environment) {

@@ -51,6 +51,7 @@ final class LocalCoverageClosureSupport {
         method.setSourceStartLine(start);
         method.setSourceEndLine(end);
         method.setMethodBodyText(String.join("\n", java.util.Arrays.copyOfRange(lines, start - 1, end)));
+        method.setMethodName(com.github.javaparser.StaticJavaParser.parseMethodDeclaration(method.getMethodBodyText()).getNameAsString());
         return method;
     }
 
@@ -88,6 +89,8 @@ final class LocalCoverageClosureSupport {
         String javac = Path.of(System.getProperty("java.home"), "bin", isWindows() ? "javac.exe" : "javac").toString();
         List<String> command = new ArrayList<>();
         command.add(javac);
+        command.add("-encoding");
+        command.add("UTF-8");
         command.add("--release");
         command.add("17");
         command.add("-g");

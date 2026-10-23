@@ -45,16 +45,22 @@ public class ProjectCompileVerifierTest extends LightJavaCodeInsightFixtureTestC
         assertTrue(result.getDiagnostics().stream().anyMatch(item -> "JAVA_SYNTAX".equals(item.getCode())));
     }
 
-    public void testReportsMissingTestFrameworkAsEnvironmentError() {
+    public void testCompilesWithBundledJunitWhenProjectHasNoTestFramework() {
         PsiFile source = myFixture.configureByText("Subject.java", "package sample; class Subject {}");
         GeneratedTestFile generated = generatedFile();
 
         ValidationResult result = new ProjectCompileVerifier().validate(
-                getProject(), source, generated, "package sample; class SubjectTest {}");
+                getProject(), source, generated, """
+                        package sample;
+                        class SubjectTest {
+                            @org.junit.jupiter.api.Test void constructs() {
+                                org.junit.jupiter.api.Assertions.assertNotNull(new Subject());
+                            }
+                        }
+                        """);
 
-        assertEquals(ValidationStatus.ENVIRONMENT_ERROR, result.getStatus());
-        assertTrue(result.getDiagnostics().stream()
-                .anyMatch(item -> "JUNIT5_NOT_FOUND".equals(item.getCode()) || "MOCKITO_NOT_FOUND".equals(item.getCode())));
+        assertEquals(result.getDiagnostics().toString(), ValidationStatus.PASSED, result.getStatus());
+        assertTrue(result.getTestEnvironmentNote().contains("内置 JUnit"));
     }
 
     public void testCompilesValidCandidateAgainstProjectSourcePath() {
@@ -154,6 +160,17 @@ public class ProjectCompileVerifierTest extends LightJavaCodeInsightFixtureTestC
         assertNotNull(result.getDiagnostics().toString(), diagnostic);
         assertFalse(diagnostic.isRepairable());
         assertTrue(diagnostic.getSnippet().contains("MissingProjectType"));
+    }
+
+    public void testCheckedExceptionHasSpecificDiagnosticAndCanBeDeclared() {
+        PsiFile source = myFixture.configureByText("Subject.java", """
+                package sample;
+                public class Subject { public void upload() throws Exception {} }
+                """);
+        assertDiagnostic(source, "class SubjectTest { void test() { new Subject().upload(); } }", "UNREPORTED_EXCEPTION");
+        String code = "package sample; class SubjectTest { void test() throws Exception { new Subject().upload(); } }";
+        var result = new ProjectCompileVerifier().validate(getProject(), source, generatedFile(), code);
+        assertEquals(result.getDiagnostics().toString(), ValidationStatus.PASSED, result.getStatus());
     }
 
     private void assertDiagnostic(PsiFile source, String classBody, String expectedCode) {

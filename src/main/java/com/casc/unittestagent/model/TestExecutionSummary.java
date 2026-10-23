@@ -12,8 +12,15 @@ public class TestExecutionSummary {
     private boolean timedOut;
     private int exitCode = -1;
     private String output = "";
+    private String evidenceArchivePath = "";
+    private String evidenceArchiveError = "";
+    public String getEvidenceArchivePath() { return evidenceArchivePath; }
+    public void setEvidenceArchivePath(String value) { evidenceArchivePath = value == null ? "" : value; }
+    public String getEvidenceArchiveError() { return evidenceArchiveError; }
+    public void setEvidenceArchiveError(String value) { evidenceArchiveError = value == null ? "" : value; }
     private List<RuntimeDiagnostic> diagnostics = new ArrayList<>();
     private List<TestCaseExecution> testCases = new ArrayList<>();
+    private final List<String> evidenceFailures = new ArrayList<>();
 
     public int getFound() { return found; }
     public void setFound(int found) { this.found = found; }
@@ -36,4 +43,16 @@ public class TestExecutionSummary {
         this.testCases = testCases == null ? new ArrayList<>() : testCases;
     }
     public boolean isSuccessful() { return !timedOut && exitCode == 0 && found > 0 && failed == 0; }
+
+    /** Raw process outcome stays intact; verification failures are a separate concern. */
+    public List<String> getEvidenceFailures() { return List.copyOf(evidenceFailures); }
+    public void rejectEvidence(String reason) {
+        if (reason != null && !reason.isBlank() && !evidenceFailures.contains(reason)) evidenceFailures.add(reason);
+    }
+    /** A complete run requires per-test records consistent with its aggregate counters. */
+    public boolean isFullySuccessful() {
+        return isSuccessful() && succeeded == found && skipped == 0 && evidenceFailures.isEmpty()
+                && testCases.size() == found && testCases.stream().allMatch(t -> t != null
+                && t.isSuccessful() && !t.isSkipped() && !t.getTestId().isBlank());
+    }
 }

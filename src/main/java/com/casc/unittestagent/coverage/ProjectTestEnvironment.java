@@ -18,12 +18,22 @@ public class ProjectTestEnvironment {
     Module module;
     String javaExecutable = "";
     File workingDirectory;
+    TestRuntimeConfiguration runtimeConfiguration;
+    public TestRuntimeConfiguration getRuntimeConfiguration() {
+        return runtimeConfiguration == null ? TestRuntimeConfiguration.defaults(workingDirectory) : runtimeConfiguration;
+    }
     String sourceFileName = "";
     String sourceText = "";
     String sourcePackage = "";
     int languageFeature;
     boolean previewLanguage;
     boolean jpms;
+    boolean bundledJunit;
+    boolean bundledMockito;
+    boolean offlineTestLibrary;
+    File offlineMockitoAgent;
+    final List<File> bundledMockitoLibraries = new ArrayList<>();
+    String bundledMockitoVersion = "";
     final Set<File> platformClasspath = new LinkedHashSet<>();
     final Set<File> classpath = new LinkedHashSet<>();
     final Set<File> modulePath = new LinkedHashSet<>();
@@ -45,6 +55,16 @@ public class ProjectTestEnvironment {
     public int getLanguageFeature() { return languageFeature; }
     public boolean isPreviewLanguage() { return previewLanguage; }
     public boolean isJpms() { return jpms; }
+    public boolean isBundledJunit() { return bundledJunit; }
+    public boolean isBundledMockito() { return bundledMockito; }
+    public boolean hasOfflineTestLibrary() { return offlineTestLibrary; }
+    public String getTestEnvironmentNote() {
+        if (!bundledJunit && !bundledMockito && !offlineTestLibrary) return "";
+        return (bundledJunit ? "已补齐插件内置 JUnit 5。" : "")
+                + (bundledMockito ? "已补齐插件内置 " + bundledMockitoVersion + " 及配套依赖。" : "")
+                + (offlineTestLibrary ? "已配置 IDEA 离线测试库。" : "")
+                + "测试在沙箱中验证；纳入 Maven/Gradle 或 CI 前仍需配置项目测试依赖。";
+    }
     public Set<File> getPlatformClasspath() { return new LinkedHashSet<>(platformClasspath); }
     public Set<File> getClasspath() { return new LinkedHashSet<>(classpath); }
     public Set<File> getModulePath() { return new LinkedHashSet<>(modulePath); }

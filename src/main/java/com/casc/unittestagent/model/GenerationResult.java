@@ -37,12 +37,31 @@ public class GenerationResult {
     /** 当前候选测试代码的项目编译验证结果。 */
     private ValidationResult validationResult = ValidationResult.status(ValidationStatus.NOT_RUN);
     private CoverageReport coverageReport = CoverageReport.status(CoverageStatus.NOT_RUN);
+    private FinalTestFileReport finalTestFileReport = new FinalTestFileReport();
+    public FinalTestFileReport getFinalTestFileReport() { return finalTestFileReport; }
+    public void setFinalTestFileReport(FinalTestFileReport value) {
+        finalTestFileReport = value == null ? new FinalTestFileReport() : value;
+    }
+    private RunnableTestSelectionReport runnableTestSelectionReport = new RunnableTestSelectionReport();
+    public RunnableTestSelectionReport getRunnableTestSelectionReport() { return runnableTestSelectionReport; }
+    public void setRunnableTestSelectionReport(RunnableTestSelectionReport value) {
+        runnableTestSelectionReport = value == null ? new RunnableTestSelectionReport() : value;
+    }
     /**
      * 本结果上已使用的“补充证据续修”次数。
      * 放在 GenerationResult 而非 CoverageReport：覆盖率闭环每次运行都会替换 report，
      * 计数放 report 上将随每次续修清零、上限永远无法触发。
      */
     private int evidenceResumeCount;
+    /** 独立于覆盖率的完整 JUnit 执行与分类修复报告。 */
+    private ClassJUnitRepairReport runtimeValidationReport =
+            ClassJUnitRepairReport.status(ClassJUnitStatus.NOT_RUN);
+
+    public ClassJUnitRepairReport getRuntimeValidationReport() { return runtimeValidationReport; }
+    public void setRuntimeValidationReport(ClassJUnitRepairReport value) {
+        runtimeValidationReport = value == null
+                ? ClassJUnitRepairReport.status(ClassJUnitStatus.NOT_RUN) : value;
+    }
 
     public GenerationScope getGenerationScope() { return generationScope; }
     public void setGenerationScope(GenerationScope generationScope) {

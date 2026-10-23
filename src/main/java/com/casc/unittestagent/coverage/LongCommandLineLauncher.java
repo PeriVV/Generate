@@ -23,7 +23,7 @@ import java.util.zip.ZipOutputStream;
  * 覆盖率执行也会把项目运行时 classpath 整体传给 java -cp，大型项目极易超限。
  *
  * 超限时把命令改写为不受长度限制的形式再启动：
- * - javac：JDK 8 起即支持 @argfile，把除可执行文件外的全部参数写入参数文件；
+ * - javac：JDK 8 起即支持 @argfile，编译器参数写入 UTF-8 文件，-J 参数留在启动命令上；
  * - java：@argfile 需 JDK 9+，改用对版本无要求的 pathing jar——manifest 的
  *   Class-Path 引用原始 classpath 条目，命令行上只保留单个 jar 路径。
  *
@@ -45,7 +45,7 @@ public final class LongCommandLineLauncher {
     public static Process start(ProcessBuilder builder, Path auxiliaryDirectory) throws IOException {
         List<String> command = builder.command();
         if (isWindows() && exceedsWindowsLimit(command)) {
-            builder.command(adaptForWindows(command, auxiliaryDirectory));
+            builder.command(adapt(command, auxiliaryDirectory, builder.directory()));
         }
         return builder.start();
     }
@@ -54,36 +54,44 @@ public final class LongCommandLineLauncher {
     static boolean exceedsWindowsLimit(List<String> command) {
         int length = 1;
         for (String argument : command) {
-            // 分隔符 + 可能的引号对，宁多勿少，仅用作门槛判断。
-            length += argument.length() + 3;
+            // 留出 Windows 引号及尾部反斜杠转义膨胀的余量。
+            length += argument.length() * 2 + 3;
         }
         return length > SAFE_COMMAND_LENGTH;
     }
 
     static List<String> adaptForWindows(List<String> command, Path auxiliaryDirectory) throws IOException {
+        return adapt(command, auxiliaryDirectory, null);
+    }
+
+    static List<String> adapt(List<String> command, Path auxiliaryDirectory, File workingDirectory) throws IOException {
         String rawExecutable = command.get(0);
         int lastSeparator = Math.max(rawExecutable.lastIndexOf('/'), rawExecutable.lastIndexOf('\\'));
         String executable = (lastSeparator >= 0 ? rawExecutable.substring(lastSeparator + 1) : rawExecutable)
                 .toLowerCase(Locale.ROOT);
         if (executable.startsWith("javac")) {
-            return List.of(command.get(0), "@" + writeJavacArgumentFile(command, auxiliaryDirectory));
+            List<String> adapted = new ArrayList<>();
+            adapted.add(command.get(0));
+            // -J options are consumed by the launcher, never by javac's @file parser.
+            command.stream().skip(1).filter(arg -> arg.startsWith("-J")).forEach(adapted::add);
+            adapted.add("-J-Dfile.encoding=UTF-8");
+            adapted.add("@" + writeJavacArgumentFile(command, auxiliaryDirectory));
+            return adapted;
         }
-        return rewriteJavaClasspathWithPathingJar(command, auxiliaryDirectory);
+        return rewriteJavaClasspathWithPathingJar(command, auxiliaryDirectory, workingDirectory);
     }
 
     private static Path writeJavacArgumentFile(List<String> command, Path directory) throws IOException {
         Path argumentFile = Files.createTempFile(directory, "javac-args-", ".txt");
         StringBuilder content = new StringBuilder();
         for (int index = 1; index < command.size(); index++) {
-            // 参数文件里反斜杠的转义规则在不同 JDK、是否处于引号内并不一致；而 javac 的
-            // 参数全部是路径/标志/类名，统一换成 Windows 同样接受的正斜杠最稳妥。
-            String token = command.get(index).replace('\\', '/');
-            if (token.isBlank() || token.chars().anyMatch(Character::isWhitespace)) {
-                content.append('"').append(token).append('"');
-            } else {
-                content.append(token);
-            }
-            content.append(System.lineSeparator());
+            String token = command.get(index);
+            if (token.startsWith("-J")) continue;
+            // Both JDK 8's StreamTokenizer and later javac parsers accept these quoted escapes.
+            // Backslashes may be annotation processor values, rather than path separators.
+            content.append('"').append(token.replace("\\", "\\\\").replace("\"", "\\\"")
+                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t").replace("\f", "\\f"))
+                    .append('"').append('\n');
         }
         Files.writeString(argumentFile, content.toString(), StandardCharsets.UTF_8);
         return argumentFile;
@@ -101,17 +109,25 @@ public final class LongCommandLineLauncher {
     }
 
     private static List<String> rewriteJavaClasspathWithPathingJar(List<String> command,
-                                                                   Path directory) throws IOException {
+                                                                   Path directory, File workingDirectory) throws IOException {
         int classpathValueIndex = classpathValueIndex(command);
         if (classpathValueIndex < 0) {
             throw new IOException("java 命令中未找到可改写的 -classpath 参数，无法规避 Windows 命令行长度限制。");
         }
         StringBuilder manifestClassPath = new StringBuilder();
-        for (String entry : command.get(classpathValueIndex).split(Pattern.quote(File.pathSeparator))) {
-            if (entry.isBlank()) continue;
-            if (manifestClassPath.length() > 0) manifestClassPath.append(' ');
-            // manifest Class-Path 只接受 URL；绝对 file: URL 不做相对解析，toURI 顺带完成编码。
-            manifestClassPath.append(new File(entry).toURI());
+        File base = workingDirectory == null ? new File("").getAbsoluteFile() : workingDirectory.getAbsoluteFile();
+        for (String entry : command.get(classpathValueIndex).split(Pattern.quote(File.pathSeparator), -1)) {
+            File path = entry.isEmpty() ? base : new File(entry);
+            if (!path.isAbsolute()) path = new File(base, entry);
+            if (path.getName().equals("*")) {
+                File[] jars = path.getParentFile().listFiles(file -> file.isFile()
+                        && file.getName().toLowerCase(Locale.ROOT).endsWith(".jar"));
+                if (jars != null) for (File jar : java.util.Arrays.stream(jars).sorted().toList()) {
+                    appendClasspath(manifestClassPath, jar);
+                }
+            } else {
+                appendClasspath(manifestClassPath, path);
+            }
         }
         Manifest manifest = new Manifest();
         manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
@@ -125,6 +141,11 @@ public final class LongCommandLineLauncher {
         List<String> adapted = new ArrayList<>(command);
         adapted.set(classpathValueIndex, pathingJar.toAbsolutePath().toString());
         return adapted;
+    }
+
+    private static void appendClasspath(StringBuilder value, File entry) {
+        if (value.length() > 0) value.append(' ');
+        value.append(entry.toURI().toASCIIString());
     }
 
     private static boolean isWindows() {

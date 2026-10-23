@@ -8,6 +8,18 @@ import java.util.Set;
 public class ClassRuntimeRepairStabilizerTest extends TestCase {
     private final ClassRuntimeRepairStabilizer stabilizer = new ClassRuntimeRepairStabilizer();
 
+    public void testInitializationRepairSharesNormalizationButCannotChangeTestArrange() {
+        String source = "import static org.mockito.Mockito.*; class T { int field=1; @Test void value(){verify(client).send(anyString(), true);} }";
+        String fixed = source.replace("field=1", "field=2").replace("anyString(), true", "anyString(), eq(true)");
+        stabilizer.validateInitializationRepair(source, fixed);
+        try {
+            stabilizer.validateInitializationRepair(source, fixed.replace("void value(){", "void value(){int input=0;"));
+            fail("initialization repair must not change test body Arrange");
+        } catch (RepairCandidateRejectedException expected) {
+            assertEquals(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, expected.getStage());
+        }
+    }
+
     public void testMethodOnlyChangesOnlyFailingTestAndProtectsFixture() {
         String proposed = current()
                 .replace("int shared = 1;", "int shared = 9;")

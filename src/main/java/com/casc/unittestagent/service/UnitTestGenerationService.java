@@ -18,12 +18,21 @@ import com.casc.unittestagent.coverage.ReflectiveAssertionNormalizer;
 import com.casc.unittestagent.coverage.TestSandboxCompiler;
 import com.casc.unittestagent.coverage.Slf4jMockVerificationGuard;
 import com.casc.unittestagent.coverage.MissingFixtureDependencyDetector;
+import com.casc.unittestagent.coverage.FixtureLifecycleAnalyzer;
+import com.casc.unittestagent.coverage.MockWiringAnalyzer;
+import com.casc.unittestagent.coverage.SpringFixtureAnalyzer;
+import com.casc.unittestagent.coverage.SpringRuntimeFailureAnalyzer;
+import com.casc.unittestagent.coverage.RunnableTestSelector;
+import com.casc.unittestagent.model.RunnableTestSelectionReport;
 import com.casc.unittestagent.generator.GeneratedTestCodePostProcessor;
+import com.casc.unittestagent.generator.ConstructorFixturePreflight;
+import com.casc.unittestagent.generator.SourceImportPreflight;
 import com.casc.unittestagent.generator.CoverageTestClassStabilizer;
 import com.casc.unittestagent.generator.ClassRuntimeRepairStabilizer;
 import com.casc.unittestagent.generator.JUnitMockitoTestGenerator;
 import com.casc.unittestagent.generator.MockStrategyPlanner;
 import com.casc.unittestagent.generator.RuntimeOracleGate;
+import com.casc.unittestagent.generator.RepairCandidateRejectedException;
 import com.casc.unittestagent.generator.TestDataGenerator;
 import com.casc.unittestagent.generator.TestScenarioPlanner;
 import com.casc.unittestagent.llm.DefaultLlmClientFactory;
@@ -67,11 +76,13 @@ import com.casc.unittestagent.model.SourceBugAnalysis;
 import com.casc.unittestagent.model.ParameterModel;
 import com.casc.unittestagent.model.ProjectSymbolSnapshot;
 import com.casc.unittestagent.model.RuntimeDiagnostic;
+import com.casc.unittestagent.model.RepairCandidateRejection;
 import com.casc.unittestagent.model.TestScenario;
 import com.casc.unittestagent.model.TestCaseExecution;
 import com.casc.unittestagent.model.TestExecutionSummary;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
+import com.casc.unittestagent.model.ValidationStage;
 import com.casc.unittestagent.parser.JavaSourceAnalyzer;
 import com.casc.unittestagent.parser.ProjectSymbolSnapshotBuilder;
 import com.casc.unittestagent.util.CodeFingerprint;
@@ -124,7 +135,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import com.intellij.openapi.application.PathManager;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 
 /**
  * 编排一次单元测试生成流程。
@@ -142,7 +158,7 @@ public class UnitTestGenerationService {
     private static final int MAX_COVERAGE_FORMAT_RETRIES = 1;
     /** 后处理后代码未变时使用独立强化重试，不消耗语义修复预算。 */
     private static final int MAX_COVERAGE_UNCHANGED_RETRIES = 2;
-    private static final String COVERAGE_ENGINE_REVISION = "state-v5.3-nested-owner-resolution";
+    private static final String COVERAGE_ENGINE_REVISION = "state-v5.14-spring-lifecycle-evidence";
     /** 历史候选回退先向模型反馈循环证据，只在同一转换重复时停止。 */
     private static final int MAX_HISTORICAL_REPAIR_RETRIES = 2;
     private static final Pattern MOCKITO_USAGE = Pattern.compile(
@@ -172,6 +188,8 @@ public class UnitTestGenerationService {
     /** 大模型客户端工厂。 */
     private final LlmClientFactory llmClientFactory;
     private final ProjectTestEnvironmentResolver coverageEnvironmentResolver = new ProjectTestEnvironmentResolver();
+    /** 最近一次规则生成接线的 Mockito 可用性；null=未知（按可用处理，兼容旧流程）。 */
+    private Boolean mockitoAvailabilityOverride;
     private final TestSandboxCompiler sandboxCompiler = new TestSandboxCompiler();
     private final JacocoCoverageExecutor coverageExecutor = new JacocoCoverageExecutor();
 
@@ -333,6 +351,33 @@ public class UnitTestGenerationService {
         return generateTestCodeInternal(project, psiFile, result, false);
     }
 
+    /**
+     * 规则生成器的真实环境接线：注入 classpath 可实例化探针与 Mockito 可用性。
+     * 解析失败时保持默认（可用+无探针），不阻塞生成——候选引用 org.mockito 而项目
+     * 缺 Mockito 的场景由 ProjectCompileVerifier 的 MOCKITO_UNAVAILABLE 可修复诊断兜底。
+     */
+    private boolean configureRuleGenerator(Project project, PsiFile psiFile) {
+        // 默认按可用处理（兼容无环境上下文的旧流程）；解析成功才覆写。
+        mockitoAvailabilityOverride = null;
+        if (project == null || psiFile == null) return true;
+        try {
+            ProjectTestEnvironment environment = coverageEnvironmentResolver.resolve(project, psiFile);
+            if (!environment.isUsable()) return true;
+            List<java.io.File> probeClasspath = new ArrayList<>(environment.getRuntimeClasspath());
+            testGenerator.setTypeInstantiabilityProbe(
+                    com.casc.unittestagent.generator.ClasspathTypeProbe.from(probeClasspath));
+            boolean available = probeClasspath.stream()
+                    .anyMatch(file -> file != null && file.getName().startsWith("mockito-core"));
+            testGenerator.setMockitoAvailable(available);
+            mockitoAvailabilityOverride = available;
+            return available;
+        } catch (Exception | Error resolveFailure) {
+            LOG.warn("UnitMind: rule generator environment probe failed, keep defaults: "
+                    + resolveFailure.getClass().getSimpleName());
+            return true;
+        }
+    }
+
     private GenerationResult generateTestCodeInternal(Project project,
                                                         PsiFile psiFile,
                                                         GenerationResult result,
@@ -354,6 +399,7 @@ public class UnitTestGenerationService {
             }
             List<TestScenario> scenarios = executableScenarios(result.getScenarios());
             MockStrategy selectedMockStrategy = selectedMockStrategy(result);
+            configureRuleGenerator(project, psiFile);
             GeneratedTestFile ruleGeneratedTestFile = ensureGeneratedFile(methodModel,
                     testGenerator.generate(methodModel, scenarios, selectedMockStrategy));
 
@@ -409,9 +455,12 @@ public class UnitTestGenerationService {
             generatedTestFile = copyWithContent(generatedTestFile, processedCode.getCode());
             addWarnings(result, processedCode.getWarnings());
             if (validateCandidate) {
-                generatedTestFile = validateAndRepair(project, psiFile, result, generatedTestFile, llmConfig);
+                generatedTestFile = validateAndRepair(project, psiFile, result, generatedTestFile, llmConfig, true);
             } else {
-                result.setValidationResult(ValidationResult.status(ValidationStatus.NOT_RUN));
+                var fixture = prepareGenerationFixtures(project, psiFile, result, generatedTestFile.getContent());
+                generatedTestFile = copyWithContent(generatedTestFile, fixture.code());
+                result.setValidationResult(fixture.diagnostics().isEmpty()
+                        ? ValidationResult.status(ValidationStatus.NOT_RUN) : fixtureValidation(fixture));
             }
             result.setMethodModel(methodModel);
             result.setGeneratedTestFile(generatedTestFile);
@@ -487,6 +536,58 @@ public class UnitTestGenerationService {
                                         GenerationResult result,
                                         GeneratedTestFile initialFile,
                                         LlmConfig llmConfig) {
+        // Class assembly probes have no method model. Runtime repair candidates retain their own scope gates.
+        return validateAndRepair(project, psiFile, result, initialFile, llmConfig,
+                result != null && result.getMethodModel() == null);
+    }
+
+    private ConstructorFixturePreflight.Result prepareGenerationFixtures(Project project, PsiFile psiFile,
+                                                                          GenerationResult result, String code) {
+        var imported = SourceImportPreflight.prepare(project, psiFile, code);
+        code = imported.code();
+        var policy = new LlmGenerationRequest();
+        MockStrategy strategy = selectedMockStrategy(result);
+        applySelectedMockPolicy(policy, strategy);
+        boolean allowMocks = "SELECTED_ONLY".equals(policy.getMockUsagePolicy())
+                || strategy == null && MOCKITO_USAGE.matcher(code).find()
+                && !(mockitoAvailabilityOverride != null && !mockitoAvailabilityOverride);
+        var fixture = ConstructorFixturePreflight.prepare(project, psiFile, code, allowMocks);
+        if (imported.changed()) {
+            var warnings = new ArrayList<>(fixture.warnings());
+            warnings.add("已依据当前模块生产源码的真实类型绑定补齐导入：" + String.join(", ", imported.imports()));
+            fixture = new ConstructorFixturePreflight.Result(fixture.code(), fixture.changes() + imported.imports().size(), warnings, fixture.diagnostics());
+        }
+        if (psiFile != null) {
+            var lifecycleDiagnostics = new ArrayList<>(FixtureLifecycleAnalyzer.preflight(ReadAction.compute(psiFile::getText), fixture.code()));
+            lifecycleDiagnostics.addAll(MockWiringAnalyzer.preflight(MockWiringAnalyzer.sources(psiFile), fixture.code()));
+            lifecycleDiagnostics.addAll(SpringFixtureAnalyzer.preflight(MockWiringAnalyzer.sources(psiFile), fixture.code()));
+            if (!lifecycleDiagnostics.isEmpty()) {
+                var allDiagnostics = new ArrayList<>(fixture.diagnostics()); allDiagnostics.addAll(lifecycleDiagnostics);
+                fixture = new ConstructorFixturePreflight.Result(fixture.code(), fixture.changes(), fixture.warnings(), allDiagnostics);
+            }
+        }
+        addWarnings(result, fixture.warnings());
+        if (fixture.changes() > 0 || !fixture.diagnostics().isEmpty()) LOG.info(
+                "UnitMind generation preflight: imports=" + imported.imports().size()
+                        + ", constructorFills=" + (fixture.changes() - imported.imports().size())
+                        + ", unresolved=" + fixture.diagnostics().size());
+        return fixture;
+    }
+
+    private static ValidationResult fixtureValidation(ConstructorFixturePreflight.Result fixture) {
+        var validation = ValidationResult.status(ValidationStatus.FAILED);
+        validation.setCodeHash(CodeFingerprint.sha256(fixture.code()));
+        fixture.diagnostics().forEach(d -> d.setValidationStage(ValidationStage.SOURCE_PREFLIGHT));
+        validation.setDiagnostics(fixture.diagnostics());
+        return validation;
+    }
+
+    private GeneratedTestFile validateAndRepair(Project project,
+                                        PsiFile psiFile,
+                                        GenerationResult result,
+                                        GeneratedTestFile initialFile,
+                                        LlmConfig llmConfig,
+                                        boolean prepareFixtures) {
         GeneratedTestFile candidate = initialFile;
         int repairAttempts = 0;
         Set<String> seenFailures = new HashSet<>();
@@ -497,7 +598,17 @@ public class UnitTestGenerationService {
         LlmClient repairClient = allowRepair ? llmClientFactory.create(llmConfig) : null;
 
         while (true) {
-            ValidationResult validation = validateCode(project, psiFile, candidate, candidate.getContent());
+            if (!prepareFixtures) {
+                var imported = SourceImportPreflight.prepare(project, psiFile, candidate.getContent());
+                if (imported.changed()) {
+                    candidate = copyWithContent(candidate, imported.code());
+                    addWarnings(result, List.of("已依据生产源码类型绑定补齐导入：" + String.join(", ", imported.imports())));
+                }
+            }
+            var fixture = prepareFixtures ? prepareGenerationFixtures(project, psiFile, result, candidate.getContent()) : null;
+            if (fixture != null && fixture.changes() > 0) candidate = copyWithContent(candidate, fixture.code());
+            ValidationResult validation = fixture != null && !fixture.diagnostics().isEmpty()
+                    ? fixtureValidation(fixture) : validateCode(project, psiFile, candidate, candidate.getContent());
             validation.setRepairAttempts(repairAttempts);
             result.setValidationResult(validation);
             if (repairParent != null && repairParentValidation != null) {
@@ -561,7 +672,7 @@ public class UnitTestGenerationService {
                         + ", diagnosticCount=" + validation.getDiagnostics().size());
                 LlmGenerationResponse repaired = repairClient.repairUnitTest(repairRequest);
                 GeneratedTestCodePostProcessor.ProcessedCode processed =
-                        generatedCodePostProcessor.process(repaired.getTestCode(), methodModel);
+                        generatedCodePostProcessor.processRepair(repaired.getTestCode(), methodModel, candidate.getContent());
                 String repairedCode = processed.getCode();
                 if (result instanceof ClassGenerationResult) {
                     repairedCode = coverageTestClassStabilizer.preserveTestsDuringRepair(
@@ -599,10 +710,23 @@ public class UnitTestGenerationService {
                                                  List<CompileDiagnostic> candidate) {
         List<CompileDiagnostic> before = parent == null ? List.of() : parent;
         List<CompileDiagnostic> after = candidate == null ? List.of() : candidate;
-        if (after.size() > before.size()) return true;
         long beforeNonRepairable = before.stream().filter(item -> !item.isRepairable()).count();
         long afterNonRepairable = after.stream().filter(item -> !item.isRepairable()).count();
-        return afterNonRepairable > beforeNonRepairable;
+        if (afterNonRepairable > beforeNonRepairable) return true;
+        if (!before.isEmpty() && !after.isEmpty()
+                && before.stream().allMatch(d -> d.getValidationStage() == ValidationStage.SOURCE_PREFLIGHT)
+                && after.stream().allMatch(d -> d.getValidationStage() == ValidationStage.JAVA_COMPILATION
+                && d.isRepairable() && "TEST_SOURCE".equals(d.getSourceOrigin()))) return false;
+        // javac stops before flow analysis when symbol attribution fails. Fixing an import can
+        // therefore expose MORE checked-exception errors without introducing a regression.
+        // Only accept this known phase transition; unrelated/new resolution errors still use
+        // the normal regression gate, and target-source/environment errors never qualify.
+        if (!before.isEmpty() && !after.isEmpty()
+                && before.stream().allMatch(item -> item.isRepairable() && "TEST_SOURCE".equals(item.getSourceOrigin())
+                && Set.of("CANNOT_FIND_SYMBOL", "PACKAGE_NOT_FOUND").contains(item.getCode()))
+                && after.stream().allMatch(item -> item.isRepairable() && "TEST_SOURCE".equals(item.getSourceOrigin())
+                && "UNREPORTED_EXCEPTION".equals(item.getCode()))) return false;
+        return after.size() > before.size();
     }
 
     private static String compileRegressionSummary(ValidationResult parent, ValidationResult candidate) {
@@ -783,7 +907,9 @@ public class UnitTestGenerationService {
                 }
             }
         }
-        request.setMockUsagePolicy(enabledMockito ? "SELECTED_ONLY" : "FORBIDDEN");
+        request.setMockUsagePolicy(enabledMockito
+                && !(mockitoAvailabilityOverride != null && !mockitoAvailabilityOverride)
+                ? "SELECTED_ONLY" : "FORBIDDEN");
     }
 
     private String mockPolicyForExistingCode(String code) {
@@ -869,14 +995,14 @@ public class UnitTestGenerationService {
                 result.setMockStrategy(llmResponse.getMockStrategy());
             }
             GeneratedTestCodePostProcessor.ProcessedCode processedCode =
-                    generatedCodePostProcessor.process(llmResponse.getTestCode(), methodModel);
+                    generatedCodePostProcessor.processRepair(llmResponse.getTestCode(), methodModel, currentCode);
             GeneratedTestFile regenerated = copyWithContent(result.getGeneratedTestFile(), processedCode.getCode());
             result.setGeneratedByLlm(true);
             result.setRuleBasedFallback(false);
             result.setLlmMessage("大模型重新生成完成。");
             addWarnings(result, llmResponse.getWarnings());
             addWarnings(result, processedCode.getWarnings());
-            result.setGeneratedTestFile(validateAndRepair(project, psiFile, result, regenerated, llmConfig));
+            result.setGeneratedTestFile(validateAndRepair(project, psiFile, result, regenerated, llmConfig, true));
             return result;
         } catch (Exception ex) {
             LOG.warn("UnitMind LLM: regenerate failed, errorType=" + ex.getClass().getSimpleName());
@@ -903,19 +1029,340 @@ public class UnitTestGenerationService {
                                                           String currentCode,
                                                           BooleanSupplier cancelled,
                                                           CoverageProgressListener progress) {
+        runJUnitValidation(project, psiFile, result, currentCode, cancelled, progress, true);
+        result.setClassJUnitRepairReport(result.getRuntimeValidationReport());
+        return result;
+    }
+
+    /** 只做编译、真实执行和分类修复，不启动覆盖率探索或检查覆盖率阈值。 */
+    public GenerationResult runRuntimeValidation(Project project, PsiFile psiFile,
+                                                 GenerationResult result, String code,
+                                                 BooleanSupplier cancelled,
+                                                 CoverageProgressListener progress) {
+        return runJUnitValidation(project, psiFile, result, code, cancelled, progress, true);
+    }
+
+    /** Explicitly retain passing test method groups; never invokes a model or weakens assertions. */
+    public GenerationResult retainRunnableTests(Project project, PsiFile psiFile, GenerationResult result,
+                                                String code, BooleanSupplier cancelled, CoverageProgressListener progress) {
+        long started = System.currentTimeMillis();
+        String original = code == null ? "" : code;
+        var priorExclusions = result.getRunnableTestSelectionReport().getActiveExclusionOrigins();
+        var selection = new RunnableTestSelectionReport(); selection.setOriginalCode(original);
+        selection.inheritExclusions(priorExclusions);
+        result.setFinalTestFileReport(new com.casc.unittestagent.model.FinalTestFileReport());
+        selection.setStatus(RunnableTestSelectionReport.Status.RUNNING);
+        result.setRunnableTestSelectionReport(selection);
+        result.setRuntimeValidationReport(ClassJUnitRepairReport.status(ClassJUnitStatus.NOT_RUN));
+        if (result instanceof ClassGenerationResult classResult) classResult.setClassJUnitRepairReport(result.getRuntimeValidationReport());
+        result.setValidationResult(ValidationResult.status(ValidationStatus.NOT_RUN));
+        CoverageReport coverage = CoverageReport.status(CoverageStatus.NOT_RUN);
+        result.setCoverageReport(coverage);
+        try {
+            if (psiFile == null || result.getMethodModel() == null || result.getGeneratedTestFile() == null
+                    || original.isBlank()) throw new IllegalArgumentException("缺少被测源码或待筛选的测试代码");
+            String source = ReadAction.compute(psiFile::getText);
+            String sourceHash = CodeFingerprint.sha256(source);
+            selection.setSourceHash(sourceHash); coverage.setSourceHash(sourceHash);
+            // Persist before the first execution; the .txt extension cannot enter Java compilation.
+            Path base = Path.of(PathManager.getSystemPath(),
+                    "unitmind", "test-selections");
+            Files.createDirectories(base);
+            Path archive = Files.createTempDirectory(base, "selection-");
+            Path originalPath = archive.resolve("OriginalTest.java.txt");
+            Files.writeString(originalPath, original, StandardCharsets.UTF_8);
+            selection.setArchivePath(originalPath.toString());
+            var environment = coverageEnvironmentResolver.resolveForExecution(project, psiFile, cancelled);
+            if (!environment.isUsable()) throw new IllegalStateException(environment.getDiagnostics().stream()
+                    .findFirst().map(com.casc.unittestagent.model.CompileDiagnostic::getMessage).orElse("无法复用项目执行环境"));
+            coverage.setRuntimeConfigurationOrigin(environment.getRuntimeConfiguration().getOrigin());
+            CoverageConfig config = CoverageConfigManager.load(); GeneratedTestFile template = result.getGeneratedTestFile();
+            var sourceImports = SourceImportPreflight.prepare(project, psiFile, original);
+            var selected = new RunnableTestSelector().select(sourceImports.code(), (candidate, measure) ->
+                    executeSelectionCandidate(environment, template, candidate, targetClassName(result),
+                            result.getMethodModel(), source, config, measure, cancelled), cancelled, progress);
+            var completed = selected.report(); completed.setOriginalCode(original);
+            completed.inheritExclusions(priorExclusions);
+            if (sourceImports.changed()) completed.setMessage(completed.getMessage() + " 已依据生产源码补齐类型导入："
+                    + String.join(", ", sourceImports.imports()));
+            completed.setSourceHash(sourceHash); completed.setArchivePath(originalPath.toString());
+            selection = completed; result.setRunnableTestSelectionReport(completed);
+            var details = new JSONObject().put("status", completed.getStatus().name())
+                    .put("runtimeConfigurationOrigin", environment.getRuntimeConfiguration().getOrigin())
+                    .put("sourceHash", sourceHash).put("originalCodeHash", CodeFingerprint.sha256(original))
+                    .put("selectedCodeHash", CodeFingerprint.sha256(completed.getSelectedCode()))
+                    .put("originalMethodGroups", completed.getOriginalMethods()).put("executions", completed.getExecutions())
+                    .put("runtimeEvidenceArchives", completed.getRuntimeEvidenceArchives())
+                    .put("retainedTests", completed.getRetainedTests()).put("removedHelpers", completed.getRemovedHelpers()).put("message", completed.getMessage());
+            if (selected.finalProbe() != null) {
+                var snapshot = selected.finalProbe().run().getSnapshot();
+                details.put("coverage", new JSONObject().put("available", snapshot.isAvailable())
+                        .put("scope", snapshot.getMeasurementScope()).put("measuredMethods", snapshot.getMeasuredMethods())
+                        .put("lineCovered", snapshot.getLine().getCovered()).put("lineMissed", snapshot.getLine().getMissed())
+                        .put("branchCovered", snapshot.getBranch().getCovered()).put("branchMissed", snapshot.getBranch().getMissed())
+                        .put("engineRevision", COVERAGE_ENGINE_REVISION).put("testsPassed", snapshot.getExecution().getSucceeded())
+                        .put("lineRate", snapshot.isAvailable() ? snapshot.getLine().getRate() : JSONObject.NULL)
+                        .put("branchRate", snapshot.isAvailable() && snapshot.getBranch().isApplicable()
+                                ? snapshot.getBranch().getRate() : JSONObject.NULL));
+            }
+            var exclusions = new JSONArray();
+            completed.getExcludedTests().forEach(item -> exclusions.put(new JSONObject()
+                    .put("testId", item.testId()).put("reason", item.reason())));
+            details.put("excludedTests", exclusions);
+            details.put("inheritedExcludedTests", priorExclusions.stream().flatMap(o -> o.tests().stream())
+                    .map(RunnableTestSelectionReport.ExcludedTest::testId).distinct().toList());
+            Files.writeString(archive.resolve("selection-summary.json"), details.toString(2));
+            if (completed.getStatus() == RunnableTestSelectionReport.Status.PASSED) {
+                String retained = completed.getSelectedCode();
+                Files.writeString(archive.resolve("RetainedTest.java.txt"), retained);
+                result.setGeneratedTestFile(copyWithContent(template, retained));
+                result.setValidationResult(selected.finalProbe().validation());
+                var execution = selected.finalProbe().run().getSnapshot().getExecution();
+                var runtime = ClassJUnitRepairReport.status(ClassJUnitStatus.PASSED);
+                runtime.setCodeHash(CodeFingerprint.sha256(retained)); runtime.setSourceHash(sourceHash);
+                runtime.setRuntimeConfigurationOrigin(environment.getRuntimeConfiguration().getOrigin());
+                runtime.setInitialExecution(execution); runtime.setFinalExecution(execution);
+                runtime.setDurationMillis(System.currentTimeMillis() - started);
+                runtime.setStopReason(ClassJUnitStopReason.INITIAL_PASS); runtime.setMessage(completed.getMessage());
+                result.setRuntimeValidationReport(runtime);
+                if (result instanceof ClassGenerationResult classResult) classResult.setClassJUnitRepairReport(runtime);
+                coverage.setCodeHash(CodeFingerprint.sha256(retained));
+                coverage.setGenerated(selected.finalProbe().run().getSnapshot());
+                coverage.setGaps(selected.finalProbe().run().getGaps());
+                coverage.setHistory(List.of(coverage.getGenerated()));
+                boolean available = coverage.getGenerated().isAvailable();
+                coverage.setVisitedPhases(available
+                        ? List.of(CoveragePhase.PREPARING, CoveragePhase.COMPILING, CoveragePhase.EXECUTING, CoveragePhase.ANALYZING)
+                        : List.of(CoveragePhase.PREPARING, CoveragePhase.COMPILING, CoveragePhase.EXECUTING));
+                coverage.setPhase(CoveragePhase.COMPLETED); coverage.setProgressFraction(1d);
+                coverage.setProgressMessage(available ? "保留集合完整回归通过，覆盖率采集完成。" : "保留集合回归通过；覆盖率不可用。");
+                coverage.setStatus(!available ? CoverageStatus.ENVIRONMENT_ERROR
+                        : CoverageLoopPolicy.reached(coverage.getGenerated(), config) ? CoverageStatus.PASSED : CoverageStatus.BELOW_THRESHOLD);
+                coverage.setStopReason(!available ? CoverageStopReason.ENVIRONMENT_ERROR
+                        : coverage.getStatus() == CoverageStatus.PASSED ? CoverageStopReason.TARGET_REACHED : CoverageStopReason.NONE);
+                coverage.setMessage(completed.getMessage() + " 当前报告为筛选后集合对所选被测方法的覆盖率，未执行自动补测。"
+                        + "未通过用例的业务预期仍需人工检查，排除不代表这些预期无效。");
+            } else {
+                coverage.setStatus(completed.getStatus() == RunnableTestSelectionReport.Status.CANCELLED
+                        ? CoverageStatus.CANCELLED : CoverageStatus.NOT_RUN);
+                coverage.setMessage(completed.getMessage());
+            }
+        } catch (com.intellij.openapi.progress.ProcessCanceledException ex) {
+            selection.setStatus(RunnableTestSelectionReport.Status.CANCELLED);
+            selection.setMessage("筛选已取消，原代码保留。"); coverage.setStatus(CoverageStatus.CANCELLED);
+            coverage.setMessage(selection.getMessage());
+        } catch (Exception ex) {
+            selection.setStatus(RunnableTestSelectionReport.Status.BLOCKED);
+            selection.setMessage("筛选未完成，原代码保留：" + safeMessage(ex));
+            coverage.setStatus(CoverageStatus.NOT_RUN); coverage.setMessage(selection.getMessage());
+        } finally { coverage.setDurationMillis(System.currentTimeMillis() - started); }
+        return result;
+    }
+
+    private RunnableTestSelector.Probe executeSelectionCandidate(ProjectTestEnvironment environment,
+            GeneratedTestFile template, String code, String targetClassName, MethodModel method, String source,
+            CoverageConfig config, boolean measure, BooleanSupplier cancelled) {
+        long started = System.currentTimeMillis();
+        if (!CodeFingerprint.sha256(environment.getSourceText()).equals(CodeFingerprint.sha256(source))) {
+            throw new IllegalStateException("编译环境与验证请求的源码快照不一致，请重新验证。");
+        }
+        try (var artifact = sandboxCompiler.compile(environment, copyWithContent(template, code), code, targetClassName)) {
+            var validation = ValidationResult.status(artifact.isSuccessful() ? ValidationStatus.PASSED
+                    : artifact.getDiagnostics().stream().anyMatch(d -> !d.isRepairable())
+                    ? ValidationStatus.ENVIRONMENT_ERROR : ValidationStatus.FAILED);
+            validation.setCodeHash(CodeFingerprint.sha256(code)); validation.setDiagnostics(new ArrayList<>(artifact.getDiagnostics()));
+            validation.setDurationMillis(System.currentTimeMillis() - started);
+            validation.setTestEnvironmentNote(environment.getTestEnvironmentNote());
+            CoverageRunResult run = !artifact.isSuccessful() ? new CoverageRunResult()
+                    : measure ? coverageExecutor.execute(artifact, method, source, config, cancelled)
+                    : coverageExecutor.executeTestsOnly(artifact, config, cancelled);
+            return new RunnableTestSelector.Probe(validation, run);
+        }
+    }
+
+    /** 合并后执行完整测试类；不自动修改最终文本或已有测试。 */
+    public GenerationResult runFinalTestRegression(Project project, PsiFile psiFile,
+                                                  GenerationResult result, String code,
+                                                  BooleanSupplier cancelled,
+                                                  CoverageProgressListener progress) {
+        return runJUnitValidation(project, psiFile, result, code, cancelled, progress, false);
+    }
+
+    /** Executes and measures the exact final file, without repairs, selection or coverage exploration. */
+    public GenerationResult runFinalTestRegressionWithCoverage(Project project, PsiFile psiFile,
+            GenerationResult result, String code, String targetPath, BooleanSupplier cancelled,
+            CoverageProgressListener progress) {
+        long started = System.currentTimeMillis();
+        var finalFile = new com.casc.unittestagent.model.FinalTestFileReport();
+        finalFile.setTargetPath(targetPath); result.setFinalTestFileReport(finalFile);
+        var coverage = finalFile.getMethodCoverage();
+        coverage.setCodeHash(CodeFingerprint.sha256(code));
+        coverage.setStatus(CoverageStatus.RUNNING);
+        var runtime = ClassJUnitRepairReport.status(ClassJUnitStatus.RUNNING);
+        result.setRuntimeValidationReport(runtime);
+        if (result instanceof ClassGenerationResult classResult) classResult.setClassJUnitRepairReport(runtime);
+        var listener = progress == null ? CoverageProgressListener.NONE : progress;
+        try {
+            if (code == null || code.isBlank() || result.getMethodModel() == null || result.getGeneratedTestFile() == null) {
+                throw new IllegalArgumentException("缺少最终完整测试代码或被测方法。");
+            }
+            result.setGeneratedTestFile(copyWithContent(result.getGeneratedTestFile(), code));
+            String source = ReadAction.compute(psiFile::getText);
+            runtime.setSourceHash(CodeFingerprint.sha256(source)); runtime.setCodeHash(CodeFingerprint.sha256(code));
+            coverage.setSourceHash(runtime.getSourceHash());
+            var environment = coverageEnvironmentResolver.resolveForExecution(project, psiFile, cancelled);
+            runtime.setRuntimeConfigurationOrigin(environment.getRuntimeConfiguration().getOrigin());
+            coverage.setRuntimeConfigurationOrigin(runtime.getRuntimeConfigurationOrigin());
+            if (!environment.isUsable()) {
+                result.setValidationResult(ValidationResult.status(ValidationStatus.ENVIRONMENT_ERROR));
+                runtime.setStatus(ClassJUnitStatus.ENVIRONMENT_ERROR);
+                throw new IllegalStateException("最终文件测试执行环境不可用。");
+            }
+            var config = CoverageConfigManager.load();
+            listener.update("正在执行最终完整文件的独立 JUnit 回归...", 0.1);
+            var baseline = executeSelectionCandidate(environment, result.getGeneratedTestFile(), code,
+                    targetClassName(result), result.getMethodModel(), source, config, false, cancelled);
+            result.setValidationResult(baseline.validation());
+            var initial = baseline.run().getSnapshot().getExecution();
+            requireDeclaredTestEvidence(code, initial);
+            runtime.setInitialExecution(initial); runtime.setFinalExecution(initial);
+            if (baseline.run().isCancelled() || isCancelled(cancelled)) throw new com.intellij.openapi.progress.ProcessCanceledException();
+            if (baseline.validation().getStatus() != ValidationStatus.PASSED || !runtimeExecutionPassed(initial)) {
+                MockitoRuntimeDiagnosticEnricher.enrich(initial.getDiagnostics(), code);
+                MockWiringAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), code, initial.getDiagnostics());
+                SpringFixtureAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), initial.getDiagnostics());
+                com.casc.unittestagent.coverage.RuntimeEvidenceArchive.preserveSourceAnalysis(initial);
+                MissingFixtureDependencyDetector.inspect(project, source, code, initial.getDiagnostics());
+                runtime.setStatus(baseline.run().isEnvironmentError()
+                        || baseline.validation().getStatus() == ValidationStatus.ENVIRONMENT_ERROR
+                        ? ClassJUnitStatus.ENVIRONMENT_ERROR : ClassJUnitStatus.TEST_FAILED);
+                runtime.setStopReason(ClassJUnitStopReason.TEST_DESIGN_ERROR);
+                runtime.setMessage("最终合并文件未通过完整回归，已阻止写入：" + baseline.run().getSnapshot().getMessage()
+                        + finalFileFailureEvidence(baseline.validation(), initial));
+                coverage.setStatus(CoverageStatus.TEST_FAILED); coverage.setMessage(runtime.getMessage());
+                return result;
+            }
+            runtime.setStatus(ClassJUnitStatus.PASSED); runtime.setStopReason(ClassJUnitStopReason.INITIAL_PASS);
+            runtime.setMessage("最终完整文件独立 JUnit 回归通过。");
+            listener.update("正在对最终完整文件采集覆盖率...", 0.55);
+            if (isCancelled(cancelled)) throw new com.intellij.openapi.progress.ProcessCanceledException();
+            var probe = executeSelectionCandidate(environment, result.getGeneratedTestFile(), code,
+                    targetClassName(result), result.getMethodModel(), source, config, true, cancelled);
+            if (probe.run().isCancelled() || isCancelled(cancelled)) throw new com.intellij.openapi.progress.ProcessCanceledException();
+            result.setValidationResult(probe.validation());
+            var run = probe.run(); var execution = run.getSnapshot().getExecution();
+            requireDeclaredTestEvidence(code, execution);
+            com.casc.unittestagent.validation.JUnitExecutionEvidence.requireSameInventory(initial, execution);
+            if (probe.validation().getStatus() != ValidationStatus.PASSED
+                    || execution.getFound() > 0 && !runtimeExecutionPassed(execution)
+                    || !run.isEnvironmentError() && !runtimeExecutionPassed(execution)) {
+                runtime.setStatus(ClassJUnitStatus.TEST_FAILED);
+                runtime.setFinalExecution(execution);
+                runtime.setStopReason(ClassJUnitStopReason.TEST_DESIGN_ERROR);
+                runtime.setMessage("最终文件在覆盖率运行中未通过，已阻止写入：" + run.getSnapshot().getMessage()
+                        + finalFileFailureEvidence(probe.validation(), execution));
+                coverage.setStatus(CoverageStatus.TEST_FAILED); coverage.setMessage(runtime.getMessage());
+                return result;
+            }
+            if (!run.getSnapshot().isAvailable()) throw new IllegalStateException(run.getSnapshot().getMessage());
+            if (!coverage.getSourceHash().equals(ReadAction.compute(() -> CodeFingerprint.sha256(psiFile.getText())))) {
+                runtime.setStatus(ClassJUnitStatus.STALE);
+                coverage.setStatus(CoverageStatus.STALE);
+                coverage.setMessage("最终覆盖率运行期间源码已变更，请重新验证。");
+                return result;
+            }
+            runtime.setFinalExecution(execution);
+            coverage.setGenerated(run.getSnapshot()); coverage.setGaps(run.getGaps());
+            coverage.setHistory(List.of(run.getSnapshot())); finalFile.setClassCoverage(run.getClassSnapshot());
+            coverage.setStatus(CoverageLoopPolicy.reached(run.getSnapshot(), config)
+                    ? CoverageStatus.PASSED : CoverageStatus.BELOW_THRESHOLD);
+            coverage.setMessage("实际执行最终完整测试文件（包含已有测试与保留用例）获得的覆盖率；"
+                    + "所选方法与所选业务类分别统计，不代表整个项目覆盖率。");
+            listener.update("最终文件完整回归及覆盖率采集完成。", 1d);
+        } catch (com.intellij.openapi.progress.ProcessCanceledException ex) {
+            runtime.setStatus(ClassJUnitStatus.CANCELLED); runtime.setStopReason(ClassJUnitStopReason.CANCELLED);
+            runtime.setMessage("最终验证已取消，未写入。");
+            coverage.setStatus(CoverageStatus.CANCELLED); coverage.setMessage("最终验证已取消，未写入。");
+        } catch (Exception ex) {
+            // A missing agent/report never turns into 0%; independent JUnit proof is retained.
+            coverage.setStatus(CoverageStatus.ENVIRONMENT_ERROR);
+            coverage.setMessage("最终文件覆盖率不可用：" + safeMessage(ex));
+            if (runtime.getStatus() == ClassJUnitStatus.RUNNING) {
+                runtime.setStatus(ClassJUnitStatus.ENVIRONMENT_ERROR);
+                runtime.setMessage(coverage.getMessage());
+            }
+        } finally {
+            runtime.setDurationMillis(System.currentTimeMillis() - started);
+            coverage.setDurationMillis(System.currentTimeMillis() - started);
+            coverage.setPhase(CoveragePhase.COMPLETED); coverage.setProgressFraction(1d);
+            var measured = coverage.getGenerated(); var type = finalFile.getClassCoverage();
+            LOG.info("UnitMind final file verification: engineRevision=" + COVERAGE_ENGINE_REVISION
+                    + ", codeHash=" + coverage.getCodeHash() + ", sourceHash=" + coverage.getSourceHash()
+                    + ", runtime=" + runtime.getStatus() + ", coverage=" + coverage.getStatus()
+                    + ", tests=" + runtime.getFinalExecution().getSucceeded() + "/" + runtime.getFinalExecution().getFound()
+                    + ", scope=" + measured.getMeasurementScope() + ", methods=" + measured.getMeasuredMethods()
+                    + ", methodLines=" + measured.getLine().getCovered() + "/" + measured.getLine().getTotal()
+                    + ", methodBranches=" + measured.getBranch().getCovered() + "/" + measured.getBranch().getTotal()
+                    + ", classLines=" + type.getLine().getCovered() + "/" + type.getLine().getTotal()
+                    + ", classBranches=" + type.getBranch().getCovered() + "/" + type.getBranch().getTotal());
+        }
+        return result;
+    }
+
+    private static String finalFileFailureEvidence(ValidationResult validation, TestExecutionSummary execution) {
+        String runtime = execution.getDiagnostics().stream().limit(3)
+                .map(d -> d.getTestId() + ": " + d.getMessage()).collect(Collectors.joining("；"));
+        String compile = validation.getDiagnostics().stream().limit(3)
+                .map(d -> "L" + d.getLine() + ": " + d.getMessage()).collect(Collectors.joining("；"));
+        String evidence = runtime.isBlank() ? compile : runtime;
+        return evidence.isBlank() ? "" : "\n" + evidence.substring(0, Math.min(2000, evidence.length()));
+    }
+
+    /** Shared by normal validation, repaired candidates and final-file regression. */
+    private static void requireDeclaredTestEvidence(String code, TestExecutionSummary execution) {
+        com.casc.unittestagent.validation.JUnitExecutionEvidence.requireDeclaredTests(code, execution);
+    }
+
+    private static boolean runtimeExecutionPassed(TestExecutionSummary execution) {
+        return execution != null && execution.isFullySuccessful();
+    }
+
+    private GenerationResult runJUnitValidation(Project project, PsiFile psiFile,
+                                                GenerationResult result, String currentCode,
+                                                BooleanSupplier cancelled,
+                                                CoverageProgressListener progress,
+                                                boolean allowRepair) {
+        return runJUnitValidation(project, psiFile, result, currentCode, cancelled, progress, allowRepair, Integer.MAX_VALUE);
+    }
+
+    private GenerationResult runJUnitValidation(Project project, PsiFile psiFile,
+                                                GenerationResult result, String currentCode,
+                                                BooleanSupplier cancelled, CoverageProgressListener progress,
+                                                boolean allowRepair, int remainingRepairBudget) {
         long started = System.currentTimeMillis();
         CoverageProgressListener listener = progress == null ? CoverageProgressListener.NONE : progress;
         ClassJUnitRepairReport report = ClassJUnitRepairReport.status(ClassJUnitStatus.RUNNING);
-        result.setClassJUnitRepairReport(report);
+        result.setRuntimeValidationReport(report);
+        if (result instanceof ClassGenerationResult) {
+            ((ClassGenerationResult) result).setClassJUnitRepairReport(report);
+        }
         try {
-            if (result.getClassModel() == null || result.getMethodModel() == null
+            if (isCancelled(cancelled)) {
+                return stopClassJUnit(result, report, ClassJUnitStatus.CANCELLED,
+                        ClassJUnitStopReason.CANCELLED, "JUnit 运行验证已取消。");
+            }
+            if (result.getMethodModel() == null
                     || result.getGeneratedTestFile() == null) {
                 return stopClassJUnit(result, report, ClassJUnitStatus.ENVIRONMENT_ERROR,
                         ClassJUnitStopReason.ENVIRONMENT_ERROR, "缺少整类生成结果或最终测试代码。");
             }
             String sourceText = ReadAction.compute(psiFile::getText);
             report.setSourceHash(CodeFingerprint.sha256(sourceText));
-            ProjectTestEnvironment environment = coverageEnvironmentResolver.resolve(project, psiFile);
+            ProjectTestEnvironment environment = coverageEnvironmentResolver.resolveForExecution(project, psiFile, cancelled);
+            if (!CodeFingerprint.sha256(sourceText).equals(CodeFingerprint.sha256(environment.getSourceText()))) {
+                throw new IllegalStateException("被测源码在环境解析期间已修改，请重新验证。");
+            }
+            report.setRuntimeConfigurationOrigin(environment.getRuntimeConfiguration().getOrigin());
             if (!environment.isUsable()) {
                 String message = environment.getDiagnostics().isEmpty() ? "无法解析测试执行环境。"
                         : environment.getDiagnostics().get(0).getMessage();
@@ -923,11 +1370,12 @@ public class UnitTestGenerationService {
                         ClassJUnitStopReason.ENVIRONMENT_ERROR, message);
             }
             CoverageConfig executionConfig = CoverageConfigManager.load();
-            int maxRuntimeRepairs = Math.max(0, executionConfig.getMaxRepairRounds());
+            int maxRuntimeRepairs = Math.max(0, Math.min(executionConfig.getMaxRepairRounds(), remainingRepairBudget));
             GeneratedTestFile template = result.getGeneratedTestFile();
             String acceptedCode = currentCode == null || currentCode.isBlank()
                     ? template.getContent() : currentCode;
-            boolean pluginOwnedCandidate = testCodeFingerprint(acceptedCode)
+            result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
+            boolean pluginOwnedCandidate = allowRepair && testCodeFingerprint(acceptedCode)
                     .equals(testCodeFingerprint(template.getContent()));
             Slf4jMockVerificationGuard.Result loggerPreflight =
                     Slf4jMockVerificationGuard.inspectAndRepair(
@@ -950,6 +1398,8 @@ public class UnitTestGenerationService {
             ClassRunCandidate initial = executeClassCandidate(environment, template, acceptedCode,
                     targetClassName, executionConfig, cancelled);
             result.setValidationResult(initial.validation);
+            report.setInitialExecution(initial.execution);
+            report.setFinalExecution(initial.execution);
             if (initial.cancelled || isCancelled(cancelled)) {
                 return stopClassJUnit(result, report, ClassJUnitStatus.CANCELLED,
                         ClassJUnitStopReason.CANCELLED, "整类 JUnit 执行已取消。");
@@ -966,22 +1416,32 @@ public class UnitTestGenerationService {
             ValidationResult acceptedValidation = initial.validation;
             MockitoRuntimeDiagnosticEnricher.enrich(
                     acceptedExecution.getDiagnostics(), acceptedCode);
+            MockWiringAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), acceptedCode, acceptedExecution.getDiagnostics());
+            SpringFixtureAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), acceptedExecution.getDiagnostics());
+            com.casc.unittestagent.coverage.RuntimeEvidenceArchive.preserveSourceAnalysis(acceptedExecution);
             MissingFixtureDependencyDetector.inspect(
-                    sourceText, acceptedCode, acceptedExecution.getDiagnostics());
+                    project, sourceText, acceptedCode, acceptedExecution.getDiagnostics());
             Slf4jMockVerificationGuard.Result loggerFailure =
                     Slf4jMockVerificationGuard.inspectAndRepair(
                             sourceText, acceptedCode, acceptedExecution.getDiagnostics(), false);
             report.setInitialExecution(acceptedExecution);
             report.setFinalExecution(acceptedExecution);
-            if (acceptedExecution.isSuccessful()) {
+            if (!acceptedExecution.getEvidenceFailures().isEmpty()) {
+                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED, ClassJUnitStopReason.NO_TESTS_FOUND,
+                        "JUnit 执行证据不完整，已阻止写入：" + String.join("；", acceptedExecution.getEvidenceFailures()));
+            }
+            if (runtimeExecutionPassed(acceptedExecution)) {
                 return stopClassJUnit(result, report, ClassJUnitStatus.PASSED,
                         ClassJUnitStopReason.INITIAL_PASS, "完整测试类首次 JUnit 执行通过。");
             }
-            if (acceptedExecution.getFound() == 0) {
-                ClassJUnitStopReason reason = acceptedExecution.isTimedOut()
-                        ? ClassJUnitStopReason.TIMEOUT : ClassJUnitStopReason.NO_TESTS_FOUND;
-                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED, reason,
-                        initial.message);
+            if (acceptedExecution.isTimedOut()) {
+                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                        ClassJUnitStopReason.TIMEOUT, "JUnit 运行验证超时，已阻止正常写入。");
+            }
+            if (acceptedExecution.getFound() == 0
+                    || acceptedExecution.getSucceeded() == 0 && acceptedExecution.getFailed() == 0) {
+                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                        ClassJUnitStopReason.NO_TESTS_FOUND, "未执行任何成功测试（零测试或全部跳过），已阻止正常写入。");
             }
             if (loggerFailure.hasBlockedMethods()
                     && hasRuntimeCategory(acceptedExecution.getDiagnostics(),
@@ -991,11 +1451,16 @@ public class UnitTestGenerationService {
                         ClassJUnitStopReason.TEST_DESIGN_ERROR, loggerFailure.blockedMessage());
             }
 
+            if (acceptedExecution.getSkipped() > 0) {
+                return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                        ClassJUnitStopReason.TEST_DESIGN_ERROR, "存在未执行的跳过测试，完整运行门禁未通过。");
+            }
             LlmConfig llmConfig = LlmConfigManager.load();
-            if (!llmConfig.isEnabled() || maxRuntimeRepairs == 0) {
+            if (!allowRepair || !llmConfig.isEnabled() || maxRuntimeRepairs == 0) {
                 return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
                         ClassJUnitStopReason.REPAIR_BUDGET_EXHAUSTED,
-                        llmConfig.isEnabled() ? "整类 JUnit 修复预算为 0。" : "大模型未启用，已保留首次执行结果。");
+                        !allowRepair ? "最终合并测试类回归未通过，已保留原测试且阻止正常写入。"
+                                : llmConfig.isEnabled() ? "JUnit 修复预算为 0。" : "大模型未启用，已保留首次执行结果。");
             }
             LlmClient client = llmClientFactory.create(llmConfig);
             Set<String> seenCode = new LinkedHashSet<>();
@@ -1019,7 +1484,7 @@ public class UnitTestGenerationService {
                 // 否则 SHARED_FIXTURE 候选可静默掏空其断言（stabilizer 只恢复 passed 集合）。
                 Set<String> protectedFailingIds = new LinkedHashSet<>(failingIds);
                 protectedFailingIds.removeAll(focusedFailingIds);
-                ClassJUnitRepairScope suggestedScope = focusedDiagnostics.stream()
+                ClassJUnitRepairScope suggestedScope = SpringFixtureAnalyzer.allowsPropertyRepair(focusedDiagnostics) || MockWiringAnalyzer.allowsWiringRepair(focusedDiagnostics, acceptedCode) || FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(focusedDiagnostics) || focusedDiagnostics.stream()
                         .anyMatch(item -> "FIXTURE_DEPENDENCY_MISSING".equals(item.getCategory()))
                         ? ClassJUnitRepairScope.SHARED_FIXTURE : ClassJUnitRepairScope.METHOD_ONLY;
                 listener.update("正在修复整类 JUnit 失败（" + round + " / "
@@ -1067,6 +1532,9 @@ public class UnitTestGenerationService {
                             ClassJUnitStopReason.MODEL_ERROR,
                             "整类运行修复缺少合法 Oracle 仲裁结果：" + safeMessage(ex));
                 }
+                reconcileLifecycleAssessment(oracleAssessment, focusedDiagnostics);
+                reconcileWiringAssessment(oracleAssessment, focusedDiagnostics);
+                reconcileSpringAssessment(oracleAssessment, focusedDiagnostics);
                 report.setOracleAssessment(oracleAssessment);
                 if (oracleAssessment.getDisposition() == RuntimeRepairDisposition.SUSPECTED_SUT_BUG
                         && !oracleAssessment.getAuthority().permitsAutomaticOracleCorrection()) {
@@ -1092,11 +1560,14 @@ public class UnitTestGenerationService {
                         oracleAssessment, focusedDiagnostics)) {
                     oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
                     oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
-                            "断言或交互 Oracle 已经真实不匹配；禁止通过改 Arrange 把特定输入上的失败绕过。"));
+                            "当前交互或断言失败尚无充分装配证据，不能判定是测试装配错误或生产行为不符；已阻止通过改 Arrange 绕过失败。"));
                 }
-                ClassJUnitRepairScope scope = classRepairScope(response.getRepairScope(), suggestedScope);
+                boolean initializationRepair = SpringFixtureAnalyzer.allowsPropertyRepair(focusedDiagnostics) || FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(focusedDiagnostics)
+                        || MockWiringAnalyzer.allowsWiringRepair(focusedDiagnostics, acceptedCode);
+                ClassJUnitRepairScope scope = initializationRepair ? ClassJUnitRepairScope.SHARED_FIXTURE
+                        : classRepairScope(response.getRepairScope(), suggestedScope);
                 if (scope == ClassJUnitRepairScope.SHARED_FIXTURE
-                        && !isProvenFixtureRepair(oracleAssessment, focusedDiagnostics)) {
+                        && !initializationRepair && !isProvenFixtureRepair(oracleAssessment, focusedDiagnostics)) {
                     scope = ClassJUnitRepairScope.METHOD_ONLY;
                 }
                 if (scope == ClassJUnitRepairScope.SHARED_FIXTURE) report.incrementFixtureRepairRounds();
@@ -1139,13 +1610,19 @@ public class UnitTestGenerationService {
                             attempt.getRejectionReason());
                 }
                 try {
+                    attempt.setCandidateHash(testCodeFingerprint(response.getTestCode()));
                     GeneratedTestCodePostProcessor.ProcessedCode processed =
-                            generatedCodePostProcessor.process(response.getTestCode(), result.getMethodModel());
+                            generatedCodePostProcessor.processRepair(response.getTestCode(), result.getMethodModel(), acceptedCode);
                     addWarnings(result, response.getWarnings());
                     addWarnings(result, processed.getWarnings());
                     ClassRuntimeRepairStabilizer.Result stabilized = classRuntimeRepairStabilizer.stabilize(
                             acceptedCode, processed.getCode(), scope, passedIds, focusedFailingIds);
+                    if (FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(focusedDiagnostics) || SpringFixtureAnalyzer.allowsPropertyRepair(focusedDiagnostics))
+                        classRuntimeRepairStabilizer.validateInitializationRepair(acceptedCode, stabilized.getCode());
+                    MockWiringAnalyzer.validateWiringRepair(acceptedCode, stabilized.getCode(), focusedDiagnostics);
+                    SpringFixtureAnalyzer.validatePropertyRepair(acceptedCode, stabilized.getCode(), focusedDiagnostics);
                     String candidateCode = stabilized.getCode();
+                    attempt.setCandidateHash(testCodeFingerprint(candidateCode));
                     if (!isProvenNoInteractionsContradictionRepair(
                             acceptedCode, candidateCode, focusedDiagnostics)) {
                         runtimeOracleGate.validateRepair(oracleAssessment, acceptedCode, candidateCode,
@@ -1175,6 +1652,10 @@ public class UnitTestGenerationService {
                             .equals(testCodeFingerprint(compileRepaired.getContent()))) {
                         stabilized = classRuntimeRepairStabilizer.stabilize(
                                 acceptedCode, compileRepaired.getContent(), scope, passedIds, focusedFailingIds);
+                        if (FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(focusedDiagnostics) || SpringFixtureAnalyzer.allowsPropertyRepair(focusedDiagnostics))
+                            classRuntimeRepairStabilizer.validateInitializationRepair(acceptedCode, stabilized.getCode());
+                        MockWiringAnalyzer.validateWiringRepair(acceptedCode, stabilized.getCode(), focusedDiagnostics);
+                        SpringFixtureAnalyzer.validatePropertyRepair(acceptedCode, stabilized.getCode(), focusedDiagnostics);
                         candidateCode = stabilized.getCode();
                         if (!isProvenNoInteractionsContradictionRepair(
                                 acceptedCode, candidateCode, focusedDiagnostics)) {
@@ -1207,10 +1688,21 @@ public class UnitTestGenerationService {
                         result.setValidationResult(acceptedValidation);
                         continue;
                     }
+                    if (!candidate.execution.getEvidenceFailures().isEmpty()) {
+                        attempt.setRejectionReason("修复候选缺少完整运行证据："
+                                + String.join("；", candidate.execution.getEvidenceFailures()));
+                        report.getAttempts().add(attempt);
+                        result.setValidationResult(acceptedValidation);
+                        return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
+                                ClassJUnitStopReason.TEST_DESIGN_ERROR, attempt.getRejectionReason());
+                    }
                     MockitoRuntimeDiagnosticEnricher.enrich(
                             candidate.execution.getDiagnostics(), candidateCode);
+                    MockWiringAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), candidateCode, candidate.execution.getDiagnostics());
+                    SpringFixtureAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), candidate.execution.getDiagnostics());
+                    com.casc.unittestagent.coverage.RuntimeEvidenceArchive.preserveSourceAnalysis(candidate.execution);
                     MissingFixtureDependencyDetector.inspect(
-                            sourceText, candidateCode, candidate.execution.getDiagnostics());
+                            project, sourceText, candidateCode, candidate.execution.getDiagnostics());
                     Set<String> newPassed = passedTestNames(candidate.execution);
                     Set<String> newFailed = failingTestNames(candidate.execution);
                     if (!newPassed.containsAll(passedIds) || !failingIds.containsAll(newFailed)) {
@@ -1232,7 +1724,7 @@ public class UnitTestGenerationService {
                         result.setValidationResult(acceptedValidation);
                         continue;
                     }
-                    if (!candidate.execution.isSuccessful()
+                    if (!candidate.execution.isFullySuccessful()
                             && candidate.execution.getFailed() >= acceptedExecution.getFailed()) {
                         attempt.setRejectionReason("修复候选未严格减少失败测试集合。");
                         report.getAttempts().add(attempt);
@@ -1251,13 +1743,21 @@ public class UnitTestGenerationService {
                     result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
                     result.setValidationResult(candidate.validation);
                     previousAttempt = "";
-                    if (acceptedExecution.isSuccessful()) {
+                    if (runtimeExecutionPassed(acceptedExecution)) {
                         return stopClassJUnit(result, report, ClassJUnitStatus.PASSED,
                                 ClassJUnitStopReason.REPAIRED,
                                 "完整测试类已在 " + round + " 轮 JUnit 修复后通过。");
                     }
                 } catch (ProcessCanceledException ex) {
                     throw ex;
+                } catch (RepairCandidateRejectedException ex) {
+                    var rejection = candidateRejection(ex.getStage().name(), attempt.getCandidateHash(), ex.getMessage(), focusedDiagnostics);
+                    report.recordCandidateRejection(rejection);
+                    report.incrementRegressionRejections();
+                    attempt.setRejectionReason(candidateRejectionFeedback(rejection));
+                    report.getAttempts().add(attempt);
+                    previousAttempt = attempt.getRejectionReason();
+                    result.setValidationResult(acceptedValidation);
                 } catch (Exception ex) {
                     attempt.setRejectionReason("整类修复候选被范围或编译门禁拒绝：" + safeMessage(ex));
                     report.getAttempts().add(attempt);
@@ -1268,25 +1768,30 @@ public class UnitTestGenerationService {
             result.setGeneratedTestFile(copyWithContent(template, acceptedCode));
             report.setFinalExecution(acceptedExecution);
             result.setValidationResult(acceptedValidation);
+            if (!report.getCandidateRejections().isEmpty())
+                report.setOracleAssessment(rejectedCandidateAssessment(acceptedExecution.getDiagnostics(), previousAttempt));
             return stopClassJUnit(result, report, ClassJUnitStatus.TEST_FAILED,
                     acceptedAnyRepair ? ClassJUnitStopReason.REPAIR_BUDGET_EXHAUSTED
                             : ClassJUnitStopReason.NO_PROGRESS,
                     acceptedAnyRepair ? "整类 JUnit 修复预算已用完，已保留最佳可编译候选。"
                             : "整类 JUnit 修复未取得单调进展，已保留初始可编译候选。");
         } catch (ProcessCanceledException ex) {
-            // 用户取消必须按取消语义向上传递给 Task.Backgroundable，不能误报环境错误。
+            stopClassJUnit(result, report, ClassJUnitStatus.CANCELLED,
+                    ClassJUnitStopReason.CANCELLED, "JUnit 运行验证已取消。");
             throw ex;
         } catch (Exception ex) {
             return stopClassJUnit(result, report, ClassJUnitStatus.ENVIRONMENT_ERROR,
                     ClassJUnitStopReason.ENVIRONMENT_ERROR, safeMessage(ex));
         } finally {
+            report.setCodeHash(CodeFingerprint.sha256(result.getGeneratedTestFile() == null
+                    ? "" : result.getGeneratedTestFile().getContent()));
             report.setDurationMillis(System.currentTimeMillis() - started);
         }
     }
 
     private LlmGenerationRequest classRepairRequest(Project project,
                                                     PsiFile psiFile,
-                                                    ClassGenerationResult result,
+                                                    GenerationResult result,
                                                     String sourceText,
                                                     String currentCode,
                                                     List<RuntimeDiagnostic> focusedDiagnostics,
@@ -1378,7 +1883,8 @@ public class UnitTestGenerationService {
                     ? ValidationStatus.PASSED : artifact.getDiagnostics().stream()
                     .anyMatch(item -> !item.isRepairable())
                     ? ValidationStatus.ENVIRONMENT_ERROR : ValidationStatus.FAILED);
-            validation.setCodeHash(testCodeFingerprint(code));
+            validation.setCodeHash(CodeFingerprint.sha256(code));
+            validation.setTestEnvironmentNote(environment.getTestEnvironmentNote());
             validation.setDiagnostics(new ArrayList<>(artifact.getDiagnostics()));
             validation.setDurationMillis(System.currentTimeMillis() - started);
             if (!artifact.isSuccessful()) {
@@ -1391,6 +1897,7 @@ public class UnitTestGenerationService {
             CoverageRunResult run = coverageExecutor.executeTestsOnly(artifact, config, cancelled);
             TestExecutionSummary execution = run.getSnapshot() == null
                     ? new TestExecutionSummary() : run.getSnapshot().getExecution();
+            requireDeclaredTestEvidence(code, execution);
             MockitoRuntimeDiagnosticEnricher.enrich(execution.getDiagnostics(), code);
             String message = run.getSnapshot() == null ? "整类 JUnit 未返回结果。"
                     : run.getSnapshot().getMessage();
@@ -1399,7 +1906,7 @@ public class UnitTestGenerationService {
         }
     }
 
-    private ClassGenerationResult stopClassJUnit(ClassGenerationResult result,
+    private GenerationResult stopClassJUnit(GenerationResult result,
                                                  ClassJUnitRepairReport report,
                                                  ClassJUnitStatus status,
                                                  ClassJUnitStopReason reason,
@@ -1407,7 +1914,7 @@ public class UnitTestGenerationService {
         report.setStatus(status);
         report.setStopReason(reason);
         report.setMessage(message);
-        result.setClassJUnitRepairReport(report);
+        result.setRuntimeValidationReport(report);
         return result;
     }
 
@@ -1439,7 +1946,11 @@ public class UnitTestGenerationService {
             String sourceText = ReadAction.compute(psiFile::getText);
             String sourceHash = CodeFingerprint.sha256(sourceText);
             report.setSourceHash(sourceHash);
-            ProjectTestEnvironment environment = coverageEnvironmentResolver.resolve(project, psiFile);
+            ProjectTestEnvironment environment = coverageEnvironmentResolver.resolveForExecution(project, psiFile, cancelled);
+            if (!CodeFingerprint.sha256(sourceText).equals(CodeFingerprint.sha256(environment.getSourceText()))) {
+                throw new IllegalStateException("被测源码在环境解析期间已修改，请重新验证。");
+            }
+            report.setRuntimeConfigurationOrigin(environment.getRuntimeConfiguration().getOrigin());
             if (!environment.isUsable()) {
                 String message = environment.getDiagnostics().isEmpty()
                         ? "无法解析测试执行环境。" : environment.getDiagnostics().get(0).getMessage();
@@ -1479,6 +1990,7 @@ public class UnitTestGenerationService {
             boolean pluginOwnedCandidate = testCodeFingerprint(candidateCode)
                     .equals(testCodeFingerprint(template.getContent()));
 
+            boolean generationPreflightNeeded = false;
             while (true) {
                 if (isCancelled(cancelled)) {
                     restoreAcceptedCandidate(result, report, template, bestAccepted);
@@ -1507,8 +2019,9 @@ public class UnitTestGenerationService {
                         attemptBudget.totalCalls() + 1,
                         "正在编译第 " + (attemptBudget.totalCalls() + 1) + " 个候选测试...", 0.10d);
                 GeneratedTestFile candidateFile = copyWithContent(template, candidateCode);
-                try (CompiledTestArtifact artifact = sandboxCompiler.compile(
-                        environment, candidateFile, candidateCode, targetClassName)) {
+                try (CompiledTestArtifact artifact = generationPreflightNeeded
+                        ? sandboxCompiler.compileGeneratedCandidate(environment, candidateFile, candidateCode, targetClassName, MockWiringAnalyzer.sources(psiFile))
+                        : sandboxCompiler.compile(environment, candidateFile, candidateCode, targetClassName)) {
                     if (!artifact.isSuccessful()) {
                         report.incrementCompileFailures();
                         candidateFailureMemory.put(testCodeFingerprint(candidateCode),
@@ -1636,6 +2149,7 @@ public class UnitTestGenerationService {
                                         CoverageStopReason.REPEATED_CODE, "替代覆盖策略返回了重复测试代码。");
                             }
                             candidateCode = alternative.code;
+                            generationPreflightNeeded = true;
                             continue;
                         }
                         restoreAcceptedCandidate(result, report, template, bestAccepted);
@@ -1650,10 +2164,20 @@ public class UnitTestGenerationService {
                     updateCoverageProgress(report, listener, config, CoveragePhase.EXECUTING,
                             attemptBudget.totalCalls() + 1,
                             "正在隔离 JVM 中运行候选测试...", 0.45d);
+                    generationPreflightNeeded = false;
                     CoverageRunResult run = coverageExecutor.execute(
                             artifact, method, sourceText, config, cancelled);
                     report.setGenerated(run.getSnapshot());
                     report.setGaps(run.getGaps());
+                    requireDeclaredTestEvidence(candidateCode, run.getSnapshot().getExecution());
+                    if (!run.getSnapshot().getExecution().getEvidenceFailures().isEmpty()) {
+                        restoreAcceptedCandidate(result, report, template, bestAccepted);
+                        return stopCoverage(result, report, CoverageStatus.TEST_FAILED,
+                                CoverageStopReason.TEST_DESIGN_ERROR,
+                                "JUnit 执行证据不完整，已停止自动修复："
+                                        + String.join("；", run.getSnapshot().getExecution().getEvidenceFailures()));
+                    }
+                    if (!runtimeExecutionPassed(run.getSnapshot().getExecution())) run.getSnapshot().setAvailable(false);
                     report.getHistory().add(run.getSnapshot());
                     report.setCodeHash(testCodeFingerprint(candidateCode));
                     if (run.isCancelled() || isCancelled(cancelled)) {
@@ -1666,12 +2190,15 @@ public class UnitTestGenerationService {
                         return stopCoverage(result, report, CoverageStatus.ENVIRONMENT_ERROR,
                                 CoverageStopReason.ENVIRONMENT_ERROR, run.getSnapshot().getMessage());
                     }
-                    if (!run.getSnapshot().getExecution().isSuccessful()) {
+                    if (!run.getSnapshot().getExecution().isFullySuccessful()) {
                         report.incrementRuntimeFailures();
                         MockitoRuntimeDiagnosticEnricher.enrich(
                                 run.getSnapshot().getExecution().getDiagnostics(), candidateCode);
+                        MockWiringAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), candidateCode, run.getSnapshot().getExecution().getDiagnostics());
+                        SpringFixtureAnalyzer.enrich(MockWiringAnalyzer.sources(psiFile), run.getSnapshot().getExecution().getDiagnostics());
+                        com.casc.unittestagent.coverage.RuntimeEvidenceArchive.preserveSourceAnalysis(run.getSnapshot().getExecution());
                         MissingFixtureDependencyDetector.inspect(
-                                sourceText, candidateCode,
+                                project, sourceText, candidateCode,
                                 run.getSnapshot().getExecution().getDiagnostics());
                         Slf4jMockVerificationGuard.Result loggerFailure =
                                 Slf4jMockVerificationGuard.inspectAndRepair(
@@ -1725,6 +2252,37 @@ public class UnitTestGenerationService {
                         }
                         restoreReportCheckpoint(report, bestAccepted);
                         if (canImprove(coverageClient, attemptBudget, config, CoverageAttemptKind.REPAIR)) {
+                            if (SpringRuntimeFailureAnalyzer.hasSharedFailure(focusedRuntimeDiagnostics) || FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(focusedRuntimeDiagnostics)
+                                    || MockWiringAnalyzer.allowsWiringRepair(focusedRuntimeDiagnostics, runtimeRepairBase)) {
+                                // Initialization cannot be repaired inside a test method which has never run.
+                                // Reuse the class runtime engine, including its compile re-audit, full
+                                // regression, immutable test bodies and shared-fixture scope checks.
+                                updateCoverageProgress(report, listener, config, CoveragePhase.IMPROVING,
+                                        attemptBudget.totalCalls() + 1, "正在修复测试初始化与共享 Fixture...", 0.65d);
+                                runJUnitValidation(project, psiFile, result, runtimeRepairBase, cancelled, listener,
+                                        true, attemptBudget.remainingRepairs(config));
+                                ClassJUnitRepairReport fixtureReport = result.getRuntimeValidationReport();
+                                for (int used = 0; used < fixtureReport.getRuntimeRepairRounds(); used++)
+                                    attemptBudget.consume(CoverageAttemptKind.REPAIR, report);
+                                for (int request = 0; request < fixtureReport.getModelRequests(); request++) report.incrementModelRequests();
+                                fixtureReport.getCandidateRejections().forEach(report::recordCandidateRejection);
+                                report.setOracleAssessment(fixtureReport.getOracleAssessment());
+                                if (fixtureReport.getStatus() == ClassJUnitStatus.CANCELLED || isCancelled(cancelled))
+                                    return stopCoverage(result, report, CoverageStatus.CANCELLED, CoverageStopReason.CANCELLED, fixtureReport.getMessage());
+                                if (fixtureReport.getStatus() != ClassJUnitStatus.PASSED) {
+                                    report.setGenerated(run.getSnapshot()); report.setGaps(run.getGaps());
+                                    report.setCodeHash(testCodeFingerprint(result.getGeneratedTestFile().getContent()));
+                                    return stopCoverage(result, report,
+                                            fixtureReport.getStatus() == ClassJUnitStatus.ENVIRONMENT_ERROR ? CoverageStatus.ENVIRONMENT_ERROR : CoverageStatus.TEST_FAILED,
+                                            fixtureReport.getStatus() == ClassJUnitStatus.ENVIRONMENT_ERROR ? CoverageStopReason.ENVIRONMENT_ERROR : CoverageStopReason.TEST_DESIGN_ERROR,
+                                            fixtureReport.getMessage());
+                                }
+                                candidateCode = result.getGeneratedTestFile().getContent();
+                                seenCode.add(testCodeFingerprint(candidateCode));
+                                compilerDiagnosticHistory.clear(); runtimeDiagnosticHistory.clear();
+                                lastRuntimeFailedCode = ""; lastRuntimeFailureSignature = "";
+                                continue;
+                            }
                             updateCoverageProgress(report, listener, config, CoveragePhase.IMPROVING,
                                     attemptBudget.totalCalls() + 1,
                                     "正在根据测试运行失败修复候选测试...", 0.65d);
@@ -1849,6 +2407,7 @@ public class UnitTestGenerationService {
                                         CoverageStopReason.REPEATED_CODE, "替代覆盖策略返回了重复测试代码。");
                             }
                             candidateCode = alternative.code;
+                            generationPreflightNeeded = true;
                             continue;
                         }
                         restoreAcceptedCandidate(result, report, template, bestAccepted);
@@ -1912,6 +2471,7 @@ public class UnitTestGenerationService {
                                 break;
                             }
                             candidateCode = alternative.code;
+                            generationPreflightNeeded = true;
                             continue;
                         }
                         report.setStatus(coverageStatusForBest(
@@ -1959,6 +2519,7 @@ public class UnitTestGenerationService {
                         break;
                     }
                     candidateCode = improved;
+                    generationPreflightNeeded = true;
                 }
             }
 
@@ -2123,9 +2684,14 @@ public class UnitTestGenerationService {
                         + "不得再次原样返回。";
             }
             request.setUserInstruction(effectiveInstruction.strip());
+            String proposedCandidateHash = "";
             try {
                 report.incrementModelRequests();
                 LlmGenerationResponse response = client.improveCoverage(request);
+                proposedCandidateHash = response.hasMethodPatches()
+                        ? CodeFingerprint.sha256(response.getMethodPatches().stream().filter(java.util.Objects::nonNull)
+                        .map(com.casc.unittestagent.llm.LlmMethodPatch::getMethodCode).collect(java.util.stream.Collectors.joining("\n")))
+                        : testCodeFingerprint(response.getTestCode());
                 boolean runtimeRepair = runtimeDiagnostics != null && !runtimeDiagnostics.isEmpty();
                 // 响应形态契约必须先于仲裁枚举解析检查：否则形态违约（如运行修复返回整类
                 // testCode、disposition 为空）会以普通 IllegalArgumentException 终止闭环，
@@ -2163,6 +2729,8 @@ public class UnitTestGenerationService {
                 }
                 if (oracleAssessment != null) {
                     normalizeUnsupportedFixtureClassification(oracleAssessment, runtimeDiagnostics);
+                    reconcileWiringAssessment(oracleAssessment, runtimeDiagnostics);
+                    reconcileSpringAssessment(oracleAssessment, runtimeDiagnostics);
                 }
                 if (oracleAssessment != null
                         && oracleAssessment.getDisposition() == RuntimeRepairDisposition.REPAIR_TEST
@@ -2171,7 +2739,7 @@ public class UnitTestGenerationService {
                         && !isProvenFixtureRepair(oracleAssessment, runtimeDiagnostics)) {
                     oracleAssessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
                     oracleAssessment.setEvidence(appendEvidence(oracleAssessment.getEvidence(),
-                            "断言或交互 Oracle 已经真实不匹配；禁止通过改 Arrange 把特定输入上的失败绕过。"));
+                            "当前交互或断言失败尚无充分装配证据，不能判定是测试装配错误或生产行为不符；已阻止通过改 Arrange 绕过失败。"));
                 }
                 if (oracleAssessment != null
                         && oracleAssessment.getDisposition() != RuntimeRepairDisposition.REPAIR_TEST) {
@@ -2195,7 +2763,7 @@ public class UnitTestGenerationService {
                         currentCode, response.getMethodPatches(), editableTests)
                         : response.getTestCode();
                 GeneratedTestCodePostProcessor.ProcessedCode processed =
-                        generatedCodePostProcessor.process(modelCode, method);
+                        generatedCodePostProcessor.processRepair(modelCode, method, currentCode);
                 String nextCode = processed.getCode();
                 String rawModelHash = testCodeFingerprint(modelCode);
                 String postProcessedHash = testCodeFingerprint(nextCode);
@@ -2217,6 +2785,7 @@ public class UnitTestGenerationService {
                             + " 处 Method.invoke 的 InvocationTargetException，避免 assertThrows 观察到反射包装异常。"));
                 }
                 if (runtimeRepair) {
+                    proposedCandidateHash = testCodeFingerprint(nextCode);
                     if (!isProvenNoInteractionsContradictionRepair(
                             currentCode, nextCode, runtimeDiagnostics)) {
                         runtimeOracleGate.validateRepair(
@@ -2280,13 +2849,19 @@ public class UnitTestGenerationService {
                 attemptBudget.consumeChangedCandidate(attemptKind, report, true);
                 return new CoverageImprovement(nextCode, rawModelHash, postProcessedHash,
                         stabilizedHash, responseHash, false, "");
-            } catch (RuntimeOracleGate.UnsafeOracleCorrectionException ex) {
-                OracleAssessment blocked = new OracleAssessment();
-                blocked.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
-                blocked.setDecision(OracleDecision.KEEP);
-                blocked.setRootCauseCategory("UNSAFE_ORACLE_PATCH");
-                blocked.setEvidence(List.of(ex.getMessage()));
-                return CoverageImprovement.terminal(currentCode, blocked);
+            } catch (RepairCandidateRejectedException ex) {
+                var rejection = candidateRejection(ex.getStage().name(), proposedCandidateHash, ex.getMessage(), runtimeDiagnostics);
+                report.recordCandidateRejection(rejection);
+                // A proposed but unsafe change consumes repair budget. It is never executed,
+                // never replaces currentCode, and never becomes a new runtime root cause.
+                attemptBudget.consume(attemptKind, report);
+                previousAttemptSummary = candidateRejectionFeedback(rejection);
+                LOG.warn("UnitMind coverage: candidate rejected, stage=" + rejection.stage()
+                        + ", observed=" + rejection.observedFailureCategories()
+                        + ", hash=" + shortHash(proposedCandidateHash));
+                if (attemptBudget.canUse(attemptKind, config)) continue;
+                return CoverageImprovement.terminal(currentCode,
+                        rejectedCandidateAssessment(runtimeDiagnostics, previousAttemptSummary + " 修复预算已用完。"));
             } catch (LlmOutputTruncatedException ex) {
                 LOG.warn("UnitMind coverage: model output truncated, semanticCall=" + iteration
                         + ", error=" + safeMessage(ex));
@@ -2429,7 +3004,8 @@ public class UnitTestGenerationService {
                     || category.equals("ASSERTION_FAILURE")
                     || category.equals("MOCKITO_INVOCATION_COUNT_MISMATCH")
                     || category.equals("MOCKITO_ARGUMENT_MISMATCH")
-                    || category.equals("MOCKITO_WANTED_BUT_NOT_INVOKED")) {
+                    || category.equals("MOCKITO_WANTED_BUT_NOT_INVOKED")
+                    || category.equals(MockWiringAnalyzer.WIRING) || category.equals(MockWiringAnalyzer.INTERNAL)) {
                 return true;
             }
         }
@@ -2438,10 +3014,19 @@ public class UnitTestGenerationService {
 
     static boolean isProvenFixtureRepair(OracleAssessment assessment,
                                          List<RuntimeDiagnostic> diagnostics) {
-        if (assessment == null || diagnostics == null || diagnostics.isEmpty()
-                || !"FIXTURE_DEPENDENCY_MISSING".equals(assessment.getRootCauseCategory())) {
+        if (assessment == null || diagnostics == null || diagnostics.isEmpty()) {
             return false;
         }
+        if (SpringFixtureAnalyzer.BINDING_FAILURE.equals(assessment.getRootCauseCategory()))
+            return SpringFixtureAnalyzer.allowsPropertyRepair(diagnostics) && !hasOracleSensitiveFailure(diagnostics);
+        if (MockWiringAnalyzer.WIRING.equals(assessment.getRootCauseCategory()))
+            return diagnostics.stream().allMatch(d -> d != null && MockWiringAnalyzer.WIRING.equals(d.getCategory())
+                    && !d.getMockWiringEvidence().isEmpty() && d.getMockWiringEvidence().stream().allMatch(e ->
+                    MockWiringAnalyzer.WIRING.equals(e.category()) && !e.testHash().isBlank()
+                            && !e.productionHash().isBlank() && !e.removableAssignment().isBlank()));
+        if (FixtureLifecycleAnalyzer.CATEGORY.equals(assessment.getRootCauseCategory()))
+            return FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(diagnostics) && !hasOracleSensitiveFailure(diagnostics);
+        if (!"FIXTURE_DEPENDENCY_MISSING".equals(assessment.getRootCauseCategory())) return false;
         boolean proven = false;
         for (RuntimeDiagnostic diagnostic : diagnostics) {
             if (diagnostic == null) continue;
@@ -2452,6 +3037,49 @@ public class UnitTestGenerationService {
             if (hasOracleSensitiveFailure(List.of(diagnostic))) return false;
         }
         return proven;
+    }
+
+    private static void reconcileSpringAssessment(OracleAssessment assessment, List<RuntimeDiagnostic> diagnostics) {
+        if (assessment == null || !SpringRuntimeFailureAnalyzer.hasSharedFailure(diagnostics)) return;
+        boolean proven = SpringFixtureAnalyzer.allowsPropertyRepair(diagnostics);
+        assessment.setRootCauseCategory(proven ? SpringFixtureAnalyzer.BINDING_FAILURE : SpringRuntimeFailureAnalyzer.CATEGORY);
+        assessment.setEvidence(appendEvidence(assessment.getEvidence(), "真实 Spring 初始化证据：" + SpringRuntimeFailureAnalyzer.summary(diagnostics)));
+        if (proven && assessment.getDecision() == OracleDecision.KEEP) {
+            assessment.setAuthority(OracleAuthority.NONE); assessment.setAuthorityRef("NONE");
+        } else if (!proven) {
+            assessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+            assessment.setEvidence(appendEvidence(assessment.getEvidence(), "尚无源码与最内层异常共同证明的属性修复范围；保留测试，不能修改业务 Oracle。"));
+        }
+    }
+
+    private static void reconcileWiringAssessment(OracleAssessment assessment, List<RuntimeDiagnostic> diagnostics) {
+        if (assessment == null || diagnostics == null || diagnostics.isEmpty()) return;
+        var proven = diagnostics.stream().filter(d -> d != null && !d.getMockWiringEvidence().isEmpty()).toList();
+        if (proven.isEmpty()) return;
+        String category = proven.stream().anyMatch(d -> MockWiringAnalyzer.INTERNAL.equals(d.getCategory()))
+                ? MockWiringAnalyzer.INTERNAL : MockWiringAnalyzer.WIRING;
+        assessment.setRootCauseCategory(category);
+        assessment.setEvidence(List.of("已按当前源码与真实失败位置恢复归因；模型未证实的对象实例或空参数推断不作为根因。"));
+        for (var d : proven) for (var evidence : d.getMockWiringEvidence())
+            assessment.setEvidence(appendEvidence(assessment.getEvidence(), "源码装配证据：" + evidence.fact()));
+        if (MockWiringAnalyzer.INTERNAL.equals(category) && assessment.getDecision() == OracleDecision.KEEP) {
+            assessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+            assessment.setEvidence(appendEvidence(assessment.getEvidence(),
+                    "验证了未接入的内部状态 mock，保持原 Oracle 无法修复；改变验证方式须独立契约授权，不能伪装为装配修复。"));
+        } else if (MockWiringAnalyzer.WIRING.equals(category) && assessment.getDecision() == OracleDecision.KEEP) {
+            assessment.setAuthority(OracleAuthority.NONE); assessment.setAuthorityRef("NONE");
+        }
+    }
+
+    private static void reconcileLifecycleAssessment(OracleAssessment assessment, List<RuntimeDiagnostic> diagnostics) {
+        if (!FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(diagnostics)) return;
+        if (!FixtureLifecycleAnalyzer.CATEGORY.equals(assessment.getRootCauseCategory()))
+            assessment.setEvidence(appendEvidence(assessment.getEvidence(), "已按实际 Mockito 初始化证据恢复根因分类；测试方法尚未执行。"));
+        assessment.setRootCauseCategory(FixtureLifecycleAnalyzer.CATEGORY);
+        if (assessment.getDecision() == OracleDecision.KEEP) {
+            // A runner-authorized fixture repair does not require authority to change business expectations.
+            assessment.setAuthority(OracleAuthority.NONE); assessment.setAuthorityRef("NONE");
+        }
     }
 
     /**
@@ -2473,6 +3101,11 @@ public class UnitTestGenerationService {
                 .findFirst().orElse("");
         assessment.setRootCauseCategory(observedCategory.isBlank()
                 ? "UNSUPPORTED_FIXTURE_CLASSIFICATION" : observedCategory);
+        if (FixtureLifecycleAnalyzer.allowsSharedFixtureRepair(diagnostics)) {
+            assessment.setEvidence(appendEvidence(assessment.getEvidence(),
+                    "真实证据属于 Mockito 初始化失败，已恢复初始化分类；它不要求业务路径上的 NPE 证据。"));
+            return true;
+        }
         assessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
         assessment.setEvidence(appendEvidence(assessment.getEvidence(),
                 "已拒绝模型的 FIXTURE_DEPENDENCY_MISSING 分类：缺少源码构造依赖、"
@@ -2522,6 +3155,7 @@ public class UnitTestGenerationService {
                         nullToSignature(diagnostic.getExpectedExceptionType()),
                         nullToSignature(diagnostic.getActualExceptionType()),
                         nullToSignature(diagnostic.getRootCauseType()),
+                        diagnostic.isSharedContextFailure() ? nullToSignature(diagnostic.getRootCauseMessage()) : "",
                         String.valueOf(diagnostic.getExpectedInvocationCount()),
                         String.valueOf(diagnostic.getActualInvocationCount()),
                         frameWithoutLine(diagnostic.getProductionFrame()),
@@ -2662,9 +3296,12 @@ public class UnitTestGenerationService {
                         + "），已停止自动修复并保留原失败测试。可在下方补充证据后继续修复："
                         + category.formatRequiredUserInfo(failingTestNames);
                 case DETERMINISTIC -> "测试侧结构错误（" + category.getLabelCn()
-                        + "）：已多轮自动修复仍未通过，原失败测试已保留，可人工修正后重新校验。";
+                        + "）：自动修复已停止，原失败测试已保留，可人工修正后重新校验。";
                 case ENVIRONMENT -> {
                     String info = category.getRequiredUserInfo();
+                    if (category == FailureCategory.FRAMEWORK_CONTEXT_BOOTSTRAP_FAILURE)
+                        yield "Spring 共享上下文初始化失败，测试正文尚未执行；请查看最内层 Caused by 和完整运行证据，"
+                                + "检查属性绑定、Bean 依赖与容器对象生命周期。已保留原测试，不能按单个业务用例失败处理。";
                     yield "测试执行环境不可用（" + category.getLabelCn()
                             + "）：请检查 SDK、测试依赖或项目索引后重试。"
                             + (info.isBlank() ? "" : info);
@@ -2820,7 +3457,7 @@ public class UnitTestGenerationService {
             CoverageSnapshot snapshot,
             List<com.casc.unittestagent.model.CoverageGap> gaps) {
         if (snapshot == null || !snapshot.isAvailable()
-                || snapshot.getExecution() == null || !snapshot.getExecution().isSuccessful()) {
+                || snapshot.getExecution() == null || !snapshot.getExecution().isFullySuccessful()) {
             return current;
         }
         if (current == null || CoverageLoopPolicy.improved(current.snapshot, snapshot)) {
@@ -2905,6 +3542,7 @@ public class UnitTestGenerationService {
                 + ", unchangedResponses=" + report.getUnchangedResponses()
                 + ", modelUnchangedResponses=" + report.getModelUnchangedResponses()
                 + ", discardedChanges=" + report.getDiscardedChanges()
+                + ", candidateRejections=" + report.getCandidateRejections().size()
                 + ", lastUnchangedStage=" + report.getLastUnchangedStage()
                 + ", lineRate=" + line + ", branchRate=" + branch
                 + ", durationMs=" + report.getDurationMillis());
@@ -2950,6 +3588,10 @@ public class UnitTestGenerationService {
 
     private void configureMockitoSupport(LlmGenerationRequest request, Project project, PsiFile psiFile) {
         if (request == null) return;
+        if (psiFile != null) {
+            request.setClassSourceCode(ReadAction.compute(psiFile::getText));
+            request.setSpringPropertyBindings(SpringFixtureAnalyzer.properties(MockWiringAnalyzer.sources(psiFile)));
+        }
         if (project == null || psiFile == null) {
             request.setMockitoStaticMockingSupported(false);
             request.setMockitoStaticMockingSupport("缺少项目上下文，按不支持静态 Mock 处理");
@@ -3111,12 +3753,39 @@ public class UnitTestGenerationService {
         return hash == null || hash.length() <= 12 ? String.valueOf(hash) : hash.substring(0, 12);
     }
 
+    private static RepairCandidateRejection candidateRejection(String stage, String hash, String reason,
+                                                                List<RuntimeDiagnostic> observed) {
+        return new RepairCandidateRejection(stage, hash, reason,
+                observed == null ? List.of() : observed.stream().filter(java.util.Objects::nonNull)
+                        .map(RuntimeDiagnostic::getCategory).filter(java.util.Objects::nonNull).distinct().toList());
+    }
+
+    private static String candidateRejectionFeedback(RepairCandidateRejection rejection) {
+        return "候选补丁未通过安全门禁，未执行、未接纳。原运行失败分类=" + rejection.observedFailureCategories()
+                + "；拒绝阶段=" + rejection.stage() + "；原因=" + rejection.reason()
+                + "。请从 currentTestCode 针对原 runtimeDiagnostics 重新修复，保留断言、验证参数及次数和执行路径；不得重复该补丁。";
+    }
+
+    private static OracleAssessment rejectedCandidateAssessment(List<RuntimeDiagnostic> observed, String feedback) {
+        var assessment = new OracleAssessment();
+        assessment.setDisposition(RuntimeRepairDisposition.INCONCLUSIVE);
+        assessment.setDecision(OracleDecision.KEEP);
+        assessment.setAuthority(OracleAuthority.NONE);
+        assessment.setAuthorityRef("NONE");
+        assessment.setRootCauseCategory(observed == null ? "TEST_RUNTIME_FAILURE" : observed.stream()
+                .filter(java.util.Objects::nonNull).map(RuntimeDiagnostic::getCategory)
+                .filter(category -> category != null && !category.isBlank()).findFirst().orElse("TEST_RUNTIME_FAILURE"));
+        assessment.setEvidence(List.of(feedback));
+        return assessment;
+    }
+
     /** 分离探索与修复配额，避免候选语法/运行错误吞掉真正的覆盖率探索机会。 */
     static final class CoverageAttemptBudget {
         private int explorationCalls;
         private int repairCalls;
 
         int totalCalls() { return explorationCalls + repairCalls; }
+        int remainingRepairs(CoverageConfig config) { return Math.max(0, config.getMaxRepairRounds() - repairCalls); }
 
         boolean canUse(CoverageAttemptKind kind, CoverageConfig config) {
             if (config == null || kind == null) return false;
@@ -3136,7 +3805,7 @@ public class UnitTestGenerationService {
             if (report != null) report.setRounds(totalCalls());
         }
 
-        /** 只有产生了可执行验证的新代码候选，才计入探索/修复语义预算。 */
+        /** 返回有变化候选后计入预算；在安全门禁被拒绝的补丁也单独扣除预算。 */
         boolean consumeChangedCandidate(CoverageAttemptKind kind,
                                         CoverageReport report,
                                         boolean changed) {
@@ -3249,6 +3918,9 @@ public class UnitTestGenerationService {
             if (seen.add(key)) history.add(diagnostic);
             if (history.size() >= 4) break;
         }
+        diagnostics.stream().filter(java.util.Objects::nonNull)
+                .filter(d -> d.isSharedContextFailure() && !d.isContextFailureSecondary())
+                .filter(d -> !history.contains(d)).forEach(history::add);
         return failingTestNames(history);
     }
 
@@ -3258,6 +3930,10 @@ public class UnitTestGenerationService {
      */
     static List<RuntimeDiagnostic> focusRuntimeDiagnostics(List<RuntimeDiagnostic> diagnostics) {
         if (diagnostics == null || diagnostics.isEmpty()) return List.of();
+        SpringRuntimeFailureAnalyzer.enrich(diagnostics);
+        var primaryContext = diagnostics.stream().filter(java.util.Objects::nonNull)
+                .filter(d -> d.isSharedContextFailure() && !d.isContextFailureSecondary()).findFirst();
+        if (primaryContext.isPresent()) return List.of(primaryContext.get());
         Map<String, List<RuntimeDiagnostic>> byTest = new java.util.LinkedHashMap<>();
         for (RuntimeDiagnostic diagnostic : diagnostics) {
             if (diagnostic == null) continue;
@@ -3282,6 +3958,7 @@ public class UnitTestGenerationService {
                     "MOCKITO_VOID_STUB_MISUSE",
                     "MOCKITO_WRONG_RETURN_TYPE",
                     "MOCKITO_INVALID_MATCHER_USAGE",
+                    "MOCKITO_FIXTURE_INITIALIZATION_FAILURE",
                     "ASSERT_THROWS_WRAPPED_BY_REFLECTION",
                     "FIXTURE_DEPENDENCY_MISSING").contains(category)) {
                 priority = Math.min(priority, 0);
@@ -3348,12 +4025,22 @@ public class UnitTestGenerationService {
             LOG.info("UnitMind coverage: candidate=" + candidate + " runtimeDiagnostic test="
                     + safeLogValue(diagnostic.getTestId()) + " exception="
                     + safeLogValue(diagnostic.getExceptionType()) + " category="
-                    + safeLogValue(diagnostic.getCategory()) + " expectedValue="
+                    + safeLogValue(diagnostic.getCategory()) + " failurePhase=" + diagnostic.getFailurePhase()
+                    + " fixtureField=" + safeLogValue(diagnostic.getFixtureField())
+                    + " wiringEvidence=" + safeLogValue(diagnostic.getMockWiringEvidence().stream()
+                            .map(e -> e.category() + ":" + e.subject() + "->" + e.receiver() + "@L" + e.line()
+                                    + ":test=" + e.testHash() + ":production=" + e.productionHash()).toList().toString())
+                    + " originLocations=" + diagnostic.getOriginLocations().stream()
+                            .map(origin -> origin.testId() + ":" + origin.sourceLine()).toList() + " expectedValue="
                     + safeLogValue(diagnostic.getExpectedValue()) + " actualValue="
                     + safeLogValue(diagnostic.getActualValue()) + " expectedException="
                     + safeLogValue(diagnostic.getExpectedExceptionType()) + " actualException="
                     + safeLogValue(diagnostic.getActualExceptionType()) + " rootCause="
-                    + safeLogValue(diagnostic.getRootCauseType()) + " message="
+                    + safeLogValue(diagnostic.getRootCauseType()) + " rootCauseMessage="
+                    + safeLogValue(diagnostic.getRootCauseMessage()) + " sharedContext=" + diagnostic.isSharedContextFailure()
+                    + " secondary=" + diagnostic.isContextFailureSecondary() + " contextKey=" + diagnostic.getContextKey()
+                    + " primaryTest=" + safeLogValue(diagnostic.getPrimaryFailureTestId())
+                    + " evidenceArchive=" + safeLogValue(diagnostic.getEvidenceArchivePath()) + " message="
                     + safeLogValue(diagnostic.getMessage()));
         }
     }
@@ -3466,7 +4153,9 @@ public class UnitTestGenerationService {
         request.setScenarios(scenarios);
         request.setExistingTestCodeSummary("");
         request.setTestFramework("JUnit5");
-        request.setMockFramework("Mockito");
+        // 项目 classpath 无 Mockito 时不得硬指派 Mockito：置空框架并让策略侧强制 FORBIDDEN。
+        request.setMockFramework(mockitoAvailabilityOverride != null && !mockitoAvailabilityOverride
+                ? "" : "Mockito");
         return request;
     }
 
@@ -4192,6 +4881,8 @@ public class UnitTestGenerationService {
         model.setAccessModifier(psiAccessModifier(method));
         model.setProtectedMethod(method.hasModifierProperty(PsiModifier.PROTECTED));
         model.setStaticMethod(method.hasModifierProperty(PsiModifier.STATIC));
+        model.setOwnerInterface(containingClass.isInterface());
+        model.setOwnerAbstract(containingClass.hasModifierProperty(PsiModifier.ABSTRACT));
         model.setImports(extractPsiImports(psiFile));
         model.setThrownExceptions(extractPsiThrownExceptions(method));
         model.setMethodBodyText(method.getBody() == null ? "" : method.getBody().getText());

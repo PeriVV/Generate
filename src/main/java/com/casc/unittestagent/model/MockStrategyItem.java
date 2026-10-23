@@ -178,4 +178,17 @@ public class MockStrategyItem {
     public void setRemark(String remark) {
         this.remark = remark;
     }
+
+    /** Detached editable inputs for a background execution task. */
+    public MockStrategyItem copy() {
+        var copy = new MockStrategyItem();
+        copy.generate = generate;
+        copy.dependencyType = dependencyType;
+        copy.objectName = objectName;
+        copy.methodName = methodName;
+        copy.source = source;
+        copy.mockitoStrategy = mockitoStrategy;
+        copy.remark = remark;
+        return copy;
+    }
 }

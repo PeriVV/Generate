@@ -4,6 +4,9 @@ package com.casc.unittestagent.model;
  * 标准化后的 Java 编译诊断。
  */
 public class CompileDiagnostic {
+    private ValidationStage validationStage = ValidationStage.JAVA_COMPILATION;
+    public ValidationStage getValidationStage() { return validationStage; }
+    public void setValidationStage(ValidationStage value) { validationStage = value == null ? ValidationStage.JAVA_COMPILATION : value; }
     private String severity = "ERROR";
     private String code = "";
     private String message = "";

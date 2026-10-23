@@ -268,4 +268,23 @@ public class TestScenario {
         this.evidenceScopedFailingTests = evidenceScopedFailingTests == null
                 ? new ArrayList<>() : new ArrayList<>(evidenceScopedFailingTests);
     }
+
+    /** Detached editable inputs for a background execution task. */
+    public TestScenario copy() {
+        var copy = new TestScenario();
+        copy.name = name;
+        copy.displayNameCn = displayNameCn;
+        copy.methodNameEn = methodNameEn;
+        copy.type = type;
+        copy.description = description;
+        copy.inputExpressions = inputExpressions == null ? new ArrayList<>() : new ArrayList<>(inputExpressions);
+        copy.expectedAssertions = expectedAssertions == null ? new ArrayList<>() : new ArrayList<>(expectedAssertions);
+        copy.coveredBranches = coveredBranches == null ? new ArrayList<>() : new ArrayList<>(coveredBranches);
+        copy.oracleKind = oracleKind;
+        copy.oracleEvidence = oracleEvidence;
+        copy.oracleConfidence = oracleConfidence;
+        copy.evidenceScopedFailingTests = evidenceScopedFailingTests == null ? new ArrayList<>() : new ArrayList<>(evidenceScopedFailingTests);
+        copy.enabled = enabled;
+        return copy;
+    }
 }

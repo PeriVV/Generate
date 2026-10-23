@@ -19,6 +19,7 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
     private final JBLabel methodLabel = new JBLabel("当前方法：未选择");
     /** 源码位置标签。 */
     private final JBLabel pathLabel = new JBLabel("源码位置：-");
+    private final JButton dependenciesButton = new JButton("配置测试依赖");
 
     /**
      * 创建 Header。
@@ -27,6 +28,10 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
      * @param onAnalyze 重新分析按钮动作
      */
     public UnitMindHeaderPanel(Runnable onSettings, Runnable onAnalyze) {
+        this(onSettings, onAnalyze, () -> {});
+    }
+
+    public UnitMindHeaderPanel(Runnable onSettings, Runnable onAnalyze, Runnable onDependencies) {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(8, 10));
         setBackground(UIUtil.getPanelBackground());
@@ -44,6 +49,7 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
         JButton analyzeButton = new JButton("重新分析");
         settingsButton.addActionListener(event -> onSettings.run());
         analyzeButton.addActionListener(event -> onAnalyze.run());
+        dependenciesButton.addActionListener(event -> onDependencies.run());
         actions.add(settingsButton);
         actions.add(analyzeButton);
         titlePanel.add(titleTexts, BorderLayout.CENTER);
@@ -53,10 +59,16 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
         contextPanel.setBorder(JBUI.Borders.emptyTop(8));
         contextPanel.add(methodLabel, BorderLayout.NORTH);
         contextPanel.add(pathLabel, BorderLayout.CENTER);
+        JBPanel<?> dependencyActions = new JBPanel<>(new FlowLayout(FlowLayout.LEFT, 0, 4));
+        dependenciesButton.setToolTipText("为当前 Java 文件所属模块配置 JUnit / Mockito 测试依赖");
+        dependencyActions.add(dependenciesButton);
+        contextPanel.add(dependencyActions, BorderLayout.SOUTH);
 
         add(titlePanel, BorderLayout.NORTH);
         add(contextPanel, BorderLayout.SOUTH);
     }
+
+    public void setDependenciesEnabled(boolean enabled) { dependenciesButton.setEnabled(enabled); }
 
     /**
      * 更新当前方法与源码位置。

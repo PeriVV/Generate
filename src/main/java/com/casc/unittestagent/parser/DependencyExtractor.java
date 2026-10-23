@@ -41,6 +41,12 @@ public class DependencyExtractor {
         }
 
         for (FieldDeclaration field : classDeclaration.getFields()) {
+            // 静态字段（private static final 常量/工具）不是实例依赖：
+            // 提成 @Mock 语义上永远无效（joda Days.PARSER 实测），且会给静态方法
+            // 测试强加 initMocks 样板与 Mockito 运行时依赖。
+            if (field.isStatic()) {
+                continue;
+            }
             boolean annotationDependency = field.getAnnotations().stream()
                     .anyMatch(annotation -> isDependencyAnnotation(annotation.getNameAsString()));
             for (VariableDeclarator variable : field.getVariables()) {

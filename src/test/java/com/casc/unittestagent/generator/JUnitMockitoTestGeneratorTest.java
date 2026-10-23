@@ -155,6 +155,118 @@ public class JUnitMockitoTestGeneratorTest extends TestCase {
         assertFalse(code, code.contains("int end = 0;"));
     }
 
+    public void testGenericParameterTypesGetImportsForInnerSimpleNames() throws Exception {
+        // List<JavaType> 形态必须分解出内层简单名并补 import，只按整段文本匹配会漏（jackson 实测）。
+        MethodModel method = method("consume", "void");
+        method.getParameters().add(parameter("tokens", "List<JavaType>"));
+        method.setImports(java.util.List.of(
+                "java.util.List", "com.fasterxml.jackson.databind.JavaType"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertTrue(content, content.contains("import com.fasterxml.jackson.databind.JavaType;"));
+        assertTrue(content, content.contains("import java.util.List;"));
+    }
+
+    public void testWildcardSourceImportResolvesSimpleNamesViaReflection() throws Exception {
+        // 源码通配 import（java.util.concurrent.*）解析不出 ThreadFactory：需要反射展开成精确 import。
+        MethodModel method = method("newInstance", "void");
+        method.getParameters().add(parameter("factory", "ThreadFactory"));
+        method.setImports(java.util.List.of("java.util.concurrent.*"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertTrue(content, content.contains("import java.util.concurrent.ThreadFactory;"));
+    }
+
+    public void testTypeVariableParametersUseVarAndLiteralNotMock() throws Exception {
+        // <T> T identity(T)：T 是类型变量，mock(T.class)/T obj 声明都必然编译失败。
+        MethodModel method = method("identity", "T");
+        method.getParameters().add(parameter("input", "T"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertFalse(content, content.contains("mock(T.class)"));
+        assertFalse(content, content.contains(" T input ="));
+        assertTrue(content, content.contains("var input ="));
+        assertCompiles("""
+                package sample;
+                public class Subject {
+                    public <T> T identity(T input) { return input; }
+                }
+                """, content);
+    }
+
+    public void testStringDependencyIsNeverMocked() {
+        // Mockito 禁止 mock String：@Mock String 字段会让 initMocks 崩溃整个测试类（mybatis 实测）。
+        MethodModel method = method("parse", "String");
+        method.getParameters().add(parameter("openToken", "String"));
+        method.getDependencies().add(dependency("openToken", "String", true, "length()"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertFalse(content, content.contains("@Mock\n    private String"));
+        assertTrue(content, content.contains("private String openToken = "));
+    }
+
+    public void testArrayParameterLiteralSurvivesFullGenerationChain() throws Exception {
+        // 全链路回归：数组字面量必须出现在生成代码里且不被 safeValueExpression 改写为
+        // null/mock（第二轮审核 critical：修复曾在唯一生产路径 100% 失效）。
+        MethodModel method = method("decodeHex", "char[]");
+        method.getParameters().add(parameter("data", "char[]"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertTrue(content, content.contains("new char[]"));
+        assertFalse(content, content.contains("mock(char"));
+        assertFalse(content, content.contains("char[] data = null"));
+        assertCompiles("""
+                package sample;
+                public class Subject {
+                    public char[] decodeHex(char[] data) { return data; }
+                }
+                """, content);
+    }
+
+    public void testArrayDependencyFieldIsNeverMocked() {
+        MethodModel method = method("encode", "byte[]");
+        method.getParameters().add(parameter("data", "byte[]"));
+        method.getDependencies().add(dependency("data", "byte[]", true, "length()"));
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertFalse(content, content.contains("@Mock\n    private byte[]"));
+        assertFalse(content, content.contains("mock(byte"));
+        assertTrue(content, content.contains("new byte[]"));
+    }
+
+    public void testInterfaceSubjectGeneratesEmptyExplainedClassInsteadOfCrashing() {
+        MethodModel method = method("isMatch", "boolean");
+        method.setOwnerInterface(true);
+
+        String content = new JUnitMockitoTestGenerator().generate(method, List.of(normalScenario()), null).getContent();
+
+        assertFalse(content, content.contains("@InjectMocks"));
+        assertFalse(content, content.contains("initMocks"));
+        assertTrue(content, content.contains("接口"));
+        assertFalse(content, content.contains("@Test"));
+    }
+
+    public void testNoMockitoModeEmitsZeroMockitoReferences() {
+        MethodModel method = method("parse", "String");
+        method.getParameters().add(parameter("text", "String"));
+        method.getDependencies().add(dependency("helper", "HelperApi", false, "parse()"));
+
+        JUnitMockitoTestGenerator generator = new JUnitMockitoTestGenerator();
+        generator.setMockitoAvailable(false);
+        String content = generator.generate(method, List.of(normalScenario()), null).getContent();
+
+        assertFalse(content, content.contains("org.mockito"));
+        assertFalse(content, content.contains("mock("));
+        assertFalse(content, content.contains("when("));
+        assertFalse(content, content.contains("@Mock"));
+    }
+
     private MethodModel method(String name, String returnType) {
         MethodModel method = new MethodModel();
         method.setPackageName("sample");

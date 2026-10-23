@@ -1,0 +1,95 @@
+name: Windows compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [dev, main, 'codex/windows-native-*']
+
+permissions:
+  contents: read
+
+jobs:
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: '工作区 UnitMind'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Remember project JDK 8
+        shell: pwsh
+        run: '"UNITMIND_JAVA8_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Native Windows regression and plugin package
+        shell: pwsh
+        working-directory: '工作区 UnitMind'
+        run: |
+          if (-not (Test-Path "$env:UNITMIND_JAVA8_HOME/bin/javac.exe")) { throw 'A real JDK 8 is required for native acceptance' }
+          & "$env:UNITMIND_JAVA8_HOME/bin/java.exe" -version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mvn.cmd -B org.apache.maven.plugins:maven-help-plugin:3.5.2:help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\gradlew.bat test windowsCompatibilityTest buildPlugin "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" --no-daemon --console=plain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native evidence and package fingerprint
+        shell: pwsh
+        working-directory: '工作区 UnitMind'
+        run: |
+          $results = @()
+          foreach ($task in @('test', 'windowsCompatibilityTest')) {
+            $files = @(Get-ChildItem "build/test-results/$task/TEST-*.xml")
+            if ($files.Count -eq 0) { throw "No XML test results for $task" }
+            $counts = @{ tests = 0; failures = 0; errors = 0; skipped = 0 }
+            foreach ($file in $files) {
+              [xml]$xml = Get-Content -LiteralPath $file.FullName -Raw
+              foreach ($key in @('tests', 'failures', 'errors', 'skipped')) {
+                $counts[$key] += [int]$xml.testsuite.GetAttribute($key)
+              }
+            }
+            if ($counts.tests -eq 0 -or $counts.failures -gt 0 -or $counts.errors -gt 0 -or $counts.skipped -gt 0) {
+              throw "Incomplete native acceptance for ${task}: $($counts | ConvertTo-Json -Compress)"
+            }
+            $results += @{ task = $task; counts = $counts }
+          }
+          $package = @(Get-ChildItem 'build/distributions/UnitMind-*.zip')
+          if ($package.Count -ne 1) { throw 'Expected exactly one verified plugin package' }
+          $evidence = @{
+            status = 'PASSED_NATIVE_WINDOWS'
+            os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+            commit = (git rev-parse HEAD)
+            run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            java8 = $env:UNITMIND_JAVA8_HOME
+            java17 = $env:JAVA_HOME
+            test_results = $results
+            package = $package[0].Name
+            package_bytes = $package[0].Length
+            package_sha256 = (Get-FileHash -LiteralPath $package[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          New-Item -ItemType Directory -Path 'build/reports/windows-native' -Force | Out-Null
+          $evidence | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 'build/reports/windows-native/summary.json'
+          Get-Content 'build/reports/windows-native/summary.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-diagnostics
+          path: |
+            工作区 UnitMind/build/reports/tests/test/
+            工作区 UnitMind/build/reports/tests/windowsCompatibilityTest/
+            工作区 UnitMind/build/test-results/test/
+            工作区 UnitMind/build/test-results/windowsCompatibilityTest/
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: windows-verified-plugin
+          if-no-files-found: error
+          path: |
+            工作区 UnitMind/build/reports/windows-native/summary.json
+            工作区 UnitMind/build/distributions/UnitMind-*.zip

@@ -147,4 +147,59 @@ public class TestClassMergerTest {
             assertTrue(ex.getMessage().contains("方法签名冲突"));
         }
     }
+
+    @Test
+    public void methodMergeReusesPackageVisibleMocksHelpersAndNestedTestsByStructure() {
+        String fixture = """
+                package sample;
+                class SubjectTest {
+                    @org.mockito.Mock Object repository;
+                    Object subject;
+                    @org.junit.jupiter.api.BeforeEach void setup() { subject = repository; }
+                    Object helper() { return subject; }
+                    @org.junit.jupiter.api.Nested class Cases {
+                        @org.junit.jupiter.api.Test void works() { helper(); }
+                    }
+                }
+                """;
+        var merged = new TestClassMerger().merge(fixture, fixture, "target", new MergeOptions());
+        var type = com.github.javaparser.StaticJavaParser.parse(merged).getClassByName("SubjectTest").orElseThrow();
+        org.junit.Assert.assertEquals(2, type.getFields().size());
+        org.junit.Assert.assertEquals(1, type.getMethodsByName("setup").size());
+        org.junit.Assert.assertEquals(1, type.getMethodsByName("helper").size());
+        org.junit.Assert.assertEquals(1, type.getMembers().stream().filter(m -> m.isClassOrInterfaceDeclaration()).count());
+    }
+    @Test
+    public void methodMergeBlocksChangedSharedLifecycleAndFieldFixtures() {
+        String original = "package sample; class SubjectTest { Object subject; @org.junit.jupiter.api.BeforeEach void setup() { subject = null; } }";
+        for (String changed : new String[]{original.replace("Object subject", "String subject"),
+                original.replace("subject = null", "subject = new Object()"), original.replace("void setup", "void otherSetup")}) {
+            try {
+                new TestClassMerger().merge(original, changed, "target", new MergeOptions());
+                org.junit.Assert.fail("Shared fixture conflicts must be explicit");
+            } catch (IllegalStateException expected) { assertTrue(expected.getMessage().contains("冲突")); }
+        }
+    }
+    @Test
+    public void methodMergeBlocksImportRebindingAndAddsRequiredMockitoExtension() {
+        String existing = "package sample;\nimport one.Subject;\nclass SubjectTest {}";
+        String generated = "package sample;\nimport two.Subject;\nclass SubjectTest {}";
+        try { new TestClassMerger().merge(existing, generated, "target", new MergeOptions()); org.junit.Assert.fail(); }
+        catch (IllegalStateException expected) { assertTrue(expected.getMessage().contains("import")); }
+        String code = new TestClassMerger().merge("package sample; class SubjectTest {}",
+                "package sample; @org.junit.jupiter.api.extension.ExtendWith(org.mockito.junit.jupiter.MockitoExtension.class) class SubjectTest {}",
+                "target", new MergeOptions());
+        assertTrue(code.contains("@org.junit.jupiter.api.extension.ExtendWith"));
+    }
+
+    @Test
+    public void membersGoIntoNamedTestTypeEvenWithTrailingBracesAndOtherTopLevelTypes() {
+        String existing = "package sample; class Helper {}\nclass SubjectTest { @org.junit.jupiter.api.Test void human() {} }\nclass Trailer {} // trailing }";
+        String generated = "package sample; class SubjectTest { @org.junit.jupiter.api.Test void added() {} }";
+        var code = new TestClassMerger().merge(existing, generated, "target", new MergeOptions());
+        var unit = com.github.javaparser.StaticJavaParser.parse(code);
+        org.junit.Assert.assertEquals(1, unit.getClassByName("SubjectTest").orElseThrow().getMethodsByName("added").size());
+        org.junit.Assert.assertEquals(0, unit.getClassByName("Trailer").orElseThrow().getMethods().size());
+        org.junit.Assert.assertEquals(0, unit.getClassByName("Helper").orElseThrow().getMethods().size());
+    }
 }

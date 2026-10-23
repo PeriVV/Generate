@@ -46,11 +46,24 @@ public class GeneratedTestCodePostProcessor {
         processed = removeEmptyTearDown(processed, warnings);
         processed = normalizeDeepStubAnnotation(processed, warnings);
         processed = ensureAnswersImport(processed);
+        var normalization = TestCodeNormalizationPipeline.normalize(processed);
+        processed = normalization.code();
+        if (normalization.edits().stream().anyMatch(e -> e.kind() == TestCodeNormalizationPipeline.Kind.IMPORT))
+            warnings.add("已补齐 Mockito 注解导入。仍需编译及运行验证。");
+        long matcherEdits = normalization.edits().stream().filter(e -> e.kind() == TestCodeNormalizationPipeline.Kind.FRAMEWORK_SYNTAX).count();
+        if (matcherEdits > 0) warnings.add("已规范化 " + matcherEdits + " 处 Mockito 参数匹配器；保留原参数值、调用次数和验证方法，仍需真实运行验证。");
         validateThenReturnTypes(processed, methodModel, warnings);
         processed = removeUnusedImports(processed);
         warnings.addAll(riskWarnings(processed, methodModel));
 
-        return new ProcessedCode(processed, warnings);
+        return new ProcessedCode(processed, warnings, normalization.edits());
+    }
+
+    public ProcessedCode processRepair(String code, MethodModel methodModel, String baseline) {
+        var imports = SourceImportPreflight.preserveImportOnlyPatch(baseline, code);
+        ProcessedCode processed = process(imports.code(), methodModel);
+        if (imports.changed()) processed.getWarnings().add("导入补丁遗漏了仍在使用的原有 import，已保留其绑定并重新编译验证。");
+        return processed;
     }
 
     /**
@@ -507,11 +520,15 @@ public class GeneratedTestCodePostProcessor {
     public static final class ProcessedCode {
         private final String code;
         private final List<String> warnings;
+        private final List<TestCodeNormalizationPipeline.Edit> normalizationEdits;
 
-        private ProcessedCode(String code, List<String> warnings) {
+        private ProcessedCode(String code, List<String> warnings, List<TestCodeNormalizationPipeline.Edit> edits) {
             this.code = code;
             this.warnings = warnings;
+            this.normalizationEdits = List.copyOf(edits);
         }
+
+        public List<TestCodeNormalizationPipeline.Edit> getNormalizationEdits() { return normalizationEdits; }
 
         public String getCode() {
             return code;

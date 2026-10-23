@@ -14,6 +14,67 @@ import java.util.Set;
 public class RuntimeOracleGateTest extends TestCase {
     private final RuntimeOracleGate gate = new RuntimeOracleGate();
 
+    public void testModelCannotReportCandidateRejectionAsObservedRuntimeFailure() {
+        var diagnostic = new RuntimeDiagnostic(); diagnostic.setCategory("MOCKITO_INVALID_MATCHER_USAGE");
+        var response = arbitrationResponse("UNSAFE_ORACLE_PATCH");
+        var result = gate.assessment(response, List.of(diagnostic));
+        assertEquals("MOCKITO_INVALID_MATCHER_USAGE", result.getRootCauseCategory());
+        assertTrue(result.getEvidence().toString(), result.getEvidence().stream().anyMatch(e -> e.contains("UNSAFE_ORACLE_PATCH")));
+    }
+
+    public void testSharedNormalizationAcceptsSyntaxRepairInsideControlFlow() {
+        String current = """
+                import static org.mockito.Mockito.*;
+                class SubjectTest { @Test void value(){
+                    if (enabled) { verify(client, times(2)).upload(anyString(), content.getBytes(), true); }
+                } }
+                """;
+        String fixed = current.replace("content.getBytes(), true", "eq(content.getBytes()), eq(true)");
+        gate.validateRepair(assessment("KEEP", "NONE"), current, fixed, Set.of("value"));
+        // Protected tests use the same contract representation, including under CORRECT.
+        gate.validateRepair(assessment("CORRECT", "CONTRACT_FACT"), current, fixed, Set.of(), Set.of("value"));
+    }
+
+    public void testCanonicalContractRejectsParameterModeReceiverAndExecutionChanges() {
+        String current = "import static org.mockito.Mockito.*; class T { @Test void value(){verify(client, times(2)).upload(anyString(), bytes, true);} }";
+        String fixed = current.replace("bytes, true", "eq(bytes), eq(true)");
+        for (String invalid : List.of(fixed.replace("eq(bytes)", "any(byte[].class)"), fixed.replace("eq(true)", "eq(false)"),
+                fixed.replace("times(2)", "times(1)"), fixed.replace("verify(client", "verify(other"),
+                fixed.replace(".upload(", ".delete("), fixed.replace("verify(client", "if(false) verify(client"))) {
+            assertUnsafe(current, invalid);
+        }
+    }
+
+    public void testCustomEqualityOrVerificationDoesNotGainNormalizationPrivilege() {
+        String current = "import static org.mockito.Mockito.*; class T { @Test void value(){verify(client).upload(anyString(), bytes, true);} }";
+        assertUnsafe(current, current.replace("bytes, true", "custom.eq(bytes), eq(true)"));
+        String shadow = current.replace("class T {", "class T { Object verify(Object c){return c;}");
+        assertUnsafe(shadow, shadow.replace("bytes, true", "eq(bytes), eq(true)"));
+    }
+
+    public void testLiteralWhitespaceAndTokenBoundariesRemainPartOfContract() {
+        assertUnsafe("class T { @Test void value(){assertEquals(\"a b\", actual);} }",
+                "class T { @Test void value(){assertEquals(\"ab\", actual);} }");
+        assertUnsafe("class T { @Test void value(){assertEquals(a + + b, actual);} }",
+                "class T { @Test void value(){assertEquals(a++ + b, actual);} }");
+        String source = "class T { @Test void value(){ assertEquals(\"a b\", actual); } }";
+        gate.validateRepair(assessment("KEEP", "NONE"), source, source.replace("assertEquals(", "assertEquals( /* comment */ "), Set.of("value"));
+    }
+
+    public void testEqualityWrappedLocalExpectedValueStillHasSourceProtection() {
+        String current = "import static org.mockito.Mockito.*; class T { @Test void value(){int count=2; verify(client).send(anyString(), count);} }";
+        String fixed = current.replace("anyString(), count", "anyString(), eq(count)");
+        gate.validateRepair(assessment("KEEP", "NONE"), current, fixed, Set.of("value"));
+        assertUnsafe(current, fixed.replace("count=2", "count=1"));
+    }
+
+    private void assertUnsafe(String current, String proposed) {
+        try {
+            gate.validateRepair(assessment("KEEP", "NONE"), current, proposed, Set.of("value"));
+            fail("unsafe contract change accepted: " + proposed);
+        } catch (RuntimeOracleGate.UnsafeOracleCorrectionException expected) { assertTrue(expected.getMessage().contains("Oracle")); }
+    }
+
     public void testKeepAllowsArrangeRepairWithoutChangingAssertion() {
         String current = """
                 class SubjectTest {

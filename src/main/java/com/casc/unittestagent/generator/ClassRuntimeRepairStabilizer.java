@@ -20,6 +20,24 @@ import java.util.Set;
 
 /** 对整类运行修复执行 AST 范围门禁，保护已通过测试和测试集合。 */
 public class ClassRuntimeRepairStabilizer {
+    /** Initialization repair never authorizes edits to any test body, including its Arrange. */
+    public void validateInitializationRepair(String currentCode, String proposedCode) {
+        var before = StaticJavaParser.parse(TestCodeNormalizationPipeline.normalize(currentCode).code());
+        var after = StaticJavaParser.parse(TestCodeNormalizationPipeline.normalize(proposedCode).code());
+        var original = tests(primaryType(before));
+        var replacement = tests(primaryType(after));
+        if (!original.keySet().equals(replacement.keySet()))
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "初始化修复不得增删测试。");
+        for (String name : original.keySet()) {
+            MethodDeclaration left = original.get(name).clone(); MethodDeclaration right = replacement.get(name).clone();
+            left.getAllContainedComments().forEach(com.github.javaparser.ast.comments.Comment::remove);
+            right.getAllContainedComments().forEach(com.github.javaparser.ast.comments.Comment::remove);
+            left.removeComment(); right.removeComment();
+            if (!left.toString().equals(right.toString()))
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE,
+                        "初始化修复只能修改共享 Fixture，测试方法必须保持不变：" + name);
+        }
+    }
     private static final Set<String> TEST_ANNOTATIONS = Set.of(
             "Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate");
 
@@ -29,28 +47,32 @@ public class ClassRuntimeRepairStabilizer {
                             Set<String> passedTestIds,
                             Set<String> failingTestIds) {
         if (currentCode == null || currentCode.isBlank()) {
-            throw new IllegalArgumentException("当前完整测试类为空。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "当前完整测试类为空。");
         }
         if (proposedCode == null || proposedCode.isBlank()) {
-            throw new IllegalArgumentException("整类运行修复返回了空代码。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "整类运行修复返回了空代码。");
         }
         CompilationUnit current = StaticJavaParser.parse(currentCode);
-        CompilationUnit proposed = StaticJavaParser.parse(proposedCode);
+        CompilationUnit proposed;
+        try { proposed = StaticJavaParser.parse(proposedCode); }
+        catch (com.github.javaparser.ParseProblemException ex) {
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.PATCH_SHAPE, "运行修复候选 Java 语法无效。");
+        }
         ClassOrInterfaceDeclaration currentType = primaryType(current);
         ClassOrInterfaceDeclaration proposedType = proposed.getClassByName(currentType.getNameAsString())
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE,
                         "修复候选未声明测试类 " + currentType.getNameAsString()));
         if (!packageName(current).equals(packageName(proposed))) {
-            throw new IllegalArgumentException("修复候选修改了测试类 package。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "修复候选修改了测试类 package。");
         }
         if (hasDisabled(proposedType)) {
-            throw new IllegalArgumentException("修复候选不得添加 @Disabled。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "修复候选不得添加 @Disabled。");
         }
 
         Map<String, MethodDeclaration> currentTests = tests(currentType);
         Map<String, MethodDeclaration> proposedTests = tests(proposedType);
         if (!currentTests.keySet().equals(proposedTests.keySet())) {
-            throw new IllegalArgumentException("修复候选不得增删或改名测试方法：原="
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "修复候选不得增删或改名测试方法：原="
                     + currentTests.keySet() + "，新=" + proposedTests.keySet());
         }
         for (MethodDeclaration test : proposedTests.values()) validateTestBody(test);
@@ -102,15 +124,15 @@ public class ClassRuntimeRepairStabilizer {
             }
         }
         if (changed.isEmpty() && !fixtureChanged) {
-            throw new IllegalArgumentException("整类运行修复未产生语义修改。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "整类运行修复未产生语义修改。");
         }
         return new Result(code, changed, fixtureChanged);
     }
 
     private void validateTestBody(MethodDeclaration test) {
-        if (hasDisabled(test)) throw new IllegalArgumentException("测试方法不得添加 @Disabled：" + test.getName());
+        if (hasDisabled(test)) throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "测试方法不得添加 @Disabled：" + test.getName());
         if (test.getBody().isEmpty() || test.getBody().get().getStatements().isEmpty()) {
-            throw new IllegalArgumentException("测试方法不得为空：" + test.getName());
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "测试方法不得为空：" + test.getName());
         }
         for (MethodCallExpr call : test.findAll(MethodCallExpr.class)) {
             if (!("assumeTrue".equals(call.getNameAsString()) || "assumeFalse".equals(call.getNameAsString()))) continue;
@@ -122,7 +144,7 @@ public class ClassRuntimeRepairStabilizer {
                 boolean literal = argument.asBooleanLiteralExpr().getValue();
                 if (("assumeTrue".equals(call.getNameAsString()) && !literal)
                         || ("assumeFalse".equals(call.getNameAsString()) && literal)) {
-                    throw new IllegalArgumentException("测试方法不得用恒假 assumption 跳过执行：" + test.getName());
+                    throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "测试方法不得用恒假 assumption 跳过执行：" + test.getName());
                 }
             }
         }
@@ -133,7 +155,7 @@ public class ClassRuntimeRepairStabilizer {
         type.getMethods().stream().filter(this::isTest).forEach(method -> {
             String name = method.getNameAsString();
             if (result.put(name, method) != null) {
-                throw new IllegalArgumentException("整类运行修复暂不支持同名重载测试：" + name);
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "整类运行修复暂不支持同名重载测试：" + name);
             }
         });
         return result;
@@ -162,6 +184,8 @@ public class ClassRuntimeRepairStabilizer {
 
     private List<String> nonTestMembers(ClassOrInterfaceDeclaration type) {
         List<String> result = new ArrayList<>();
+        // TestPropertySource/ContextConfiguration and other class annotations configure the shared fixture.
+        result.add(type.getAnnotations().toString());
         for (BodyDeclaration<?> member : type.getMembers()) {
             if (member.isMethodDeclaration() && isTest(member.asMethodDeclaration())) continue;
             result.add(member.toString().replaceAll("\\s+", " ").trim());
@@ -179,7 +203,7 @@ public class ClassRuntimeRepairStabilizer {
 
     private ClassOrInterfaceDeclaration primaryType(CompilationUnit unit) {
         return unit.findFirst(ClassOrInterfaceDeclaration.class)
-                .orElseThrow(() -> new IllegalArgumentException("测试源码中未找到测试类"));
+                .orElseThrow(() -> new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "测试源码中未找到测试类"));
     }
 
     private String packageName(CompilationUnit unit) {

@@ -6,7 +6,6 @@ import com.github.javaparser.ast.ImportDeclaration;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -119,10 +118,11 @@ public final class ProjectSourceDependencyResolver {
     }
 
     private static void addSource(File source, Set<File> result, Deque<String> pending) {
-        File normalized = normalize(source);
+        // Keep the IDE-visible path: a canonical symlink alias may have different encoding settings.
+        File normalized = source.toPath().toAbsolutePath().normalize().toFile();
         if (!result.add(normalized)) return;
         try {
-            pending.addLast(Files.readString(normalized.toPath(), StandardCharsets.UTF_8));
+            pending.addLast(com.casc.unittestagent.util.ProjectFileText.read(normalized.toPath()));
         } catch (IOException ignored) {
             // Keep the source in the explicit list; javac will provide the actionable error.
         }

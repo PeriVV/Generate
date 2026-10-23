@@ -85,11 +85,15 @@ public class OpenSourceRuleGenerationPipelineTest extends TestCase {
         report.append("- Mock 策略：").append(mockStrategy.getStrategyItems().size()).append(" 项\n");
 
         // 用项目真实 classpath 判定未知类型能否 new：名称启发式认不出第三方接口
-        // （petclinic 的 Errors），new Errors() 会直接编译失败。
+        // （petclinic 的 Errors），new Errors() 会直接编译失败。探针范围必须包含
+        // 项目自身 classes 目录（Maven 导出的依赖 classpath 不含项目产物，否则 Pet
+        // 这类项目内可构造类会被误判退 null）。
+        List<java.io.File> probeClasspath = new ArrayList<>(
+                LocalCoverageClosureSupport.dependencies(matrixCase.classpathFilePath()));
+        probeClasspath.add(matrixCase.classesPath().toFile());
         JUnitMockitoTestGenerator generator = new JUnitMockitoTestGenerator();
         generator.setTypeInstantiabilityProbe(
-                com.casc.unittestagent.generator.ClasspathTypeProbe.from(
-                        LocalCoverageClosureSupport.dependencies(matrixCase.classpathFilePath())));
+                com.casc.unittestagent.generator.ClasspathTypeProbe.from(probeClasspath));
         GeneratedTestFile generated = generator.generate(method, scenarios, mockStrategy);
         assertNotNull("规则生成器未返回测试文件", generated);
         String testCode = generated.getContent();
@@ -127,6 +131,16 @@ public class OpenSourceRuleGenerationPipelineTest extends TestCase {
         assertTrue("生成的测试类未被发现为 JUnit 5 测试：\n" + LocalCoverageClosureSupport.details(run), found > 0);
         report.append("- 沙箱执行：发现 ").append(found).append(" 个测试，通过 ").append(succeeded)
                 .append(" 个").append(succeeded == found ? "" : "（未全通过，仅记录趋势）").append("\n");
+        if (succeeded < found) {
+            // 失败测试的名称与异常摘要：生成质量问题定位必需，不能只记通过率。
+            for (com.casc.unittestagent.model.RuntimeDiagnostic diagnostic
+                    : run.getSnapshot().getExecution().getDiagnostics()) {
+                report.append("  - 失败：`").append(diagnostic.getTestId()).append("` ")
+                        .append(diagnostic.getExceptionType()).append(": ")
+                        .append(String.valueOf(diagnostic.getMessage()).replace("\n", " ⏎ "))
+                        .append("\n");
+            }
+        }
         if (run.getSnapshot().isAvailable()) {
             report.append("- 生成代码覆盖率：").append(LocalCoverageClosureSupport.metric(run.getSnapshot()))
                     .append("\n");

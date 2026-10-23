@@ -1,6 +1,7 @@
 package com.casc.unittestagent.ui.step;
 
 import com.casc.unittestagent.model.GenerationStatus;
+import com.casc.unittestagent.model.RunnableTestSelectionReport;
 import com.casc.unittestagent.model.CompileDiagnostic;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
@@ -69,6 +70,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     /** 当前覆盖率可视化组件。 */
     private JComponent coverageComponent;
     private JComponent classJUnitComponent;
+    private JPanel actionsPanel;
+    private JComponent runnableSelectionComponent;
     /** 验证详情和代码编辑器的可调整分栏。 */
     private OnePixelSplitter validationCodeSplitter;
     private JButton detailsSizeButton;
@@ -173,7 +176,8 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
             add(new UnitMindLoadingPanel("正在生成测试代码..."), BorderLayout.CENTER);
             return;
         }
-        if (status == GenerationStatus.FAILED) {
+        boolean hasDraft = currentCode != null && !currentCode.isBlank() || !this.generatedCode.isBlank();
+        if (status == GenerationStatus.FAILED && !hasDraft) {
             add(new UnitMindErrorPanel("测试代码生成失败", error == null ? "未知错误" : error), BorderLayout.CENTER);
             return;
         }
@@ -184,6 +188,12 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         }
         JBLabel validationLabel = new JBLabel(validationText(validationResult));
         statusPanel.add(validationLabel, BorderLayout.CENTER);
+        if (validationResult != null && validationResult.getStatus() == ValidationStatus.FAILED
+                || status == GenerationStatus.FAILED) {
+            JTextArea subsetHint = new JTextArea("部分用例受阻时，可点击“保留可运行用例并测覆盖率”，单独验证剩余用例。");
+            subsetHint.setEditable(false); subsetHint.setLineWrap(true); subsetHint.setWrapStyleWord(true);
+            subsetHint.setBackground(null); statusPanel.add(subsetHint, BorderLayout.SOUTH);
+        }
         detailsPanel = new JPanel();
         detailsPanel.setLayout(new BoxLayout(detailsPanel, BoxLayout.Y_AXIS));
         JTextArea diagnostics = diagnosticArea(validationResult);
@@ -192,9 +202,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (coverageComponent != null) detailsPanel.add(coverageComponent);
         classJUnitComponent = classJUnitPanel(classJUnitReport);
         if (classJUnitComponent != null) detailsPanel.add(classJUnitComponent);
-        if (detailsPanel.getComponentCount() > 0) {
-            statusPanel.add(detailsPanel, BorderLayout.SOUTH);
-        }
+        statusPanel.add(detailsPanel, BorderLayout.SOUTH);
         statusPanel.setBorder(JBUI.Borders.empty(0, 0, 8, 4));
 
         Document document = EditorFactory.getInstance().createDocument(currentCode == null ? "" : currentCode);
@@ -273,6 +281,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         bottom.add(feedbackPanel, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
+        actionsPanel = buttons;
         JButton copy = new JButton("复制");
         copy.setToolTipText("复制当前测试代码到剪贴板");
         JButton restore = new JButton("还原");
@@ -317,6 +326,29 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         buttons.add(stopCoverage);
         bottom.add(buttons, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
+    }
+
+    public void configureRunnableSelection(RunnableTestSelectionReport report,
+                                           Runnable onSelect, Runnable onRestore, Runnable onOpenOriginal,
+                                           boolean running) {
+        if (actionsPanel == null || detailsPanel == null) return;
+        JButton select = new JButton("保留可运行用例并测覆盖率");
+        select.setToolTipText("支持预检、编译或运行失败：隔离问题方法组及其不再使用的私有辅助方法，完整回归并测量剩余集合的覆盖率");
+        select.setEnabled(!running); select.addActionListener(e -> onSelect.run()); actionsPanel.add(select);
+        if (report != null && !report.getOriginalCode().isBlank()) {
+            JButton original = new JButton("查看筛选前代码");
+            original.setEnabled(!report.getArchivePath().isBlank()); original.addActionListener(e -> onOpenOriginal.run());
+            actionsPanel.add(original);
+            JButton restore = new JButton("恢复筛选前代码");
+            restore.setEnabled(!running && !report.getOriginalCode().equals(getCode()));
+            restore.addActionListener(e -> onRestore.run()); actionsPanel.add(restore);
+        }
+        if (runnableSelectionComponent != null) detailsPanel.remove(runnableSelectionComponent);
+        if (report != null && report.getStatus() != RunnableTestSelectionReport.Status.NOT_RUN) {
+            runnableSelectionComponent = new com.casc.unittestagent.ui.component.RunnableSelectionReportPanel(report);
+            detailsPanel.add(runnableSelectionComponent, 0);
+        }
+        revalidate(); repaint();
     }
 
     /**
@@ -417,10 +449,11 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
     }
 
     private JTextArea diagnosticArea(ValidationResult result) {
-        if (result == null || result.getDiagnostics().isEmpty()) {
+        if (result == null || result.getDiagnostics().isEmpty() && result.getTestEnvironmentNote().isBlank()) {
             return null;
         }
         StringBuilder text = new StringBuilder();
+        if (!result.getTestEnvironmentNote().isBlank()) text.append(result.getTestEnvironmentNote()).append('\n');
         int count = Math.min(5, result.getDiagnostics().size());
         for (int index = 0; index < count; index++) {
             CompileDiagnostic diagnostic = result.getDiagnostics().get(index);
@@ -437,7 +470,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         area.setEditable(false);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);
-        area.setRows(Math.min(3, count));
+        area.setRows(Math.max(2, Math.min(4, count + 2)));
         return area;
     }
 
@@ -452,11 +485,12 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         if (report == null || report.getStatus() == ClassJUnitStatus.NOT_RUN) return null;
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        JTextArea area = new JTextArea("整类 JUnit：" + report.getStatus()
+        JTextArea area = new JTextArea("完整 JUnit 运行验证：" + report.getStatus()
                 + "；JUnit@1 " + executionText(report.getInitialExecution())
                 + "；最终 " + executionText(report.getFinalExecution())
                 + "；运行修复 " + report.getRuntimeRepairRounds() + " 轮"
                 + (report.getAttempts().size() > 1 ? "（按失败测试独立仲裁）" : "")
+                + "；运行配置 " + report.getRuntimeConfigurationOrigin()
                 + "；停止原因 " + report.getStopReason()
                 + (report.getMessage().isBlank() ? "" : "\n" + report.getMessage()));
         area.setEditable(false);
@@ -464,6 +498,22 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         area.setWrapStyleWord(true);
         area.setRows(3);
         panel.add(area);
+        if (!report.getFinalExecution().getDiagnostics().isEmpty()) {
+            StringBuilder failures = new StringBuilder();
+            report.getFinalExecution().getDiagnostics().stream().limit(5).forEach(item -> {
+                if (failures.length() > 0) failures.append('\n');
+                failures.append(item.getTestId()).append("：").append(item.getCategory())
+                        .append(item.getFailurePhase() == com.casc.unittestagent.model.RuntimeFailurePhase.UNKNOWN ? "" : " [" + item.getFailurePhase().getLabelCn() + "]")
+                        .append(" ").append(item.getExceptionType()).append(" ").append(item.getMessage());
+            });
+            JTextArea failureArea = new JTextArea(failures.toString());
+            failureArea.setEditable(false);
+            failureArea.setLineWrap(true);
+            failureArea.setWrapStyleWord(true);
+            failureArea.setRows(4);
+            panel.add(failureArea);
+            panel.add(new com.casc.unittestagent.ui.component.RuntimeEvidencePanel(report.getFinalExecution()));
+        }
         if (!report.getAttempts().isEmpty()) {
             panel.add(new JBLabel("分测试修复明细"));
             StringBuilder attempts = new StringBuilder();

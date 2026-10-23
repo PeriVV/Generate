@@ -1,6 +1,7 @@
 package com.casc.unittestagent.ui.step;
 
 import com.casc.unittestagent.model.GenerationResult;
+import com.casc.unittestagent.model.ClassJUnitStatus;
 import com.casc.unittestagent.model.ValidationResult;
 import com.casc.unittestagent.model.ValidationStatus;
 import com.casc.unittestagent.model.ClassGenerationResult;
@@ -39,7 +40,14 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         super(new BorderLayout());
         setBorder(JBUI.Borders.empty(10));
         boolean exists = targetFile != null && targetFile.exists();
-        add(new UnitMindSectionPanel("写入设置", table(model(result, targetFile, exists))), BorderLayout.CENTER);
+        JPanel details = new JPanel();
+        details.setLayout(new javax.swing.BoxLayout(details, javax.swing.BoxLayout.Y_AXIS));
+        details.add(new UnitMindSectionPanel("写入设置", table(model(result, targetFile, exists))));
+        if (result != null && !result.getFinalTestFileReport().getTargetPath().isBlank()) {
+            details.add(new com.casc.unittestagent.ui.component.FinalTestFileReportPanel(
+                    result.getFinalTestFileReport(), result.getRuntimeValidationReport()));
+        }
+        add(new javax.swing.JScrollPane(details), BorderLayout.CENTER);
         add(bottomPanel(result, exists, onWrite), BorderLayout.SOUTH);
     }
 
@@ -65,6 +73,11 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         model.addRow(new Object[]{"当前写入模式", exists ? "追加 / 覆盖 / 取消" : "新建 / 取消"});
         ValidationResult validation = result.getValidationResult();
         model.addRow(new Object[]{"编译校验", validation == null ? "尚未执行" : validationText(validation)});
+        if (validation != null && !validation.getTestEnvironmentNote().isBlank()) {
+            model.addRow(new Object[]{"测试环境", validation.getTestEnvironmentNote()});
+        }
+        model.addRow(new Object[]{"完整 JUnit 运行验证", result.getRuntimeValidationReport().getStatus()});
+        model.addRow(new Object[]{"写入前检查", "先验证并修复候选，再编译、执行最终合并测试类"});
         return model;
     }
 
@@ -90,7 +103,9 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         append.setEnabled(exists && generated && complete);
         overwrite.setEnabled(exists && generated && complete);
         ValidationResult validation = result == null ? null : result.getValidationResult();
-        force.setEnabled(generated && (!complete || validation == null || validation.getStatus() != ValidationStatus.PASSED));
+        force.setEnabled(generated && (!complete || validation == null
+                || validation.getStatus() != ValidationStatus.PASSED
+                || result.getRuntimeValidationReport().getStatus() != ClassJUnitStatus.PASSED));
         create.addActionListener(event -> onWrite.accept(TestWriteMode.CREATE_NEW, false));
         append.addActionListener(event -> onWrite.accept(TestWriteMode.APPEND_TO_EXISTING, false));
         overwrite.addActionListener(event -> onWrite.accept(TestWriteMode.OVERWRITE_EXISTING, false));
@@ -102,7 +117,7 @@ public class WriteFileStepPanel extends JBPanel<WriteFileStepPanel> {
         buttons.add(overwrite);
         buttons.add(force);
         buttons.add(cancel);
-        JBLabel hint = new JBLabel("正常写入要求最终文件编译通过；“强制写入”会再次确认。");
+        JBLabel hint = new JBLabel("正常写入自动验证最终测试类的编译与完整运行；覆盖率不作为运行门禁。“强制写入”仅保存草稿。");
         hint.setBorder(JBUI.Borders.emptyTop(6));
         container.add(buttons, BorderLayout.NORTH);
         container.add(hint, BorderLayout.SOUTH);

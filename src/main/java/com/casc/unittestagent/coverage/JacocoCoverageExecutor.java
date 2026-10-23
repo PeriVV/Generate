@@ -24,10 +24,8 @@ import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.util.PathUtil;
 
 import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,7 +47,6 @@ import java.util.function.BooleanSupplier;
 public class JacocoCoverageExecutor {
     private static final Logger LOG = Logger.getInstance(JacocoCoverageExecutor.class);
     private static final int MAX_OUTPUT_BYTES = 1024 * 1024;
-    private static final int MAX_DIAGNOSTICS = 20;
     /**
      * OpenTest4J wraps display values in an extra pair of angle brackets. The values themselves may
      * contain angle brackets (HTML, XML, generics), so a [^>]+ parser truncates valid diagnostics.
@@ -60,7 +57,6 @@ public class JacocoCoverageExecutor {
     private static final Pattern EXPECTED_EXCEPTION_NOT_THROWN = Pattern.compile(
             "expected\\s+([\\w.$]+)\\s+to be thrown,?\\s*but nothing was thrown\\.?",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern CAUSED_BY = Pattern.compile("^Caused by:\\s*([\\w.$]+)");
 
     /** 只执行完整 JUnit 测试类，不计算任何方法或类级覆盖率。 */
     public CoverageRunResult executeTestsOnly(CompiledTestArtifact artifact,
@@ -75,12 +71,8 @@ public class JacocoCoverageExecutor {
             return result;
         }
         try {
-            Path execFile = artifact.getRoot().resolve("junit-only.exec");
-            Path reports = artifact.getRoot().resolve("junit-only-reports");
-            Path agent = artifact.getRoot().resolve("junit-only-agent.jar");
-            Files.createDirectories(reports);
-            AgentJar.extractTo(agent.toFile());
-            TestExecutionSummary execution = runProcess(artifact, execFile, reports, agent,
+            Path reports = Files.createTempDirectory(artifact.getRoot(), "junit-only-reports-");
+            TestExecutionSummary execution = runProcess(artifact, null, reports, null,
                     config == null ? new CoverageConfig() : config, cancelled);
             snapshot.setExecution(execution);
             if (cancelled != null && cancelled.getAsBoolean()) {
@@ -91,6 +83,8 @@ public class JacocoCoverageExecutor {
                 snapshot.setMessage(execution.isTimedOut() ? "候选测试执行超时。"
                         : execution.getFound() == 0 ? "未发现可执行的 JUnit 5 测试。"
                         : "候选测试执行失败。");
+            } else if (!execution.isFullySuccessful()) {
+                snapshot.setMessage("JUnit 进程已完成，但逐用例执行证据不完整。");
             } else {
                 snapshot.setMessage("完整 JUnit 测试类执行通过。");
             }
@@ -126,8 +120,9 @@ public class JacocoCoverageExecutor {
             return result;
         }
         try {
-            Path execFile = artifact.getRoot().resolve("jacoco.exec");
-            Path reports = artifact.getRoot().resolve("junit-reports");
+            Path runDirectory = Files.createTempDirectory(artifact.getRoot(), "coverage-run-");
+            Path execFile = runDirectory.resolve("jacoco.exec");
+            Path reports = runDirectory.resolve("junit-reports");
             Path agent = artifact.getRoot().resolve("jacocoagent.jar");
             Files.createDirectories(reports);
             AgentJar.extractTo(agent.toFile());
@@ -149,6 +144,10 @@ public class JacocoCoverageExecutor {
                 snapshot.setMessage(execution.isTimedOut()
                         ? "候选测试执行超时。" : execution.getFound() == 0
                         ? "未发现可执行的 JUnit 5 测试。" : "候选测试执行失败。");
+                return result;
+            }
+            if (!execution.isFullySuccessful()) {
+                snapshot.setMessage("存在跳过、未完成或不一致的逐用例记录，覆盖率不计入完整运行证明。");
                 return result;
             }
             if (!Files.isRegularFile(execFile)) {
@@ -183,16 +182,27 @@ public class JacocoCoverageExecutor {
                                             Path agent,
                                             CoverageConfig config,
                                             BooleanSupplier cancelled) throws Exception {
-        AgentOptions agentOptions = new AgentOptions();
-        agentOptions.setDestfile(execFile.toAbsolutePath().toString());
-        agentOptions.setAppend(false);
-        agentOptions.setDumpOnExit(true);
-        agentOptions.setIncludes(artifact.getTargetClassName() + "*");
-
+        if (cancelled != null && cancelled.getAsBoolean()) throw new ProcessCanceledException();
         List<String> command = new ArrayList<>();
-        command.add(artifact.getJavaExecutable());
+        TestRuntimeConfiguration runtime = artifact.getRuntimeConfiguration();
+        command.add(runtime.getJavaExecutable().isBlank() ? artifact.getJavaExecutable() : runtime.getJavaExecutable());
+        // Keep redirected diagnostics readable on Windows without changing the SUT's default charset.
+        command.add("-Dsun.stdout.encoding=UTF-8");
+        command.add("-Dsun.stderr.encoding=UTF-8");
+        List<String> projectArguments = new ArrayList<>(runtime.getJvmArguments());
+        boolean reusedJacoco = reuseProjectJacocoAgent(projectArguments, artifact,
+                agent != null ? execFile : reports.resolve("project-agent.exec"));
+        command.addAll(projectArguments);
+        runtime.getSystemProperties().forEach((name, value) -> command.add("-D" + name + "=" + value));
         if (artifact.isPreviewLanguage()) command.add("--enable-preview");
-        command.add(agentOptions.getVMArgument(agent.toFile()));
+        if (agent != null && !reusedJacoco) {
+            AgentOptions agentOptions = new AgentOptions();
+            agentOptions.setDestfile(execFile.toAbsolutePath().toString());
+            agentOptions.setAppend(false);
+            agentOptions.setDumpOnExit(true);
+            agentOptions.setIncludes(artifact.getTargetClassName() + "*");
+            command.add(agentOptions.getVMArgument(agent.toFile()));
+        }
         command.add("-cp");
         command.add(runtimeClasspath(artifact));
         command.add("org.junit.platform.console.ConsoleLauncher");
@@ -207,39 +217,82 @@ public class JacocoCoverageExecutor {
         command.add("--include-engine=junit-jupiter");
         command.add("--select-class=" + artifact.getTestClassName());
 
-        File workingDirectory = artifact.getWorkingDirectory();
-        if (workingDirectory == null || !workingDirectory.isDirectory()) {
-            workingDirectory = artifact.getRoot().toFile();
-        }
+        File workingDirectory = runtime.getWorkingDirectory();
+        if (workingDirectory == null) workingDirectory = artifact.getRoot().toFile();
+        if (!workingDirectory.isDirectory()) throw new IOException("项目测试 workingDirectory 不可用。");
         // Windows 命令行约 32K 上限：项目运行时 classpath 整体传给 java -cp 时超限
         // 会以“文件名或扩展名太长”失败，超限时自动改写为 pathing jar 形式。
-        Process process = LongCommandLineLauncher.start(
-                new ProcessBuilder(command)
-                        .directory(workingDirectory)
-                        .redirectErrorStream(true),
-                artifact.getRoot());
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Thread drain = new Thread(() -> drain(process.getInputStream(), output), "unitmind-coverage-output");
-        drain.setDaemon(true);
-        drain.start();
-        long deadline = System.nanoTime() + Duration.ofSeconds(config.getExecutionTimeoutSeconds()).toNanos();
-        boolean finished = false;
-        while (!finished && System.nanoTime() < deadline && (cancelled == null || !cancelled.getAsBoolean())) {
-            finished = process.waitFor(100, TimeUnit.MILLISECONDS);
+        ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory).redirectErrorStream(true)
+                .redirectOutput(reports.resolve("process-output.log").toFile());
+        configureEnvironment(builder.environment(), runtime, BuildConfigurationProcess.isWindows());
+        Process process = LongCommandLineLauncher.start(builder, artifact.getRoot());
+        try {
+            long deadline = System.nanoTime() + Duration.ofSeconds(config.getExecutionTimeoutSeconds()).toNanos();
+            boolean finished = false;
+            while (!finished && System.nanoTime() < deadline && (cancelled == null || !cancelled.getAsBoolean())) {
+                finished = process.waitFor(100, TimeUnit.MILLISECONDS);
+            }
+            TestExecutionSummary summary = new TestExecutionSummary();
+            if (!finished) {
+                summary.setTimedOut(cancelled == null || !cancelled.getAsBoolean());
+                ProcessCleanup.terminate(process);
+            }
+            summary.setExitCode(process.isAlive() ? -1 : process.exitValue());
+            try (var stream = Files.newInputStream(reports.resolve("process-output.log"))) {
+                summary.setOutput(new String(stream.readNBytes(MAX_OUTPUT_BYTES), StandardCharsets.UTF_8));
+            }
+            readXmlReports(reports, summary);
+            ensureFailureDiagnostic(summary, artifact.getTestClassName());
+            SpringRuntimeFailureAnalyzer.enrich(summary.getDiagnostics());
+            if (!summary.isFullySuccessful()) RuntimeEvidenceArchive.preserve(reports, summary);
+            return summary;
+        } finally {
+            // Cancellation/interruption must not leave a JVM writing into a deleted sandbox.
+            ProcessCleanup.terminate(process);
         }
-        TestExecutionSummary summary = new TestExecutionSummary();
-        if (!finished) {
-            summary.setTimedOut(cancelled == null || !cancelled.getAsBoolean());
-            process.destroy();
-            if (!process.waitFor(500, TimeUnit.MILLISECONDS)) process.destroyForcibly();
-            process.waitFor(2, TimeUnit.SECONDS);
+    }
+
+    static void configureEnvironment(Map<String, String> environment, TestRuntimeConfiguration runtime, boolean windows) {
+        if (!runtime.isInheritEnvironment()) environment.clear();
+        for (String name : runtime.getExcludedEnvironment()) {
+            if (windows) environment.keySet().removeIf(key -> key.equalsIgnoreCase(name));
+            else environment.remove(name);
         }
-        drain.join(1000);
-        summary.setExitCode(process.isAlive() ? -1 : process.exitValue());
-        summary.setOutput(output.toString(StandardCharsets.UTF_8));
-        readXmlReports(reports, summary);
-        ensureFailureDiagnostic(summary, artifact.getTestClassName());
-        return summary;
+        runtime.getEnvironment().forEach((name, value) -> {
+            if (windows) environment.keySet().removeIf(key -> key.equalsIgnoreCase(name));
+            environment.put(name, value);
+        });
+    }
+
+    /** 覆盖率模式保留项目代理版本与过滤选项，只改数据出口；避免两个 JaCoCo 代理重复插桩。 */
+    private static boolean reuseProjectJacocoAgent(List<String> arguments, CompiledTestArtifact artifact,
+                                                   Path execFile) throws IOException {
+        boolean found = false;
+        for (int index = 0; index < arguments.size(); index++) {
+            String argument = arguments.get(index);
+            if (!argument.startsWith("-javaagent:")) continue;
+            String spec = argument.substring("-javaagent:".length());
+            int separator = spec.indexOf('=');
+            String path = separator < 0 ? spec : spec.substring(0, separator);
+            File jar = new File(path);
+            if (!jar.isAbsolute()) {
+                File directory = artifact.getRuntimeConfiguration().getWorkingDirectory();
+                jar = new File(directory == null ? artifact.getRoot().toFile() : directory, path);
+            }
+            String premain = "";
+            try (java.util.jar.JarFile archive = new java.util.jar.JarFile(jar)) {
+                if (archive.getManifest() != null) premain = archive.getManifest().getMainAttributes().getValue("Premain-Class");
+            } catch (IOException ignored) { continue; }
+            if (premain == null || !premain.startsWith("org.jacoco.agent.rt.")) continue;
+            if (found) throw new IOException("项目测试配置包含多个 JaCoCo 代理，无法执行覆盖率采集。");
+            AgentOptions options = new AgentOptions(separator < 0 ? "" : spec.substring(separator + 1));
+            options.setDestfile(execFile.toAbsolutePath().toString());
+            options.setAppend(false);
+            options.setOutput("file");
+            arguments.set(index, options.getVMArgument(jar));
+            found = true;
+        }
+        return found;
     }
 
     /**
@@ -435,6 +488,10 @@ public class JacocoCoverageExecutor {
 
     private void analyze(CompiledTestArtifact artifact, MethodModel method, String sourceText,
                          Path execFile, CoverageRunResult result) throws IOException {
+        if (method != null && !method.getAnalyzedSourceHash().isBlank()
+                && !method.getAnalyzedSourceHash().equals(com.casc.unittestagent.util.CodeFingerprint.sha256(sourceText))) {
+            throw new IOException("方法分析与被测源码版本不一致，请重新分析后测量覆盖率。");
+        }
         ExecFileLoader loader = new ExecFileLoader();
         loader.load(execFile.toFile());
         CoverageBuilder builder = new CoverageBuilder();
@@ -445,38 +502,27 @@ public class JacocoCoverageExecutor {
         int end = method == null ? -1 : method.getSourceEndLine();
         if (start <= 0 || end < start) throw new IOException("无法确定被测方法源码范围。");
         Map<Integer, LineData> lines = new HashMap<>();
-        IClassCoverage targetCoverage = null;
-        for (IClassCoverage coverage : builder.getClasses()) {
-            if (coverage.getName().equals(target)) {
-                targetCoverage = coverage;
-                break;
-            }
+        var scope = MethodCoverageScope.resolve(builder, target, method, artifact.getClasses());
+        IClassCoverage targetCoverage = scope.owner();
+        if (targetCoverage.isNoMatch()) {
+            throw new IOException("JaCoCo 执行数据与被测类字节码版本不一致，覆盖率不可用。");
         }
-        if (targetCoverage == null) throw new IOException("编译产物中未找到被测类：" + artifact.getTargetClassName());
-
-        IMethodCoverage exactMethod = selectMethodCoverage(targetCoverage, method, start, end);
-        if (exactMethod != null) {
-            collectLines(exactMethod, start, end, lines);
-        } else {
-            // Compatibility fallback for unusual compiler output. Still use the exact target class;
-            // never aggregate sibling/anonymous inner classes that happen to share source lines.
-            collectLines(targetCoverage, start, end, lines);
+        var classSnapshot = result.getClassSnapshot();
+        classSnapshot.setLine(new CoverageMetric(targetCoverage.getLineCounter().getCoveredCount(),
+                targetCoverage.getLineCounter().getMissedCount()));
+        classSnapshot.setBranch(new CoverageMetric(targetCoverage.getBranchCounter().getCoveredCount(),
+                targetCoverage.getBranchCounter().getMissedCount()));
+        classSnapshot.setExecution(result.getSnapshot().getExecution());
+        classSnapshot.setAvailable(true);
+        classSnapshot.setMeasurementScope("SELECTED_BUSINESS_CLASS");
+        classSnapshot.setMessage("当前测试集合对所选业务类的覆盖率（不包含其他业务类）。");
+        for (IMethodCoverage executable : scope.methods()) {
+            collectLines(executable, start, end, lines);
         }
-        if (lines.isEmpty()) {
-            IMethodCoverage nested = selectNestedMethodCoverage(
-                    builder, targetCoverage, target, method, start, end);
-            if (nested != null) {
-                collectLines(nested, start, end, lines);
-            }
-        }
-        if (lines.isEmpty()) {
-            if (method != null && (method.getMethodBodyText() == null || method.getMethodBodyText().isBlank())) {
-                throw new IOException("当前选择的方法是抽象或 native 声明，本身没有可执行字节码；"
-                        + "请选择具体实现方法后重新生成测试。");
-            }
-            throw new IOException("被测类已找到，但源码第 " + start + "-" + end
-                    + " 行没有对应的可执行字节码；请将光标放在目标方法体内并重新分析。");
-        }
+        if (lines.isEmpty()) throw new IOException("所选方法没有可统计的可执行行，不能报告 100%。");
+        result.getSnapshot().setMeasurementScope("SELECTED_METHOD_WITH_LAMBDAS");
+        result.getSnapshot().setMeasuredMethods(scope.methods().stream()
+                .map(m -> targetCoverage.getName() + "#" + m.getName() + m.getDesc()).toList());
 
         int coveredLines = 0;
         int missedLines = 0;
@@ -502,63 +548,6 @@ public class JacocoCoverageExecutor {
         result.setGaps(gaps);
         result.getSnapshot().setLine(new CoverageMetric(coveredLines, missedLines));
         result.getSnapshot().setBranch(new CoverageMetric(coveredBranches, missedBranches));
-    }
-
-    private IMethodCoverage selectMethodCoverage(IClassCoverage targetCoverage,
-                                                  MethodModel method,
-                                                  int sourceStart,
-                                                  int sourceEnd) {
-        if (targetCoverage == null || method == null || method.getMethodName() == null) return null;
-        IMethodCoverage selected = null;
-        int bestDistance = Integer.MAX_VALUE;
-        for (IMethodCoverage candidate : targetCoverage.getMethods()) {
-            if (!method.getMethodName().equals(candidate.getName())) continue;
-            int first = candidate.getFirstLine();
-            int last = candidate.getLastLine();
-            if (first < 0 || last < sourceStart || first > sourceEnd) continue;
-            int distance = Math.abs(first - sourceStart) + Math.abs(last - sourceEnd);
-            if (distance < bestDistance) {
-                selected = candidate;
-                bestDistance = distance;
-            }
-        }
-        return selected;
-    }
-
-    /**
-     * 符号快照偶尔会把内部类具体方法错配到同签名的外部抽象方法。JaCoCo 已分析同一
-     * 源文件的所有 class，因此可用方法名和源码行范围确定性地恢复真正的嵌套二进制类。
-     */
-    private IMethodCoverage selectNestedMethodCoverage(CoverageBuilder builder,
-                                                       IClassCoverage requestedOwner,
-                                                       String requestedBinaryName,
-                                                       MethodModel method,
-                                                       int sourceStart,
-                                                       int sourceEnd) {
-        if (builder == null || requestedOwner == null || requestedBinaryName == null || method == null) return null;
-        IMethodCoverage selected = null;
-        int bestDistance = Integer.MAX_VALUE;
-        for (IClassCoverage candidateOwner : builder.getClasses()) {
-            if (candidateOwner == requestedOwner
-                    || !candidateOwner.getName().startsWith(requestedBinaryName + "$")) {
-                continue;
-            }
-            if (requestedOwner.getSourceFileName() != null
-                    && candidateOwner.getSourceFileName() != null
-                    && !requestedOwner.getSourceFileName().equals(candidateOwner.getSourceFileName())) {
-                continue;
-            }
-            IMethodCoverage candidateMethod = selectMethodCoverage(
-                    candidateOwner, method, sourceStart, sourceEnd);
-            if (candidateMethod == null) continue;
-            int distance = Math.abs(candidateMethod.getFirstLine() - sourceStart)
-                    + Math.abs(candidateMethod.getLastLine() - sourceEnd);
-            if (distance < bestDistance) {
-                selected = candidateMethod;
-                bestDistance = distance;
-            }
-        }
-        return selected;
     }
 
     private void collectLines(org.jacoco.core.analysis.ISourceNode source,
@@ -618,6 +607,8 @@ public class JacocoCoverageExecutor {
                     .forEach(reportFiles::add);
         } catch (Exception ex) {
             LOG.warn("UnitMind: 读取 JUnit XML 报告目录失败：" + reports, ex);
+            com.casc.unittestagent.validation.JUnitExecutionEvidence.reject(summary,
+                    "JUnitReportReadFailure", "JUnit XML 报告目录无法完整读取。");
             return;
         }
         if (reportFiles.isEmpty()) {
@@ -652,7 +643,7 @@ public class JacocoCoverageExecutor {
                 boolean caseSkipped = child(test, "skipped") != null;
                 String testId = test.getAttribute("classname") + "#" + test.getAttribute("name");
                 summary.getTestCases().add(new TestCaseExecution(testId, failure == null && !caseSkipped, caseSkipped));
-                if (failure != null && summary.getDiagnostics().size() < MAX_DIAGNOSTICS) {
+                if (failure != null) {
                     summary.getDiagnostics().add(runtimeDiagnostic(test, failure));
                 }
             }
@@ -660,6 +651,8 @@ public class JacocoCoverageExecutor {
             // 解析失败不能静默吞掉：此时 found 保持 0，上层会误判“未发现可执行测试”，
             // 必须在日志里留下真实原因（文件被占用、编码、结构异常等）。
             LOG.warn("UnitMind: 解析 JUnit XML 报告失败：" + report, ex);
+            com.casc.unittestagent.validation.JUnitExecutionEvidence.reject(summary, "JUnitReportReadFailure",
+                    "JUnit XML 报告解析失败：" + report.getFileName() + "；不能用其他报告的通过结果代替。");
         }
     }
 
@@ -677,7 +670,7 @@ public class JacocoCoverageExecutor {
         diagnostic.setTestId(testId);
         diagnostic.setExceptionType(exceptionType);
         diagnostic.setMessage(message);
-        diagnostic.setFailureDetails(limitFailureDetails(failureText));
+        diagnostic.setFailureDetails(failureText);
         Matcher mismatch = ASSERTION_VALUE_MISMATCH.matcher(diagnostic.getMessage());
         if (mismatch.find()) {
             String expected = mismatch.group(1);
@@ -697,33 +690,8 @@ public class JacocoCoverageExecutor {
             diagnostic.setExpectedExceptionType(missingException.group(1));
             diagnostic.setActualExceptionType("");
         }
-        List<String> stack = new ArrayList<>();
-        List<String> causes = new ArrayList<>();
-        for (String line : (failureText == null ? "" : failureText).split("\\R")) {
-            String trimmed = line.trim();
-            Matcher causedBy = CAUSED_BY.matcher(trimmed);
-            if (causedBy.find() && causes.size() < 8) {
-                String cause = causedBy.group(1);
-                causes.add(cause);
-                if (stack.size() < 24) stack.add("Caused by: " + cause);
-            } else if (trimmed.startsWith("at ") && stack.size() < 24) {
-                stack.add(trimmed);
-            } else if (trimmed.startsWith("-> at ") && stack.size() < 24) {
-                // Mockito verification diagnostics use arrow-prefixed source locations. Keep them as
-                // ordinary frames so the runtime enricher can locate both the verify and real calls.
-                stack.add(trimmed.substring(3));
-            }
-        }
-        diagnostic.setCauseChain(causes);
-        if (!causes.isEmpty()) diagnostic.setRootCauseType(causes.get(causes.size() - 1));
-        diagnostic.setStackTrace(stack);
+        RuntimeExceptionEvidence.populate(diagnostic);
         return diagnostic;
-    }
-
-    private static String limitFailureDetails(String value) {
-        if (value == null) return "";
-        String normalized = value.strip();
-        return normalized.length() <= 12_000 ? normalized : normalized.substring(0, 12_000) + "\n...";
     }
 
     private Element child(Element parent, String name) {
@@ -737,17 +705,6 @@ public class JacocoCoverageExecutor {
 
     private int number(String value) {
         try { return Integer.parseInt(value); } catch (NumberFormatException ignored) { return 0; }
-    }
-
-    private void drain(InputStream input, ByteArrayOutputStream output) {
-        byte[] buffer = new byte[8192];
-        try {
-            int read;
-            while ((read = input.read(buffer)) >= 0) {
-                int remaining = MAX_OUTPUT_BYTES - output.size();
-                if (remaining > 0) output.write(buffer, 0, Math.min(remaining, read));
-            }
-        } catch (IOException ignored) { }
     }
 
     private String safeMessage(Exception ex) { return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage(); }

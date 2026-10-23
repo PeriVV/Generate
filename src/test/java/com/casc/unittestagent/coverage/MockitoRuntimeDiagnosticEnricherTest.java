@@ -6,6 +6,38 @@ import junit.framework.TestCase;
 import java.util.List;
 
 public class MockitoRuntimeDiagnosticEnricherTest extends TestCase {
+    public void testMatcherOriginsAreSourceCheckedWithoutChangingJUnitIdentityOrDetectionFrame() {
+        String source = "package sample; class T { void origin() { real.call(any()); } void detected() {} }";
+        var diagnostic = new RuntimeDiagnostic();
+        diagnostic.setTestId("sample.T#detected()");
+        diagnostic.setExceptionType("org.mockito.exceptions.misusing.InvalidUseOfMatchersException");
+        diagnostic.setMessage("Misplaced or misused argument matcher detected here:\n-> at sample.T.origin(T.java:1)");
+        diagnostic.setStackTrace(List.of("-> at sample.T.origin(T.java:1)",
+                "at org.mockito.junit.jupiter.MockitoExtension.beforeEach(MockitoExtension.java:1)",
+                "at sample.T.detected(T.java:1)"));
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic), source);
+        assertEquals("sample.T#detected()", diagnostic.getTestId());
+        assertTrue(diagnostic.getTestFrame().contains("T.detected("));
+        assertEquals(com.casc.unittestagent.model.RuntimeFailurePhase.TEST_SETUP, diagnostic.getFailurePhase());
+        assertEquals(1, diagnostic.getOriginLocations().size());
+        assertEquals("sample.T#origin()", diagnostic.getOriginLocations().get(0).testId());
+    }
+
+    public void testMatcherOriginsDoNotGuessFromForeignOrStaleSourceOrOtherExceptions() {
+        for (String marker : List.of("other.T.origin(T.java:1)", "sample.T.missing(T.java:1)", "sample.T.origin(T.java:900)")) {
+            var diagnostic = new RuntimeDiagnostic();
+            diagnostic.setTestId("sample.T#detected()");
+            diagnostic.setExceptionType("org.mockito.exceptions.misusing.InvalidUseOfMatchersException");
+            diagnostic.setMessage("Misplaced or misused argument matcher detected here:\n-> at " + marker);
+            MockitoRuntimeDiagnosticEnricher.enrich(List.of(diagnostic), "package sample; class T { void origin() { real.call(any()); } }");
+            assertTrue(marker, diagnostic.getOriginLocations().isEmpty());
+        }
+        var domain = new RuntimeDiagnostic(); domain.setExceptionType("java.lang.IllegalArgumentException");
+        domain.setMessage("-> at sample.T.origin(T.java:1)");
+        MockitoRuntimeDiagnosticEnricher.enrich(List.of(domain), "package sample; class T { void origin() {} }");
+        assertTrue(domain.getOriginLocations().isEmpty());
+    }
+
     public void testEnrichesGenericDomainFailureWithTestSourceLocation() {
         RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();
         diagnostic.setTestId("sample.SubjectTest#shouldWork()");

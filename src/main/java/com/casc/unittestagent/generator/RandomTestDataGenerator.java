@@ -24,6 +24,28 @@ public class RandomTestDataGenerator {
      */
     private java.util.function.Predicate<String> instantiabilityProbe;
 
+    /** 项目测试 classpath 是否可用 Mockito：不可用时参数兜底不得退 mock(...)。 */
+    private boolean mockitoAvailable = true;
+
+    public void setMockitoAvailable(boolean available) {
+        this.mockitoAvailable = available;
+    }
+
+    /** 类型能否生成 new X()（探针优先，名称启发式兜底）——供生成器决定被测对象直构。 */
+    public boolean canInstantiate(String type) {
+        return canUseConstructor(type == null ? "" : simpleType(type));
+    }
+
+    /** 数组类型是否有可用的字面量构造。 */
+    public boolean arrayLiteralAvailable(String type) {
+        return arrayLiteral(simpleType(type)) != null;
+    }
+
+    /** 是否注入了真实 classpath 探针——直构被测对象必须有探针背书，名称启发式不足以托底。 */
+    public boolean hasInstantiabilityProbe() {
+        return instantiabilityProbe != null;
+    }
+
     public void setTypeInstantiabilityProbe(java.util.function.Predicate<String> probe) {
         this.instantiabilityProbe = probe;
     }
@@ -39,6 +61,11 @@ public class RandomTestDataGenerator {
      */
     public String generateValueExpression(String javaType) {
         String type = simpleType(javaType);
+        // 泛型方法类型变量（T/V 等）无运行时类型：给字面量并让声明侧退 var，
+        // 不得生成 mock(T.class)（编译失败）。
+        if (JUnitMockitoTestGenerator.isTypeVariableType(type)) {
+            return "\"sample\"";
+        }
         switch (type) {
             case "byte":
             case "Byte":
@@ -67,6 +94,15 @@ public class RandomTestDataGenerator {
             case "String":
                 return "\"" + randomAsciiString() + "\"";
             default:
+                // 数组参数：字面量构造。数组无取值规则时退 null，被测方法首语句解引用
+                // 即全场 NPE（commons-codec Hex/jackson NumberInput 实测 0 通过）。
+                String arrayLiteral = arrayLiteral(type);
+                if (arrayLiteral != null) return arrayLiteral;
+                // 嵌套集合泛型（List<List<?>> 等）：单层 List.of(String) 与声明不兼容
+                // （junit-pioneer cartesianProduct 实测编译失败），给同构嵌套字面量。
+                if (javaType != null && javaType.matches("(?s).*List\\s*<\\s*List\\s*<.*")) {
+                    return "List.of(List.of(\"a\"), List.of(\"b\"))";
+                }
                 if ("List".equals(type) || "Collection".equals(type)) {
                     return "List.of(\"test_" + ThreadLocalRandom.current().nextInt(1000, 9999) + "\")";
                 }
@@ -87,8 +123,130 @@ public class RandomTestDataGenerator {
                     default:
                         break;
                 }
-                return canUseConstructor(type) ? "new " + type + "()" : "null";
+                // 常用 JDK 值类型固定构造，不依赖项目 classpath 探针
+                // （探针只看项目依赖，Date/Object 这类 JDK 类型会被误判为不可构造而退 null）。
+                String jdkLiteral = jdkValueExpression(type);
+                if (jdkLiteral != null) return jdkLiteral;
+                // 表达式必须用声明处的限定类型文本（如 TypeParser.MyTokenizer），
+                // 简单名在同包上下文里解析不到内部类。
+                String declared = rawDeclaredType(javaType);
+                if (canUseConstructor(type)) return "new " + declared + "()";
+                // 不可构造的类类型退 Mockito mock：比 null 更接近真实调用语义
+                // （方法体解引用参数时 null 必然 NPE，mock 至少能走到业务分支）。
+                return mockableTypeExpression(type) ? "mock(" + declared + ".class)" : "null";
         }
+    }
+
+    /**
+     * 正常/边界场景的兜底取值：数值钳到非负区间。
+     * 默认域（如 int -100..100）抽到负数会让“有效输入”场景随机命中 count<0 类守卫
+     * （guava repeat 实测：valid 场景 count=-69 抛 IllegalArgumentException）。
+     * 异常场景仍走 {@link #generateValueExpression} 取全域值。
+     */
+    public String generateValidValueExpression(String javaType) {
+        String expression = generateValueExpression(javaType);
+        String type = simpleType(javaType);
+        if ("int".equals(type) || "Integer".equals(type) || "long".equals(type) || "Long".equals(type)
+                || "short".equals(type) || "Short".equals(type) || "byte".equals(type) || "Byte".equals(type)) {
+            expression = String.valueOf(randomValidLong(type));
+            if ("long".equals(type) || "Long".equals(type)) expression += "L";
+        } else if (isFloating(type)) {
+            expression = randomValidDecimal(type);
+            if ("float".equals(type) || "Float".equals(type)) expression += "f";
+        }
+        return expression;
+    }
+
+    /** 去掉泛型参数的声明类型文本；空输入退简单名。 */
+    private String rawDeclaredType(String javaType) {
+        String value = javaType == null || javaType.isBlank() ? simpleType(javaType) : javaType.strip();
+        int generic = value.indexOf('<');
+        return generic >= 0 ? value.substring(0, generic).strip() : value;
+    }
+
+    /**
+     * 数组类型的字面量构造；非数组或二维以上返回 null。
+     * 元素选解析器最普适的数字/安全字符（char[] 用偶数个 hex 数字，恰好满足
+     * decodeHex 的奇偶与 toDigit 守卫）。
+     */
+    private String arrayLiteral(String type) {
+        if (type == null || !type.endsWith("[]") || type.contains("[][]")) return null;
+        String element = type.substring(0, type.length() - 2);
+        // 类型变量数组（T[] items）：给 Object[] 字面量，raw 传参可编译（var 声明侧配合）。
+        if (JUnitMockitoTestGenerator.isTypeVariableType(element)) {
+            return "new Object[]{\"sample\", \"data\", \"a\", \"b\"}";
+        }
+        // 全部 4 元素：与生成器 alignArrayOffsetLength 的 len=4 保持单一来源一致，
+        // 否则 off+len > data.length 守卫在 NORMAL 场景必触发越界。
+        return switch (element) {
+            case "char" -> "new char[]{'1', '2', '3', '4'}";
+            case "byte" -> "new byte[]{1, 2, 3, 4}";
+            case "short" -> "new short[]{1, 2, 3, 4}";
+            case "int" -> "new int[]{1, 2, 3, 4}";
+            case "long" -> "new long[]{1L, 2L, 3L, 4L}";
+            case "float" -> "new float[]{1.0f, 2.0f, 3.0f, 4.0f}";
+            case "double" -> "new double[]{1.0, 2.0, 3.0, 4.0}";
+            case "boolean" -> "new boolean[]{true, false, true, false}";
+            case "String" -> "new String[]{\"a\", \"b\", \"c\", \"d\"}";
+            case "Object" -> "new Object[]{\"a\", \"b\", \"c\", \"d\"}";
+            default -> null;
+        };
+    }
+
+    /**
+     * 常用 JDK 值类型的固定构造表达式；不在表内返回 null。
+     */
+    private String jdkValueExpression(String type) {
+        return switch (type) {
+            case "Object" -> "new Object()";
+            case "Class" -> "java.lang.String.class";
+            case "Date" -> "new java.util.Date(0L)";
+            case "Locale" -> "java.util.Locale.ROOT";
+            case "TimeZone" -> "java.util.TimeZone.getTimeZone(\"UTC\")";
+            case "UUID" -> "java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\")";
+            case "BigInteger" -> "java.math.BigInteger.TEN";
+            case "BigDecimal" -> "java.math.BigDecimal.TEN";
+            case "Currency" -> "java.util.Currency.getInstance(\"USD\")";
+            default -> null;
+        };
+    }
+
+    /**
+     * 是否值得退 mock：大写开头的裸类型名（非数组/泛型/基本类型），
+     * 且不是 Mockito 禁止 mock 的值类型（String/包装类型/Class 等在更早分支已处理，
+     * 这里再兜一道防止新增路径漏拦）。
+     */
+    private boolean mockableTypeExpression(String type) {
+        return mockitoAvailable
+                && type != null && !type.isBlank() && Character.isUpperCase(type.charAt(0))
+                && !type.contains("[") && !type.contains("<")
+                && !JUnitMockitoTestGenerator.isUnmockableValueType(type)
+                && !JUnitMockitoTestGenerator.isTypeVariableType(type);
+    }
+
+    /**
+     * 正常路径数值取值：把配置下界钳到 0——默认域（如 int -100..100）抽到负数会让
+     * "有效输入"场景随机命中 count<0 类守卫（guava repeat 实测：valid 场景 count=-69
+     * 抛 IllegalArgumentException）。负值留给 belowMin/异常场景专用入口。
+     */
+    private long randomValidLong(String javaType) {
+        TestDataRangeConfig config = TestDataRangeConfigManager.findByType(javaType)
+                .orElse(new TestDataRangeConfig(javaType, "0", "100", null, null));
+        long min = Math.max(0L, Long.parseLong(config.getMinValue()));
+        long max = Long.parseLong(config.getMaxValue());
+        if (max < min) max = min;
+        return ThreadLocalRandom.current().nextLong(min, max + 1L);
+    }
+
+    private String randomValidDecimal(String javaType) {
+        TestDataRangeConfig config = TestDataRangeConfigManager.findByType(javaType)
+                .orElse(new TestDataRangeConfig(javaType, "-100.0", "100.0", 2, null));
+        double min = Math.max(0d, Double.parseDouble(config.getMinValue()));
+        double max = Double.parseDouble(config.getMaxValue());
+        if (max < min) max = min;
+        double value = ThreadLocalRandom.current().nextDouble(min, max);
+        int scale = config.getDecimalScale() == null ? 2 : config.getDecimalScale();
+        return BigDecimal.valueOf(value).setScale(scale, RoundingMode.HALF_UP).toPlainString();
     }
 
     /**

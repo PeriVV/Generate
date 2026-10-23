@@ -53,20 +53,20 @@ public class LongCommandLineLauncherTest extends TestCase {
 
         List<String> adapted = LongCommandLineLauncher.adaptForWindows(command, auxiliaryDirectory);
 
-        assertEquals(2, adapted.size());
+        assertEquals(3, adapted.size());
         assertEquals("C:\\jdk\\bin\\javac.exe", adapted.get(0));
-        assertTrue(adapted.get(1).startsWith("@"));
-        Path argumentFile = Path.of(adapted.get(1).substring(1));
+        assertEquals("-J-Dfile.encoding=UTF-8", adapted.get(1));
+        assertTrue(adapted.get(2).startsWith("@"));
+        Path argumentFile = Path.of(adapted.get(2).substring(1));
         assertTrue(Files.isRegularFile(argumentFile));
         String[] tokens = Files.readString(argumentFile, StandardCharsets.UTF_8).strip().split("\\R");
-        // 参数逐行写入、顺序不变；反斜杠统一为正斜杠；含空格的参数加引号。
-        assertEquals("-encoding", tokens[0]);
-        assertEquals("UTF-8", tokens[1]);
-        assertEquals("-classpath", tokens[2]);
-        assertEquals("C:/repo/a.jar" + File.pathSeparator + "C:/repo/b.jar", tokens[3]);
-        assertEquals("-d", tokens[4]);
-        assertEquals("\"C:/out dir/classes\"", tokens[5]);
-        assertEquals("C:/src/Foo.java", tokens[6]);
+        assertEquals("\"-encoding\"", tokens[0]);
+        assertEquals("\"UTF-8\"", tokens[1]);
+        assertEquals("\"-classpath\"", tokens[2]);
+        assertEquals("\"C:\\\\repo\\\\a.jar" + File.pathSeparator + "C:\\\\repo\\\\b.jar\"", tokens[3]);
+        assertEquals("\"-d\"", tokens[4]);
+        assertEquals("\"C:\\\\out dir\\\\classes\"", tokens[5]);
+        assertEquals("\"C:\\\\src\\\\Foo.java\"", tokens[6]);
     }
 
     public void testJavaLongCommandRewritesClasspathWithPathingJar() throws Exception {
@@ -94,8 +94,8 @@ public class LongCommandLineLauncherTest extends TestCase {
             String manifestClassPath = jar.getManifest().getMainAttributes()
                     .getValue(Attributes.Name.CLASS_PATH);
             assertNotNull(manifestClassPath);
-            assertTrue(manifestClassPath.contains("file:" + "/repo/spring%20lib/a.jar"));
-            assertTrue(manifestClassPath.contains("file:" + "/repo/b.jar"));
+            assertTrue(manifestClassPath.contains(new File("/repo/spring lib/a.jar").toURI().toASCIIString()));
+            assertTrue(manifestClassPath.contains(new File("/repo/b.jar").toURI().toASCIIString()));
         }
     }
 
@@ -122,5 +122,83 @@ public class LongCommandLineLauncherTest extends TestCase {
         } catch (Exception expected) {
             assertTrue(expected.getMessage().contains("-classpath"));
         }
+    }
+
+    public void testRealJavacArgumentFilePreservesUnicodeQuotesBackslashesAndJvmOptions() throws Exception {
+        Path folder = Files.createDirectories(auxiliaryDirectory.resolve("中文 space # apostrophe's"));
+        Path processors = Files.createDirectories(folder.resolve("processors"));
+        Path processor = folder.resolve("Recorder.java");
+        Files.writeString(processor, """
+                import javax.annotation.processing.*;
+                import javax.lang.model.element.TypeElement;
+                import java.util.Set;
+                @SupportedAnnotationTypes("*") @SupportedOptions({"out", "value"})
+                public class Recorder extends AbstractProcessor {
+                    public javax.lang.model.SourceVersion getSupportedSourceVersion() { return javax.lang.model.SourceVersion.latestSupported(); }
+                    public boolean process(Set<? extends TypeElement> types, RoundEnvironment round) {
+                        try { java.nio.file.Files.writeString(java.nio.file.Path.of(processingEnv.getOptions().get("out")), processingEnv.getOptions().get("value")); }
+                        catch (java.io.IOException e) { throw new RuntimeException(e); }
+                        return false;
+                    }
+                }
+                """);
+        LocalCoverageClosureSupport.compile(processor, processors, List.of());
+        Path source = folder.resolve("Input.java"); Files.writeString(source, "class Input { String 中文; }");
+        Path output = folder.resolve("record.txt");
+        String value = "中文 C:\\project\\new\\tab\\ trailing\\ \"quoted\" # ' tab\t newline\n";
+        String javac = Path.of(System.getProperty("java.home"), "bin", BuildConfigurationProcess.isWindows() ? "javac.exe" : "javac").toString();
+        var command = LongCommandLineLauncher.adaptForWindows(List.of(javac, "-J-Dfile.encoding=windows-1252", "-encoding", "UTF-8",
+                "-processorpath", processors.toString(), "-processor", "Recorder", "-proc:only",
+                "-Aout=" + output, "-Avalue=" + value, source.toString()), folder);
+        assertTrue(command.toString(), command.contains("-J-Dfile.encoding=windows-1252"));
+        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, process.exitValue());
+        assertEquals(value, Files.readString(output));
+    }
+
+    public void testRealJavaPathingJarPreservesRelativeWildcardAndEmptyClasspathEntries() throws Exception {
+        Path root = Files.createDirectories(auxiliaryDirectory.resolve("中文 runtime space"));
+        Path lib = Files.createDirectories(root.resolve("lib"));
+        Path dep = Files.createDirectories(root.resolve("dep"));
+        Path helper = root.resolve("Helper.java"); Files.writeString(helper, "public class Helper { public static String value() { return \"中文\"; } }");
+        LocalCoverageClosureSupport.compile(helper, dep, List.of());
+        try (var jar = new java.util.jar.JarOutputStream(Files.newOutputStream(lib.resolve("中文 dependency.jar")))) {
+            jar.putNextEntry(new java.util.jar.JarEntry("Helper.class")); jar.write(Files.readAllBytes(dep.resolve("Helper.class"))); jar.closeEntry();
+        }
+        Path main = root.resolve("Main.java"); Files.writeString(main, "class Main { public static void main(String[] args) { System.out.print(Helper.value()); } }");
+        LocalCoverageClosureSupport.compile(main, root, List.of(dep.toFile()));
+        String javaCommand = Path.of(System.getProperty("java.home"), "bin", BuildConfigurationProcess.isWindows() ? "java.exe" : "java").toString();
+        var command = LongCommandLineLauncher.adapt(List.of(javaCommand, "-Dfile.encoding=UTF-8", "-cp", "lib/*" + File.pathSeparator, "Main"), root, root.toFile());
+        var process = new ProcessBuilder(command).directory(root.toFile()).redirectErrorStream(true).start();
+        assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(output, 0, process.exitValue()); assertEquals("中文", output);
+        StringBuilder longClasspath = new StringBuilder("lib/*");
+        while (longClasspath.length() < 40000) longClasspath.append(File.pathSeparator).append("missing/012345678901234567890123456789");
+        longClasspath.append(File.pathSeparator);
+        var builder = new ProcessBuilder(javaCommand, "-Dfile.encoding=UTF-8", "-cp", longClasspath.toString(), "Main")
+                .directory(root.toFile()).redirectErrorStream(true);
+        process = LongCommandLineLauncher.start(builder, root);
+        assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(output, 0, process.exitValue()); assertEquals("中文", output);
+    }
+
+    public void testOptionalJava8CompilerReadsUtf8ArgumentFileInUnicodeDirectory() throws Exception {
+        String home = System.getProperty("unitmind.test.java8.home", "");
+        if (home.isBlank()) return;
+        Path folder = Files.createDirectories(auxiliaryDirectory.resolve("中文 Java8 path"));
+        Path source = folder.resolve("Input.java");
+        Files.writeString(source, "public class Input { public static void main(String[] args) { System.out.print(\"中文\"); } }");
+        String suffix = BuildConfigurationProcess.isWindows() ? ".exe" : "";
+        var command = LongCommandLineLauncher.adaptForWindows(List.of(Path.of(home, "bin", "javac" + suffix).toString(),
+                "-encoding", "UTF-8", "-d", folder.toString(), source.toString()), folder);
+        var compile = new ProcessBuilder(command).redirectErrorStream(true).start();
+        assertTrue(compile.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(new String(compile.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, compile.exitValue());
+        var run = new ProcessBuilder(Path.of(home, "bin", "java" + suffix).toString(), "-Dfile.encoding=UTF-8", "-cp", folder.toString(), "Input").redirectErrorStream(true).start();
+        assertTrue(run.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals("中文", new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); assertEquals(0, run.exitValue());
     }
 }

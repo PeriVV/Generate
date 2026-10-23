@@ -102,7 +102,9 @@ public class JavaSourceAnalyzer {
             throw new IllegalStateException("当前 Java 文件中未找到类。");
         }
 
-        return toMethodModel(compilationUnit, classDeclaration.get(), methodDeclaration);
+        var model = toMethodModel(compilationUnit, classDeclaration.get(), methodDeclaration);
+        model.setAnalyzedSourceHash(com.casc.unittestagent.util.CodeFingerprint.sha256(sourceText));
+        return model;
     }
 
     /**
@@ -164,7 +166,9 @@ public class JavaSourceAnalyzer {
                 skipped.add(new SkippedMethodModel(displaySignature(method), reason));
                 continue;
             }
-            methods.add(toMethodModel(compilationUnit, classDeclaration, method));
+            var model = toMethodModel(compilationUnit, classDeclaration, method);
+            model.setAnalyzedSourceHash(com.casc.unittestagent.util.CodeFingerprint.sha256(sourceText));
+            methods.add(model);
         }
         classModel.setMethods(methods);
         classModel.setSkippedMethods(skipped);
@@ -186,6 +190,8 @@ public class JavaSourceAnalyzer {
         model.setAccessModifier(accessModifier(methodDeclaration));
         model.setProtectedMethod(methodDeclaration.isProtected());
         model.setStaticMethod(methodDeclaration.isStatic());
+        model.setOwnerInterface(classDeclaration.isInterface());
+        model.setOwnerAbstract(classDeclaration.isAbstract());
         model.setSignature(displaySignature(methodDeclaration));
         String owner = model.getPackageName() == null || model.getPackageName().isBlank()
                 ? model.getClassName() : model.getPackageName() + "." + model.getClassName();

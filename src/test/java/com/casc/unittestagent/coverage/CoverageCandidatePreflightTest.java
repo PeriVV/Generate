@@ -6,6 +6,25 @@ import junit.framework.TestCase;
 import java.util.List;
 
 public class CoverageCandidatePreflightTest extends TestCase {
+    public void testQualifiedStaticCallsCannotHideInsideOrdinaryMockitoStubbing() {
+        for (String stub : List.of("when", "org.mockito.Mockito.when", "org.mockito.BDDMockito.given")) {
+            String code = "import static org.mockito.Mockito.*; class T { void test() { " + stub
+                    + "(example.transport.RemoteClient.exec(eq(session), anyString(), any())).thenReturn(\"ok\"); } }";
+            assertTrue(code, CoverageCandidatePreflight.inspect(code).stream().anyMatch(d ->
+                    "MOCKITO_WHEN_ON_REAL_OBJECT".equals(d.getCode())
+                            && d.getMessage().contains("example.transport.RemoteClient")));
+        }
+    }
+
+    public void testQualifiedObjectAndScopedStaticMockAreNotPlainStaticStubbing() {
+        for (String statement : List.of(
+                "when(holder.Client.exec(anyString())).thenReturn(\"ok\");",
+                "scoped.when(() -> example.transport.RemoteClient.exec(anyString())).thenReturn(\"ok\");")) {
+            String code = "import static org.mockito.Mockito.*; class T { Holder holder; void test() { " + statement + " } }";
+            assertTrue(CoverageCandidatePreflight.inspect(code).toString(), CoverageCandidatePreflight.inspect(code).isEmpty());
+        }
+    }
+
     public void testRejectsRealFieldAssignedThroughThis() {
         String code = """
                 import static org.mockito.Mockito.when;

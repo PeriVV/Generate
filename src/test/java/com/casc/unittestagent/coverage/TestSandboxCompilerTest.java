@@ -9,6 +9,42 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 public class TestSandboxCompilerTest extends TestCase {
+    public void testModuleJavacCompoundFailureRequiresIndependentProductionProof() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-compound-compile-");
+        try {
+            Path sourceRoot = Files.createDirectories(root.resolve("source/sample"));
+            Path classes = Files.createDirectories(root.resolve("classes"));
+            Path subject = sourceRoot.resolve("Subject.java"), test = sourceRoot.resolve("SubjectTest.java");
+            Files.writeString(subject, "package sample; @lombok.extern.slf4j.Slf4j public class Subject { void value() { log.info(\"value\"); } }");
+            Files.writeString(test, "package sample; class SubjectTest implements Subject {}");
+            var environment = environment(sourceRoot.getParent()); environment.sourcePackage = "sample";
+            environment.classpath.addAll(classpathFiles());
+            environment.annotationProcessorPath.add(new java.io.File(com.intellij.util.PathUtil.getJarPathForClass(lombok.Data.class)));
+            var compiler = new TestSandboxCompiler();
+            var mixed = compiler.compileSandboxWithModuleJdk(environment, sourceRoot.getParent(), classes, subject, test,
+                    "sample.Subject", "sample.SubjectTest");
+            assertNotNull(mixed); assertEquals("MIXED_COMPILE_FAILURE", mixed.getCode());
+            assertFalse(mixed.isRepairable());
+            var diagnostics = new java.util.ArrayList<>(java.util.List.of(mixed));
+            compiler.isolateCascadingSourceErrors(environment, root, subject, test, "sample.Subject",
+                    java.util.List.of(subject.toFile(), test.toFile()), diagnostics);
+            assertEquals(1, diagnostics.size()); assertEquals("TEST_SOURCE", mixed.getSourceOrigin());
+            assertTrue(mixed.isRepairable()); assertFalse(Files.exists(classes.resolve("sample/SubjectTest.class")));
+            assertTrue(mixed.getMessage().contains("生产源码已独立编译通过"));
+        } finally { deleteTree(root); }
+    }
+
+    public void testProductionErrorAloneIsNeverSuppressed() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-production-error-");
+        try {
+            var diagnostic = new CompileDiagnostic("ERROR", "CANNOT_FIND_SYMBOL", "missing production dependency",
+                    1, 1, "", false, "TARGET_SOURCE", "Subject.java");
+            var errors = new java.util.ArrayList<>(java.util.List.of(diagnostic));
+            new TestSandboxCompiler().isolateCascadingSourceErrors(new ProjectTestEnvironment(), root,
+                    root.resolve("Subject.java"), root.resolve("SubjectTest.java"), "sample.Subject", java.util.List.of(), errors);
+            assertEquals(1, errors.size()); assertSame(diagnostic, errors.get(0)); assertFalse(diagnostic.isRepairable());
+        } finally { deleteTree(root); }
+    }
     public void testModuleJdkFallbackEmitsTargetClassIntoSandbox() throws Exception {
         Path root = Files.createTempDirectory("unitmind-target-compiler-test-");
         try {

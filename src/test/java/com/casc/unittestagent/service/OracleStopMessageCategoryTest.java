@@ -28,6 +28,7 @@ public class OracleStopMessageCategoryTest extends TestCase {
 
         assertTrue(message, message.contains("测试侧结构错误"));
         assertTrue(message, message.contains("静态方法禁止 mock"));
+        assertFalse(message, message.contains("多轮"));
         assertFalse(message, message.contains("缺少可授权修改 Oracle 的独立证据"));
     }
 

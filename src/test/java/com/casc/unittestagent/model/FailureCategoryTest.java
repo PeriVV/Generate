@@ -5,6 +5,11 @@ import junit.framework.TestCase;
 import java.util.List;
 
 public class FailureCategoryTest extends TestCase {
+    public void testLegacyCandidateRejectionIsNotOfferedAsRuntimeRootCause() {
+        assertFalse(FailureCategory.UNSAFE_ORACLE_PATCH.isRuntimeArbitratable());
+        assertFalse(FailureCategory.runtimeArbitrationCodes().contains("UNSAFE_ORACLE_PATCH"));
+        assertEquals(FailureCategory.UNSAFE_ORACLE_PATCH, FailureCategory.fromCode("UNSAFE_ORACLE_PATCH"));
+    }
     public void testFromCodeResolvesCodesFromEveryProducerGroup() {
         assertEquals(FailureCategory.MOCKITO_NO_INTERACTIONS_CONTRADICTION,
                 FailureCategory.fromCode("MOCKITO_NO_INTERACTIONS_CONTRADICTION"));

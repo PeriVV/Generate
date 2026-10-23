@@ -203,7 +203,9 @@ public final class RuntimeOracleGate {
     }
 
     static Map<String, List<String>> oracleFingerprints(String code) {
-        CompilationUnit unit = StaticJavaParser.parse(code == null ? "" : code);
+        // Compare contracts after the same audited syntax normalization on both snapshots.
+        // No global eq/any stripping: changed values, receivers, modes and control flow remain visible.
+        CompilationUnit unit = StaticJavaParser.parse(TestCodeNormalizationPipeline.normalize(code).code());
         Map<String, List<String>> result = new LinkedHashMap<>();
         for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
             if (!isTest(method)) continue;
@@ -215,14 +217,14 @@ public final class RuntimeOracleGate {
                     fingerprints.addAll(directOracleValueSources(call, method));
                 }
             }
-            method.findAll(IfStmt.class).forEach(node -> fingerprints.add("control-if:" + normalize(node.toString())));
-            method.findAll(TryStmt.class).forEach(node -> fingerprints.add("control-try:" + normalize(node.toString())));
-            method.findAll(ReturnStmt.class).forEach(node -> fingerprints.add("control-return:" + normalize(node.toString())));
-            method.findAll(ForStmt.class).forEach(node -> fingerprints.add("control-for:" + normalize(node.toString())));
-            method.findAll(ForEachStmt.class).forEach(node -> fingerprints.add("control-foreach:" + normalize(node.toString())));
-            method.findAll(WhileStmt.class).forEach(node -> fingerprints.add("control-while:" + normalize(node.toString())));
-            method.findAll(DoStmt.class).forEach(node -> fingerprints.add("control-do:" + normalize(node.toString())));
-            method.findAll(SwitchStmt.class).forEach(node -> fingerprints.add("control-switch:" + normalize(node.toString())));
+            method.findAll(IfStmt.class).forEach(node -> fingerprints.add("control-if:" + normalize(node)));
+            method.findAll(TryStmt.class).forEach(node -> fingerprints.add("control-try:" + normalize(node)));
+            method.findAll(ReturnStmt.class).forEach(node -> fingerprints.add("control-return:" + normalize(node)));
+            method.findAll(ForStmt.class).forEach(node -> fingerprints.add("control-for:" + normalize(node)));
+            method.findAll(ForEachStmt.class).forEach(node -> fingerprints.add("control-foreach:" + normalize(node)));
+            method.findAll(WhileStmt.class).forEach(node -> fingerprints.add("control-while:" + normalize(node)));
+            method.findAll(DoStmt.class).forEach(node -> fingerprints.add("control-do:" + normalize(node)));
+            method.findAll(SwitchStmt.class).forEach(node -> fingerprints.add("control-switch:" + normalize(node)));
             result.put(method.getNameAsString(), fingerprints);
         }
         return result;
@@ -236,22 +238,27 @@ public final class RuntimeOracleGate {
      */
     private static List<String> directOracleValueSources(MethodCallExpr call, MethodDeclaration method) {
         String lower = call.getNameAsString().toLowerCase(Locale.ROOT);
-        if (!(lower.startsWith("assert") || "fail".equals(lower))) return List.of();
+        boolean verification = isMockitoVerification(call);
+        if (!(lower.startsWith("assert") || "fail".equals(lower) || verification)) return List.of();
         List<String> result = new ArrayList<>();
-        for (Expression argument : call.getArguments()) {
+        for (Expression originalArgument : call.getArguments()) {
+            Expression argument = originalArgument;
+            if (verification && argument instanceof MethodCallExpr eq && "eq".equals(eq.getNameAsString())
+                    && "org.mockito.ArgumentMatchers".equals(eq.getScope().map(Node::toString).orElse(""))
+                    && eq.getArguments().size() == 1) argument = eq.getArgument(0);
             if (!(argument instanceof NameExpr nameExpression)) continue;
             String name = nameExpression.getNameAsString();
             for (VariableDeclarator variable : method.findAll(VariableDeclarator.class)) {
                 if (name.equals(variable.getNameAsString()) && precedes(variable, call)) {
                     result.add("oracle-source:" + name + "="
-                            + normalize(variable.getInitializer().map(Node::toString).orElse("<uninitialized>")));
+                            + variable.getInitializer().map(RuntimeOracleGate::normalize).orElse("<uninitialized>"));
                 }
             }
             for (AssignExpr assignment : method.findAll(AssignExpr.class)) {
                 if (assignment.getTarget().isNameExpr()
                         && name.equals(assignment.getTarget().asNameExpr().getNameAsString())
                         && precedes(assignment, call)) {
-                    result.add("oracle-assignment:" + name + "=" + normalize(assignment.getValue().toString()));
+                    result.add("oracle-assignment:" + name + "=" + normalize(assignment.getValue()));
                 }
             }
         }
@@ -326,19 +333,22 @@ public final class RuntimeOracleGate {
         });
     }
 
-    private static String normalize(Expression expression) {
-        return normalize(expression == null ? "" : expression.toString());
+    private static String normalize(Node node) {
+        if (node == null) return "";
+        // Whitespace is insignificant BETWEEN tokens, but significant INSIDE literals.
+        // Removing all whitespace from rendered Java also hides changes to expected strings.
+        if (node.getTokenRange().isEmpty()) return node.toString();
+        StringBuilder result = new StringBuilder();
+        for (var token : node.getTokenRange().get()) {
+            if (!token.getCategory().isWhitespaceOrComment()) {
+                if (result.length() > 0) result.append(' ');
+                result.append(token.getText());
+            }
+        }
+        return result.toString();
     }
 
-    private static String normalize(MethodCallExpr expression) {
-        return normalize(expression == null ? "" : expression.toString());
-    }
-
-    private static String normalize(String value) {
-        return value == null ? "" : value.replaceAll("\\s+", "").trim();
-    }
-
-    public static final class UnsafeOracleCorrectionException extends IllegalArgumentException {
-        public UnsafeOracleCorrectionException(String message) { super(message); }
+    public static final class UnsafeOracleCorrectionException extends RepairCandidateRejectedException {
+        public UnsafeOracleCorrectionException(String message) { super(Stage.ORACLE_CONTRACT, message); }
     }
 }

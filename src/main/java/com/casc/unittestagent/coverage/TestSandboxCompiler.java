@@ -21,6 +21,16 @@ import java.util.concurrent.TimeUnit;
 
 /** 将当前被测源码和某个候选测试类编译到独立临时目录。 */
 public class TestSandboxCompiler {
+    private static final com.intellij.openapi.diagnostic.Logger LOG =
+            com.intellij.openapi.diagnostic.Logger.getInstance(TestSandboxCompiler.class);
+    public CompiledTestArtifact compileGeneratedCandidate(ProjectTestEnvironment environment, GeneratedTestFile testFile,
+                                                           String code, String target, List<String> sources) {
+        List<CompileDiagnostic> diagnostics = new ArrayList<>(MockWiringAnalyzer.preflight(sources, code));
+        diagnostics.addAll(SpringFixtureAnalyzer.preflight(sources, code));
+        if (!diagnostics.isEmpty()) return new CompiledTestArtifact(null, null, "", target, "", List.of(), diagnostics);
+        return compile(environment, testFile, code, target);
+    }
+
     public CompiledTestArtifact compile(ProjectTestEnvironment environment,
                                         GeneratedTestFile testFile,
                                         String testCode,
@@ -79,8 +89,9 @@ public class TestSandboxCompiler {
                 Files.writeString(targetSource, environment.sourceText, StandardCharsets.UTF_8);
             }
 
-            List<File> sourcePath = new ArrayList<>(environment.sourcePath);
+            List<File> sourcePath = new ArrayList<>();
             sourcePath.add(sourceRoot.toFile());
+            sourcePath.addAll(environment.sourcePath);
             List<File> sources = new ArrayList<>();
             for (File dependency : ProjectSourceDependencyResolver.resolve(
                     environment.sourcePath, environment.sourceText, testCode)) {
@@ -88,7 +99,7 @@ public class TestSandboxCompiler {
                         environment.sourcePath, environment.sourcePackage, environment.sourceFileName)
                         && !ProjectSourceDependencyResolver.isSourceFile(dependency,
                         environment.sourcePath, testPackage, testFileName)) {
-                    sources.add(dependency);
+                    sources.add(copySourceToSandbox(dependency, sourceRoot));
                 }
             }
             sources.add(targetSource.toFile());
@@ -121,12 +132,15 @@ public class TestSandboxCompiler {
                 if (fallbackDiagnostic != null) diagnostics.add(fallbackDiagnostic);
             }
 
+            isolateCascadingSourceErrors(environment, root, targetSource, testSource,
+                    targetClassName, sources, diagnostics);
+
             List<File> runtime = new ArrayList<>();
             runtime.add(classes.toFile());
             runtime.addAll(environment.getRuntimeClasspath());
             return new CompiledTestArtifact(root, classes, testFqn, targetClassName,
                     environment.javaExecutable, runtime, diagnostics, environment.previewLanguage,
-                    environment.workingDirectory);
+                    environment.workingDirectory, environment.getRuntimeConfiguration());
         } catch (IOException ex) {
             diagnostics.add(environmentError("TEMP_IO_FAILURE", safeMessage(ex)));
             return new CompiledTestArtifact(root, root == null ? null : root.resolve("classes"), "",
@@ -140,6 +154,57 @@ public class TestSandboxCompiler {
             }
             throw ex;
         }
+    }
+
+    /** A candidate's enter/type errors can prevent annotation processors from running at all. */
+    void isolateCascadingSourceErrors(ProjectTestEnvironment environment, Path sandboxRoot,
+                                      Path targetSource, Path testSource, String targetClassName,
+                                      List<File> jointSources, List<CompileDiagnostic> diagnostics) throws IOException {
+        boolean targetErrors = diagnostics.stream().anyMatch(d -> "TARGET_SOURCE".equals(d.getSourceOrigin()));
+        boolean testErrors = diagnostics.stream().anyMatch(d -> "TEST_SOURCE".equals(d.getSourceOrigin()));
+        boolean compoundErrors = diagnostics.stream().anyMatch(d -> "TARGET_SOURCE".equals(d.getSourceOrigin())
+                && ("MIXED_COMPILE_FAILURE".equals(d.getCode()) || mentionsFile(d.getMessage(), testSource)));
+        if (!targetErrors || !testErrors && !compoundErrors) return;
+
+        // Keep the candidate completely outside the baseline source path; no stale project class
+        // may substitute for the explicitly supplied current production source.
+        Path baseline = Files.createTempDirectory(sandboxRoot, "production-baseline-");
+        Path baselineSources = Files.createDirectories(baseline.resolve("source"));
+        Path baselineClasses = Files.createDirectories(baseline.resolve("classes"));
+        Path independentTarget = packageDirectory(baselineSources, environment.sourcePackage)
+                .resolve(targetSource.getFileName());
+        Files.createDirectories(independentTarget.getParent());
+        Files.copy(targetSource, independentTarget);
+        List<Path> production = new ArrayList<>(); production.add(independentTarget);
+        for (File source : jointSources) {
+            Path path = source.toPath();
+            if (!path.equals(targetSource) && !path.equals(testSource)) production.add(path);
+        }
+        CompileDiagnostic baselineError = runModuleJavac(environment, baselineSources, baselineClasses,
+                production, List.of(targetClassName), false);
+        if (baselineError != null) {
+            LOG.info("UnitMind compile attribution: production baseline failed; preserving source diagnostics, code="
+                    + baselineError.getCode());
+            return;
+        }
+        int before = diagnostics.size();
+        if (testErrors) {
+            diagnostics.removeIf(d -> "TARGET_SOURCE".equals(d.getSourceOrigin()));
+        } else {
+            // The module-javac fallback currently returns a compound diagnostic. Keep it as a
+            // failure: an independent production pass is never candidate compilation proof.
+            for (CompileDiagnostic diagnostic : diagnostics) {
+                if (!"TARGET_SOURCE".equals(diagnostic.getSourceOrigin())
+                        || !"MIXED_COMPILE_FAILURE".equals(diagnostic.getCode())
+                        && !mentionsFile(diagnostic.getMessage(), testSource)) continue;
+                diagnostic.setSourceOrigin("TEST_SOURCE"); diagnostic.setSourcePath(testSource.getFileName().toString());
+                diagnostic.setRepairable(true);
+                diagnostic.setMessage("生产源码已独立编译通过；请修复候选测试，联合编译中的生产源码诊断属于级联信息：\n"
+                        + diagnostic.getMessage());
+            }
+        }
+        LOG.info("UnitMind compile attribution: production baseline passed; candidate remains failed; suppressed="
+                + (before - diagnostics.size()) + ", candidateDiagnostics=" + diagnostics.size());
     }
 
     private List<CompileDiagnostic> diagnostics(CompilationException ex,
@@ -199,7 +264,7 @@ public class TestSandboxCompiler {
                                                  Path targetSource,
                                                  String targetClassName) {
         return runModuleJavac(environment, sourceRoot, classes,
-                explicitSources(environment, Collections.singletonList(targetSource)),
+                explicitSources(environment, Collections.singletonList(targetSource), sourceRoot),
                 Collections.singletonList(targetClassName), false);
     }
 
@@ -210,14 +275,14 @@ public class TestSandboxCompiler {
                                                   Path testSource,
                                                   String targetClassName,
                                                   String testClassName) {
-        List<Path> sources = explicitSources(environment, List.of(targetSource, testSource));
+        List<Path> sources = explicitSources(environment, List.of(targetSource, testSource), sourceRoot);
         List<String> expectedClasses = new ArrayList<>();
         expectedClasses.add(targetClassName);
         expectedClasses.add(testClassName);
         return runModuleJavac(environment, sourceRoot, classes, sources, expectedClasses, true);
     }
 
-    private List<Path> explicitSources(ProjectTestEnvironment environment, List<Path> primarySources) {
+    private List<Path> explicitSources(ProjectTestEnvironment environment, List<Path> primarySources, Path sourceRoot) {
         List<String> texts = new ArrayList<>();
         List<String> packages = new ArrayList<>();
         for (Path source : primarySources) {
@@ -244,10 +309,22 @@ public class TestSandboxCompiler {
                 }
             }
             if (!primary) {
-                result.add(dependency.toPath());
+                try { result.add(copySourceToSandbox(dependency, sourceRoot).toPath()); }
+                catch (IOException ex) { result.add(dependency.toPath()); }
             }
         }
         return new ArrayList<>(result);
+    }
+
+    private File copySourceToSandbox(File source, Path root) throws IOException {
+        String text = com.casc.unittestagent.util.ProjectFileText.read(source.toPath());
+        String pkg = JavaTestSourceInspector.inspect(text).getPackageName();
+        Path copy = packageDirectory(root, pkg).resolve(source.getName());
+        if (!Files.exists(copy)) {
+            Files.createDirectories(copy.getParent());
+            Files.writeString(copy, text, StandardCharsets.UTF_8);
+        }
+        return copy.toFile();
     }
 
     private CompileDiagnostic runModuleJavac(ProjectTestEnvironment environment,
@@ -265,7 +342,8 @@ public class TestSandboxCompiler {
 
         List<String> command = new ArrayList<>();
         command.add(javac.getAbsolutePath());
-        Collections.addAll(command, "-encoding", "UTF-8", "-g", "-d", classes.toAbsolutePath().toString());
+        Collections.addAll(command, "-J-Dfile.encoding=UTF-8", "-J-Dsun.stdout.encoding=UTF-8", "-J-Dsun.stderr.encoding=UTF-8",
+                "-encoding", "UTF-8", "-g", "-d", classes.toAbsolutePath().toString());
         if (environment.languageFeature > 0) {
             String feature = Integer.toString(environment.languageFeature);
             Collections.addAll(command, "-source", feature, "-target", feature);
@@ -290,24 +368,23 @@ public class TestSandboxCompiler {
         for (Path source : sources) command.add(source.toAbsolutePath().toString());
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Process process = null;
         try {
             // Windows 命令行约 32K 上限：大项目 classpath/processorpath 拼接超限时
             // 直接 start() 会以“文件名或扩展名太长”失败，超限时自动改写为 @argfile。
-            Process process = LongCommandLineLauncher.start(
+            process = LongCommandLineLauncher.start(
                     new ProcessBuilder(command)
                             .directory(sourceRoot.toFile())
                             .redirectErrorStream(true),
                     sourceRoot.getParent());
-            Thread drain = new Thread(() -> drain(process, output), "unitmind-target-javac-output");
+            process.getOutputStream().close();
+            Process worker = process;
+            Thread drain = new Thread(() -> drain(worker, output), "unitmind-target-javac-output");
             drain.setDaemon(true);
             drain.start();
             boolean finished = process.waitFor(60, TimeUnit.SECONDS);
             if (!finished) {
-                process.destroy();
-                if (!process.waitFor(500, TimeUnit.MILLISECONDS)) {
-                    process.destroyForcibly();
-                    process.waitFor(2, TimeUnit.SECONDS);
-                }
+                ProcessCleanup.terminate(process);
                 drain.join(1000);
                 return environmentError("SANDBOX_COMPILE_TIMEOUT", "补编译本轮源码超时（60 秒）。");
             }
@@ -321,7 +398,9 @@ public class TestSandboxCompiler {
                 Path diagnosticSource = targetFailure || sources.size() < 2 ? sources.get(0) : sources.get(1);
                 return new CompileDiagnostic(
                         "ERROR",
-                        targetFailure ? "TARGET_COMPILE_FAILED" : "SANDBOX_JAVAC_FAILED",
+                        repairableFailure && sources.size() >= 2 && mentionsFile(compilerOutput, sources.get(0))
+                                && mentionsFile(compilerOutput, sources.get(1)) ? "MIXED_COMPILE_FAILURE"
+                                : targetFailure ? "TARGET_COMPILE_FAILED" : "SANDBOX_JAVAC_FAILED",
                         message,
                         -1,
                         -1,
@@ -339,9 +418,11 @@ public class TestSandboxCompiler {
             return null;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return environmentError("TARGET_COMPILE_INTERRUPTED", "补编译当前被测源码时任务被中断。");
+            throw new com.intellij.openapi.progress.ProcessCanceledException();
         } catch (IOException ex) {
             return environmentError("TARGET_COMPILE_IO_FAILURE", safeMessage(ex));
+        } finally {
+            ProcessCleanup.terminate(process);
         }
     }
 
@@ -406,18 +487,19 @@ public class TestSandboxCompiler {
     }
 
     /** 探测 javac 主版本；失败返回 0 表示未知，调用方按不支持处理。 */
-    private static int detectJavacMajorVersion(String javacPath) {
+    static int detectJavacMajorVersion(String javacPath) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder(javacPath, "-version")
+            process = new ProcessBuilder(javacPath, "-version")
                     .redirectErrorStream(true)
                     .start();
+            process.getOutputStream().close();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            Thread drain = new Thread(() -> drain(process, output), "unitmind-javac-version");
+            Process worker = process;
+            Thread drain = new Thread(() -> drain(worker, output), "unitmind-javac-version");
             drain.setDaemon(true);
             drain.start();
             if (!process.waitFor(10, TimeUnit.SECONDS)) {
-                process.destroy();
-                process.waitFor(2, TimeUnit.SECONDS);
                 return 0;
             }
             drain.join(1000);
@@ -434,9 +516,11 @@ public class TestSandboxCompiler {
             return first;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return 0;
+            throw new com.intellij.openapi.progress.ProcessCanceledException();
         } catch (Exception ex) {
             return 0;
+        } finally {
+            ProcessCleanup.terminate(process);
         }
     }
 
@@ -451,6 +535,8 @@ public class TestSandboxCompiler {
 
     private String diagnosticCode(String message) {
         String text = value(message).toLowerCase(Locale.ROOT);
+        if (text.contains("interface expected") || text.contains("此处需要接口")) return "CLASS_USED_AS_INTERFACE";
+        if (text.contains("unreported exception") || text.contains("未报告的异常")) return "UNREPORTED_EXCEPTION";
         if (text.contains("cannot find symbol") || text.contains("找不到符号")) return "CANNOT_FIND_SYMBOL";
         if (text.contains("no suitable method") || text.contains("不适用于") || text.contains("应用到给定类型")) return "NO_SUITABLE_METHOD";
         if (text.contains("incompatible types") || text.contains("不兼容的类型")) return "INCOMPATIBLE_TYPES";

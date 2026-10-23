@@ -24,6 +24,68 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 
 public class LlmPromptBuilderTest {
+    @Test public void springContractsAndDeepestCauseReachEveryModelMode() {
+        var request = new LlmGenerationRequest();
+        request.setClassSourceCode("class Subject { @org.springframework.beans.factory.annotation.Value(\"${actual.key:default}\") String value; }");
+        var diagnostic=new RuntimeDiagnostic();diagnostic.setCategory("FRAMEWORK_CONTEXT_BOOTSTRAP_FAILURE");
+        diagnostic.setSharedContextFailure(true);diagnostic.setFailureDetails("wrapper".repeat(3000));
+        diagnostic.setRootCauseType("sample.Deepest");diagnostic.setRootCauseMessage("required key at deepest cause");
+        diagnostic.setCauseDetails(List.of("Caused by: sample.Deepest: required key at deepest cause"));
+        request.setRuntimeDiagnostics(List.of(diagnostic));
+        var builder=new LlmPromptBuilder();
+        for(String prompt:List.of(builder.userPrompt(request),builder.repairPrompt(request),builder.classRepairPrompt(request),builder.coveragePrompt(request))) {
+            assertTrue(prompt.contains("springPropertyBindings"));assertTrue(prompt.contains("actual.key"));
+        }
+        for(String prompt:List.of(builder.classRepairPrompt(request),builder.coveragePrompt(request))) {
+            assertTrue(prompt.contains("required key at deepest cause")); assertTrue(prompt.contains("sharedContextFailure"));
+        }
+        for(String system:List.of(builder.systemPrompt(),builder.repairSystemPrompt(),builder.classRepairSystemPrompt(),builder.coverageSystemPrompt())) {
+            assertTrue(system.contains("Spring 属性与生命周期规则")); assertTrue(system.contains("context.getBean"));
+        }
+    }
+
+    @Test public void everyGenerationAndRepairModeSharesObjectGraphAndBehaviorContracts() {
+        var builder=new LlmPromptBuilder();
+        for(String prompt:List.of(builder.systemPrompt(),builder.repairSystemPrompt(),builder.classRepairSystemPrompt(),builder.coverageSystemPrompt())) {
+            assertTrue(prompt.contains("mock 对象图"));
+            assertTrue(prompt.contains("private final/static"));
+            assertTrue(prompt.contains("公开入口"));
+            assertTrue(prompt.contains("独立权威授权"));
+        }
+    }
+    @Test
+    public void generationAndRepairShareRealTestDoubleTypeContracts() {
+        var builder = new LlmPromptBuilder();
+        for (String prompt : java.util.List.of(builder.systemPrompt(), builder.repairSystemPrompt(),
+                builder.coverageSystemPrompt(), builder.classRepairSystemPrompt())) {
+            assertTrue(prompt.contains("implements 仅用于 interface"));
+            assertTrue(prompt.contains("全部继承的抽象方法"));
+            assertTrue(prompt.contains("API 不完整时"));
+            assertTrue(prompt.contains("生产源码已独立通过"));
+        }
+    }
+    @Test
+    public void serializesMatcherOriginSeparatelyFromFailingJUnitTest() {
+        var diagnostic = new RuntimeDiagnostic(); diagnostic.setTestId("T#detected()");
+        diagnostic.setOriginLocations(List.of(new com.casc.unittestagent.model.RuntimeFailureOrigin(
+                "T#origin()", 42, "when(Real.call(any()))", "-> at T.origin(T.java:42)")));
+        var request = new LlmGenerationRequest(); request.setRuntimeDiagnostics(List.of(diagnostic));
+        String prompt = new LlmPromptBuilder().coveragePrompt(request);
+        assertTrue(prompt.contains("\"originLocations\"")); assertTrue(prompt.contains("T#origin()"));
+        assertTrue(prompt.contains("T#detected()")); assertTrue(prompt.contains("不能改无关测试"));
+    }
+    @Test public void initializationRepairUsesPhaseAndSharedFixtureEvidenceWithoutRequestingBusinessOracle() {
+        var diagnostic = new RuntimeDiagnostic(); diagnostic.setCategory("MOCKITO_FIXTURE_INITIALIZATION_FAILURE");
+        diagnostic.setFailurePhase(com.casc.unittestagent.model.RuntimeFailurePhase.TEST_SETUP);
+        diagnostic.setFixtureField("service"); diagnostic.setLifecycleEvidence(List.of("Mockito @Spy constructor failure"));
+        var request = new LlmGenerationRequest(); request.setRuntimeDiagnostics(List.of(diagnostic));
+        String prompt = new LlmPromptBuilder().classRepairPrompt(request);
+        assertTrue(prompt.contains("SHARED_FIXTURE + REPAIR_TEST + KEEP + NONE"));
+        assertTrue(prompt.contains("不需要业务 Oracle 证据或 NullPointerException"));
+        assertTrue(prompt.contains("\"failurePhase\": \"TEST_SETUP\""));
+        assertTrue(prompt.contains("\"fixtureField\": \"service\""));
+        assertTrue(prompt.contains("Mockito @Spy constructor failure"));
+    }
     @Test
     public void runtimeRepairIncludesCompleteClassConstantsForExceptionPathAdjudication() {
         RuntimeDiagnostic diagnostic = new RuntimeDiagnostic();

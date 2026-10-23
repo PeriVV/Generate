@@ -33,6 +33,59 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class TestCodeStepPanelTest extends LightPlatformTestCase {
+    public void testFailedDraftStillOffersSubsetExitWithoutPassingCompilation() {
+        String code="class T { @org.junit.jupiter.api.Test void test() {} }";
+        var panel=new TestCodeStepPanel(getProject(),GenerationStatus.FAILED,code,code,"preflight rejected","",
+                com.casc.unittestagent.model.ValidationResult.status(com.casc.unittestagent.model.ValidationStatus.FAILED),
+                feedback -> {}, () -> {}, text -> {});
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        panel.configureRunnableSelection(null,calls::incrementAndGet,()->{},()->{},false);
+        assertEquals(code,panel.getCode());
+        assertTrue(componentContainsText(panel,"部分用例受阻"));
+        var button=findButton(panel,"保留可运行用例并测覆盖率");
+        assertTrue(button.isEnabled()); button.doClick(); assertEquals(1,calls.get());
+    }
+    public void testRepeatedSelectionDisplaysEarlierExclusionsEvenWhenCurrentBatchHasNone() {
+        var prior = new com.casc.unittestagent.model.RunnableTestSelectionReport();
+        prior.setStatus(com.casc.unittestagent.model.RunnableTestSelectionReport.Status.PASSED);
+        prior.setOriginalCode("original"); prior.setSelectedCode("retained"); prior.exclude("T#bad()", "earlier failure");
+        var next = new com.casc.unittestagent.model.RunnableTestSelectionReport();
+        next.setStatus(com.casc.unittestagent.model.RunnableTestSelectionReport.Status.PASSED);
+        next.inheritExclusions(prior.getActiveExclusionOrigins());
+        var panel = panel("retained", "retained");
+        panel.configureRunnableSelection(next, () -> {}, () -> {}, () -> {}, false);
+        assertTrue(componentContainsText(panel, "T#bad()"));
+        assertTrue(componentContainsText(panel, "earlier failure"));
+    }
+    public void testRunnableSelectionHasIndependentActionExclusionReportAndRestore() {
+        String original = "class T { /* original full batch */ }";
+        String retained = "class T { /* retained runnable tests */ }";
+        var panel = panel(original, retained);
+        var report = new com.casc.unittestagent.model.RunnableTestSelectionReport();
+        report.setStatus(com.casc.unittestagent.model.RunnableTestSelectionReport.Status.PASSED);
+        report.setOriginalCode(original); report.setSelectedCode(retained); report.setOriginalMethods(2);
+        report.setRetainedTests(List.of("T#good()")); report.exclude("T#bad()", "运行未通过：expected 1 but was 2");
+        report.setArchivePath("/test/OriginalTest.java.txt");
+        var selected = new java.util.concurrent.atomic.AtomicInteger();
+        var opened = new java.util.concurrent.atomic.AtomicInteger();
+        panel.configureRunnableSelection(report, selected::incrementAndGet, () -> panel.setCode(original), opened::incrementAndGet, false);
+        findButton(panel, "保留可运行用例并测覆盖率").doClick();
+        findButton(panel, "查看筛选前代码").doClick();
+        assertEquals(1, selected.get()); assertEquals(1, opened.get());
+        assertTrue(componentContainsText(panel, "T#bad()"));
+        assertTrue(componentContainsText(panel, "expected 1 but was 2"));
+        assertEquals(retained, panel.getCode());
+        findButton(panel, "恢复筛选前代码").doClick(); assertEquals(original, panel.getCode());
+    }
+
+    public void testRunnableSelectionCannotStartOrRestoreDuringExecution() {
+        var panel = panel("original", "retained");
+        var report = new com.casc.unittestagent.model.RunnableTestSelectionReport(); report.setOriginalCode("original");
+        panel.configureRunnableSelection(report, () -> fail("selection is running"), () -> fail("selection is running"), () -> { }, true);
+        assertFalse(findButton(panel, "保留可运行用例并测覆盖率").isEnabled());
+        assertFalse(findButton(panel, "恢复筛选前代码").isEnabled());
+    }
+
     public void testRestoreUsesOriginalGeneratedCodeAfterPanelRebuild() {
         String generated = "class SubjectTest { /* generated */ }";
         String edited = "class SubjectTest { /* edited */ }";

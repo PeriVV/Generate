@@ -9,6 +9,8 @@ import java.util.List;
 /** 覆盖率执行器的单轮结果。 */
 public class CoverageRunResult {
     private CoverageSnapshot snapshot = new CoverageSnapshot();
+    private CoverageSnapshot classSnapshot = new CoverageSnapshot();
+    public CoverageSnapshot getClassSnapshot() { return classSnapshot; }
     private List<CoverageGap> gaps = new ArrayList<>();
     private boolean cancelled;
     private boolean environmentError;

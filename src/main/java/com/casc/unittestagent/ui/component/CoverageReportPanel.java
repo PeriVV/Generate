@@ -88,7 +88,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         title.add(statusBadge());
         panel.add(title);
 
-        StringBuilder summary = new StringBuilder();
+        StringBuilder summary = new StringBuilder("运行配置：")
+                .append(report.getRuntimeConfigurationOrigin()).append("  ");
         if (report.getStopReason() != null && report.getStopReason() != CoverageStopReason.NONE) {
             summary.append("停止原因：").append(stopReasonText(report.getStopReason())).append("  ");
         }
@@ -100,6 +101,9 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         }
         if (report.getModelRequests() > 0) {
             summary.append("  ·  模型请求 ").append(report.getModelRequests());
+        }
+        if (!report.getCandidateRejections().isEmpty()) {
+            summary.append(" / 不安全补丁拒绝 ").append(report.getCandidateRejections().size());
         }
         if (report.getUnchangedResponses() > 0) {
             summary.append(" / 无变化 ").append(report.getUnchangedResponses());
@@ -136,11 +140,16 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         return badge;
     }
 
+    private boolean usable(CoverageSnapshot snapshot) {
+        return snapshot != null && snapshot.isAvailable()
+                && (report.getStatus() == CoverageStatus.PASSED || report.getStatus() == CoverageStatus.BELOW_THRESHOLD);
+    }
+
     private JComponent metricCards() {
         // 纵向卡片在窄工具窗口中不会互相挤压或制造整页横向滚动。
         JPanel cards = new JPanel(new java.awt.GridLayout(0, 1, 0, JBUI.scale(8)));
         cards.setOpaque(false);
-        cards.add(metricCard("本次生成", report.getGenerated()));
+        cards.add(metricCard("当前测试集合 → 所选方法（含 lambda）", report.getGenerated()));
         return cards;
     }
 
@@ -209,10 +218,10 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
 
         boolean running = report.getStatus() == CoverageStatus.RUNNING;
         card.add(metricRow("行", snapshot == null ? null : snapshot.getLine(),
-                config.getLineThreshold(), snapshot != null && snapshot.isAvailable(), false, running));
+                config.getLineThreshold(), usable(snapshot), false, running));
         card.add(Box.createVerticalStrut(JBUI.scale(4)));
         card.add(metricRow("分支", snapshot == null ? null : snapshot.getBranch(),
-                config.getBranchThreshold(), snapshot != null && snapshot.isAvailable(), true, running));
+                config.getBranchThreshold(), usable(snapshot), true, running));
         card.add(Box.createVerticalStrut(JBUI.scale(5)));
         card.add(executionSummary(snapshot));
         return card;
@@ -264,8 +273,10 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     private JComponent executionSummary(CoverageSnapshot snapshot) {
         TestExecutionSummary execution = snapshot == null ? null : snapshot.getExecution();
         String text;
-        if (execution == null) {
-            text = "测试：不可用";
+        if (report.getStatus() == CoverageStatus.STALE) {
+            text = "运行证明已失效，请重新执行。";
+        } else if (execution == null || execution.getFound() == 0) {
+            text = "测试：尚无真实执行记录";
         } else {
             text = "测试：" + execution.getSucceeded() + "/" + execution.getFound() + " 通过";
             if (execution.getFailed() > 0) text += "  ·  " + execution.getFailed() + " 失败";
@@ -305,6 +316,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             add(Box.createVerticalStrut(JBUI.scale(7)));
             add(sectionTitle("运行失败（" + diagnostics.size() + "）"));
             add(diagnosticTable(diagnostics));
+            add(new RuntimeEvidencePanel(report.getGenerated().getExecution()));
         }
         if (!report.getGaps().isEmpty()) {
             add(Box.createVerticalStrut(JBUI.scale(7)));
@@ -387,7 +399,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             result.setLayout(new BoxLayout(result, BoxLayout.Y_AXIS));
             result.setOpaque(false);
             JBLabel outcome = new JBLabel(roundOutcome(snapshot));
-            outcome.setForeground(snapshot != null && snapshot.isAvailable()
+            outcome.setForeground(usable(snapshot)
                     ? UIUtil.getContextHelpForeground() : ERROR);
             if (snapshot != null && !snapshot.getMessage().isBlank()) {
                 outcome.setToolTipText(snapshot.getMessage());
@@ -397,9 +409,9 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
             JPanel bars = new JPanel(new java.awt.GridLayout(1, 2, JBUI.scale(7), 0));
             bars.setOpaque(false);
             bars.add(historyBar("行", snapshot == null ? null : snapshot.getLine(),
-                    snapshot != null && snapshot.isAvailable(), false, config.getLineThreshold()));
+                    usable(snapshot), false, config.getLineThreshold()));
             bars.add(historyBar("分支", snapshot == null ? null : snapshot.getBranch(),
-                    snapshot != null && snapshot.isAvailable(), true, config.getBranchThreshold()));
+                    usable(snapshot), true, config.getBranchThreshold()));
             result.add(bars);
             row.add(result, BorderLayout.CENTER);
             panel.add(row);
@@ -409,9 +421,10 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     }
 
     private String roundOutcome(CoverageSnapshot snapshot) {
+        if (report.getStatus() == CoverageStatus.STALE) return "历史结果已失效，请重新测量当前代码。";
         if (snapshot == null) return "未产生执行结果，覆盖率不计入";
         TestExecutionSummary execution = snapshot.getExecution();
-        if (snapshot.isAvailable()) {
+        if (usable(snapshot)) {
             String branch = snapshot.getBranch().isApplicable()
                     ? percent(snapshot.getBranch().getRate()) : "N/A";
             return "行 " + percent(snapshot.getLine().getRate()) + "  ·  分支 " + branch
@@ -494,6 +507,8 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
                     ? diagnostic.getExceptionType()
                     : FailureCategory.fromCode(diagnostic.getCategory()).displayText()
                             + " / " + diagnostic.getExceptionType();
+            if (diagnostic.getFailurePhase() != com.casc.unittestagent.model.RuntimeFailurePhase.UNKNOWN)
+                exception = diagnostic.getFailurePhase().getLabelCn() + " / " + exception;
             model.addRow(new Object[]{diagnostic.getTestId(), exception, message});
         }
         JBTable table = table(model);
@@ -608,7 +623,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
     }
 
     private String percent(double rate) {
-        return String.format(Locale.ROOT, "%.1f%%", rate * 100.0d);
+        return com.casc.unittestagent.util.CoverageDisplay.percent(rate);
     }
 
     /** 紧凑的阶段轨道：蓝色表示当前，绿色表示已经真实经过，灰色表示未执行。 */

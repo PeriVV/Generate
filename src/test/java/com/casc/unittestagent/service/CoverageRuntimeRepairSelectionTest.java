@@ -16,6 +16,23 @@ import java.util.List;
 import java.util.Set;
 
 public class CoverageRuntimeRepairSelectionTest extends TestCase {
+    public void testContextPrimaryAfterFourSecondaryFailuresRemainsAvailableAndIsFocused() {
+        var failures=new ArrayList<RuntimeDiagnostic>();
+        for(int i=0;i<5;i++) {
+            var d=diagnostic("T#blocked"+i+"()","threshold");d.setSharedContextFailure(true);d.setContextFailureSecondary(true);failures.add(d);
+        }
+        var primary=diagnostic("T#firstObserved()","startup");primary.setSharedContextFailure(true);primary.setRootCauseType("sample.Root");
+        primary.setRootCauseMessage("missing actual key");failures.add(primary);
+        var remembered=new ArrayList<RuntimeDiagnostic>();UnitTestGenerationService.rememberRuntimeDiagnostics(remembered,failures);
+        assertTrue(remembered.contains(primary));
+        assertEquals(List.of(primary),UnitTestGenerationService.focusRuntimeDiagnostics(failures));
+    }
+    public void testDifferentMissingPropertiesCountAsRuntimeProgressWithoutChangingBusinessSignatureRules() {
+        var first=diagnostic("T#first()","startup");first.setSharedContextFailure(true);first.setRootCauseType("sample.PlaceholderFailure");first.setRootCauseMessage("missing first.key");
+        var next=diagnostic("T#first()","startup");next.setSharedContextFailure(true);next.setRootCauseType("sample.PlaceholderFailure");next.setRootCauseMessage("missing next.key");
+        assertFalse(UnitTestGenerationService.runtimeFailureSignature(List.of(first)).equals(UnitTestGenerationService.runtimeFailureSignature(List.of(next))));
+    }
+
     public void testKeepsDistinctRuntimeFailuresEditableInSameExecution() {
         RuntimeDiagnostic first = diagnostic("sample.SubjectTest#firstFailure()", "first");
         RuntimeDiagnostic second = diagnostic("sample.SubjectTest#secondFailure()", "second");
@@ -192,6 +209,21 @@ public class CoverageRuntimeRepairSelectionTest extends TestCase {
         assertEquals(RuntimeRepairDisposition.INCONCLUSIVE, assessment.getDisposition());
         assertTrue(assessment.getEvidence().stream().anyMatch(item -> item.contains("已拒绝模型")));
         assertTrue(UnitTestGenerationService.shouldAnalyzePossibleSourceFailure(assessment));
+    }
+
+    public void testProvenInitializationFailureHasItsOwnEvidenceAndSharedScope() {
+        var assessment = new OracleAssessment(); assessment.setDisposition(RuntimeRepairDisposition.REPAIR_TEST);
+        assessment.setRootCauseCategory("FIXTURE_DEPENDENCY_MISSING");
+        var initialization = diagnostic("SubjectTest#works()", "Mockito initialization failed");
+        initialization.setCategory("MOCKITO_FIXTURE_INITIALIZATION_FAILURE");
+        initialization.setFailurePhase(com.casc.unittestagent.model.RuntimeFailurePhase.TEST_SETUP);
+        initialization.setFixtureField("service"); initialization.setLifecycleEvidence(List.of("actual @Spy field and missing default constructor"));
+        assertTrue(UnitTestGenerationService.normalizeUnsupportedFixtureClassification(assessment, List.of(initialization)));
+        assertEquals("MOCKITO_FIXTURE_INITIALIZATION_FAILURE", assessment.getRootCauseCategory());
+        assertEquals(RuntimeRepairDisposition.REPAIR_TEST, assessment.getDisposition());
+        assertTrue(UnitTestGenerationService.isProvenFixtureRepair(assessment, List.of(initialization)));
+        initialization.setLifecycleEvidence(List.of());
+        assertFalse(UnitTestGenerationService.isProvenFixtureRepair(assessment, List.of(initialization)));
     }
 
     public void testFocusesMechanicalFailureBeforeIndependentOracleConflict() {

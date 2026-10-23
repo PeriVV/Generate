@@ -5,6 +5,9 @@ import java.util.List;
 
 /** 候选测试运行阶段的结构化失败信息。 */
 public class RuntimeDiagnostic {
+    private List<MockWiringEvidence> mockWiringEvidence = List.of();
+    public List<MockWiringEvidence> getMockWiringEvidence() { return mockWiringEvidence; }
+    public void setMockWiringEvidence(List<MockWiringEvidence> value) { mockWiringEvidence = value == null ? List.of() : List.copyOf(value); }
     private String testId = "";
     private String exceptionType = "";
     private String message = "";
@@ -12,6 +15,18 @@ public class RuntimeDiagnostic {
     private String failureDetails = "";
     private List<String> stackTrace = new ArrayList<>();
     private String category = "";
+    private RuntimeFailurePhase failurePhase = RuntimeFailurePhase.UNKNOWN;
+    private String fixtureField = "";
+    private List<String> lifecycleEvidence = new ArrayList<>();
+    private List<RuntimeFailureOrigin> originLocations = List.of();
+    public List<RuntimeFailureOrigin> getOriginLocations() { return originLocations; }
+    public void setOriginLocations(List<RuntimeFailureOrigin> value) { originLocations = value == null ? List.of() : List.copyOf(value); }
+    public RuntimeFailurePhase getFailurePhase() { return failurePhase; }
+    public void setFailurePhase(RuntimeFailurePhase value) { failurePhase = value == null ? RuntimeFailurePhase.UNKNOWN : value; }
+    public String getFixtureField() { return fixtureField; }
+    public void setFixtureField(String value) { fixtureField = value == null ? "" : value; }
+    public List<String> getLifecycleEvidence() { return List.copyOf(lifecycleEvidence); }
+    public void setLifecycleEvidence(List<String> value) { lifecycleEvidence = value == null ? new ArrayList<>() : new ArrayList<>(value); }
     private int sourceLine = -1;
     private String sourceSnippet = "";
     private String suggestion = "";
@@ -22,6 +37,27 @@ public class RuntimeDiagnostic {
     private String expectedExceptionType = "";
     private String actualExceptionType = "";
     private String rootCauseType = "";
+    private String rootCauseMessage = "";
+    private List<String> causeDetails = List.of();
+    private boolean sharedContextFailure;
+    private boolean contextFailureSecondary;
+    private String contextKey = "";
+    private String primaryFailureTestId = "";
+    private String evidenceArchivePath = "";
+    public String getRootCauseMessage() { return rootCauseMessage; }
+    public void setRootCauseMessage(String value) { rootCauseMessage = value == null ? "" : value; }
+    public List<String> getCauseDetails() { return causeDetails; }
+    public void setCauseDetails(List<String> value) { causeDetails = value == null ? List.of() : List.copyOf(value); }
+    public boolean isSharedContextFailure() { return sharedContextFailure; }
+    public void setSharedContextFailure(boolean value) { sharedContextFailure = value; }
+    public boolean isContextFailureSecondary() { return contextFailureSecondary; }
+    public void setContextFailureSecondary(boolean value) { contextFailureSecondary = value; }
+    public String getContextKey() { return contextKey; }
+    public void setContextKey(String value) { contextKey = value == null ? "" : value; }
+    public String getPrimaryFailureTestId() { return primaryFailureTestId; }
+    public void setPrimaryFailureTestId(String value) { primaryFailureTestId = value == null ? "" : value; }
+    public String getEvidenceArchivePath() { return evidenceArchivePath; }
+    public void setEvidenceArchivePath(String value) { evidenceArchivePath = value == null ? "" : value; }
     private List<String> causeChain = new ArrayList<>();
     /** Mockito verify 期望调用次数；-1 表示诊断中未提供。 */
     private int expectedInvocationCount = -1;

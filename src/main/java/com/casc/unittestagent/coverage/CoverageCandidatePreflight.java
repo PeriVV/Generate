@@ -1,6 +1,7 @@
 package com.casc.unittestagent.coverage;
 
 import com.casc.unittestagent.model.CompileDiagnostic;
+import com.casc.unittestagent.generator.MockitoReceiverClassifier;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
@@ -144,8 +145,8 @@ public final class CoverageCandidatePreflight {
         Expression scope = unwrap(invocation.getScope().get());
         String receiver = receiverName(scope);
         if (scope.isObjectCreationExpr() || realReceivers.contains(receiver)
-                || scope.isThisExpr() || looksLikeStaticOwner(receiver)) {
-            String display = receiver.isBlank() ? scope.toString() : receiver;
+                || scope.isThisExpr() || MockitoReceiverClassifier.isTypeReceiver(scope)) {
+            String display = scope.toString();
             diagnostics.add(diagnostic("MOCKITO_WHEN_ON_REAL_OBJECT", when,
                     "when(...) 的接收者 '" + display + "' 是真实对象、@InjectMocks 被测对象或静态类型，"
                             + "不是 Mockito mock。请删除该 stubbing；通过构造对象状态/方法输入触发分支，"
@@ -180,15 +181,17 @@ public final class CoverageCandidatePreflight {
     }
 
     private static boolean isMockitoWhen(CompilationUnit unit, MethodCallExpr call) {
-        if (!"when".equals(call.getNameAsString())) return false;
+        String name = call.getNameAsString();
+        if (!"when".equals(name) && !"given".equals(name)) return false;
+        String owner = "given".equals(name) ? "org.mockito.BDDMockito" : "org.mockito.Mockito";
         if (call.getScope().isPresent()) {
             String scope = call.getScope().get().toString();
-            return "Mockito".equals(scope) || scope.endsWith(".Mockito");
+            return owner.equals(scope) || owner.substring(owner.lastIndexOf('.') + 1).equals(scope);
         }
         return unit.getImports().stream().anyMatch(declaration -> declaration.isStatic()
-                && ("org.mockito.Mockito.when".equals(declaration.getNameAsString())
+                && ((owner + "." + name).equals(declaration.getNameAsString())
                 || declaration.isAsterisk()
-                && "org.mockito.Mockito".equals(declaration.getNameAsString())));
+                && owner.equals(declaration.getNameAsString())));
     }
 
     private static Set<String> mockReceivers(CompilationUnit unit) {
@@ -307,10 +310,6 @@ public final class CoverageCandidatePreflight {
         return "";
     }
 
-    private static boolean looksLikeStaticOwner(String receiver) {
-        return !receiver.isBlank() && Character.isUpperCase(receiver.charAt(0));
-    }
-
     private static boolean isPotentialMatcher(CompilationUnit unit, MethodCallExpr call) {
         if (!MATCHERS.contains(call.getNameAsString())) return false;
         if (call.getScope().isEmpty()) return hasMockitoStaticImport(unit, call.getNameAsString());
@@ -356,6 +355,8 @@ public final class CoverageCandidatePreflight {
     private static CompileDiagnostic diagnostic(String code, MethodCallExpr call, String message) {
         int line = call.getRange().map(range -> range.begin.line).orElse(-1);
         int column = call.getRange().map(range -> range.begin.column).orElse(-1);
-        return new CompileDiagnostic("ERROR", code, message, line, column, call.toString(), true);
+        var diagnostic = new CompileDiagnostic("ERROR", code, message, line, column, call.toString(), true);
+        diagnostic.setValidationStage(com.casc.unittestagent.model.ValidationStage.SOURCE_PREFLIGHT);
+        return diagnostic;
     }
 }

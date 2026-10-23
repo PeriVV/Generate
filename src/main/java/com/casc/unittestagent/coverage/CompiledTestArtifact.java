@@ -19,6 +19,7 @@ public class CompiledTestArtifact implements AutoCloseable {
     private final String javaExecutable;
     private final boolean previewLanguage;
     private final File workingDirectory;
+    private final TestRuntimeConfiguration runtimeConfiguration;
     private final List<File> runtimeClasspath;
     private final List<CompileDiagnostic> diagnostics;
 
@@ -33,6 +34,14 @@ public class CompiledTestArtifact implements AutoCloseable {
                          String javaExecutable, List<File> runtimeClasspath,
                          List<CompileDiagnostic> diagnostics, boolean previewLanguage,
                          File workingDirectory) {
+        this(root, classes, testClassName, targetClassName, javaExecutable, runtimeClasspath,
+                diagnostics, previewLanguage, workingDirectory, TestRuntimeConfiguration.defaults(workingDirectory));
+    }
+
+    CompiledTestArtifact(Path root, Path classes, String testClassName, String targetClassName,
+                         String javaExecutable, List<File> runtimeClasspath,
+                         List<CompileDiagnostic> diagnostics, boolean previewLanguage,
+                         File workingDirectory, TestRuntimeConfiguration runtimeConfiguration) {
         this.root = root;
         this.classes = classes;
         this.testClassName = testClassName;
@@ -40,6 +49,7 @@ public class CompiledTestArtifact implements AutoCloseable {
         this.javaExecutable = javaExecutable;
         this.previewLanguage = previewLanguage;
         this.workingDirectory = workingDirectory;
+        this.runtimeConfiguration = runtimeConfiguration;
         this.runtimeClasspath = runtimeClasspath == null ? new ArrayList<>() : runtimeClasspath;
         this.diagnostics = diagnostics == null ? new ArrayList<>() : diagnostics;
     }
@@ -52,6 +62,7 @@ public class CompiledTestArtifact implements AutoCloseable {
     public String getJavaExecutable() { return javaExecutable; }
     public boolean isPreviewLanguage() { return previewLanguage; }
     public File getWorkingDirectory() { return workingDirectory; }
+    public TestRuntimeConfiguration getRuntimeConfiguration() { return runtimeConfiguration; }
     public List<File> getRuntimeClasspath() { return runtimeClasspath; }
     public List<CompileDiagnostic> getDiagnostics() { return diagnostics; }
 

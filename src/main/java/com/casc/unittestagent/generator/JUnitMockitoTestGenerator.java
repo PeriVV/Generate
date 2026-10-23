@@ -37,6 +37,18 @@ public class JUnitMockitoTestGenerator {
     }
 
     /**
+     * 项目测试 classpath 是否可用 Mockito。不可用时（joda-time/gson 等无 mockito 仓库）
+     * 生成代码不得引用 org.mockito——编译期被插件 classpath 掩盖、执行期 NoClassDefFoundError
+     * 整类崩溃。参数兜底退 null 字面量，零 mock 方法直构被测对象。
+     */
+    public void setMockitoAvailable(boolean available) {
+        mockitoAvailable = available;
+        dataGenerator.setMockitoAvailable(available);
+    }
+
+    private boolean mockitoAvailable = true;
+
+    /**
      * 执行单元测试源码生成。
      * 方法把分析模型和场景转换为一个可预览、可写入磁盘的测试文件模型。
      *
@@ -77,34 +89,77 @@ public class JUnitMockitoTestGenerator {
             code.append("package ").append(methodModel.getPackageName()).append(";\n\n");
         }
 
-        for (String importName : importsFor(methodModel, scenarios)) {
+        // import 区在字段区之前：先算好是否需要 Mockito 样板，避免无 mockito 仓库
+        // 引用 org.mockito（编译期被掩盖、执行期 NoClassDefFoundError 整类崩溃）。
+        boolean hasFieldMocks = methodModel.getDependencies().stream()
+                .anyMatch(dependency -> mockitoAvailable && shouldGenerateFieldMock(dependency, mockStrategy));
+        boolean constructSubjectDirectly = !methodModel.isStaticMethod() && !hasFieldMocks
+                && (!mockitoAvailable || dataGenerator.hasInstantiabilityProbe()
+                        && dataGenerator.canInstantiate(methodModel.getClassName()));
+        // 接口/抽象被测主体：@InjectMocks 必抛 "Cannot instantiate ... interface/abstract"
+        // （包装成 Failed to release mocks 整类崩溃），直构也不可行。生成带说明的空测试类，
+        // 走诚实的"0 测试被发现"失败路径；具体实现类/匿名实现交给 LLM 路径。
+        if (!methodModel.isStaticMethod()
+                && (methodModel.isOwnerInterface() || methodModel.isOwnerAbstract())) {
+            return untestableSubjectContent(methodModel);
+        }
+        // @InjectMocks 的发出条件必须与 import 计算完全一致（此前有字段 mock 时也发
+        // @InjectMocks 但 import 只按无字段分支算，jackson 实测找不到符号）。
+        boolean usesInjectMocks = !methodModel.isStaticMethod() && !constructSubjectDirectly;
+        for (String importName : importsFor(methodModel, scenarios, hasFieldMocks, usesInjectMocks)) {
             code.append("import ").append(importName).append(";\n");
         }
         code.append("\n");
         code.append("import static org.junit.jupiter.api.Assertions.*;\n");
-        code.append("import static org.mockito.Mockito.*;\n\n");
+        if (mockitoAvailable) {
+            // 无 mockito 仓库（joda-time/gson 等）引用 org.mockito 是硬编译错误，
+            // 该 import 必须与 mockitoAvailable 同门（静态导入未使用时 JVM 惰性解析，
+            // 但沙箱 javac 对缺失包的 import 直接报错）。
+            code.append("import static org.mockito.Mockito.*;\n");
+        }
+        code.append("\n");
 
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
 
-        boolean hasFieldMocks = false;
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            if (shouldGenerateFieldMock(dependency, mockStrategy)) {
-                hasFieldMocks = true;
+            if (mockitoAvailable && shouldGenerateFieldMock(dependency, mockStrategy)) {
                 code.append("    @Mock\n");
                 code.append("    private ").append(dependency.getFieldType()).append(" ").append(dependency.getFieldName()).append(";\n\n");
+            } else if (isUnmockableValueType(dependency.getFieldType())) {
+                // String/包装类型/Class 等 Mockito 禁止 mock 的值依赖：@Mock 会让
+                // initMocks 抛 "Cannot mock/spy class java.lang.String"（被包装成
+                // "Failed to release mocks"）并崩溃整个测试类。改为普通字段+字面量，
+                // @InjectMocks 注入 null 时仅该用例 NPE（可被闭环修复），类可运行。
+                code.append("    private ").append(dependency.getFieldType()).append(" ")
+                        .append(dependency.getFieldName()).append(" = ")
+                        .append(dataGenerator.generateValidValueExpression(dependency.getFieldType()))
+                        .append(";\n\n");
             }
         }
 
         String subjectName = StringUtils.lowerCamel(methodModel.getClassName());
         if (!methodModel.isStaticMethod()) {
-            code.append("    @InjectMocks\n");
-            code.append("    private ").append(methodModel.getClassName()).append(" ").append(subjectName).append(";\n\n");
+            if (constructSubjectDirectly) {
+                code.append("    private ").append(methodModel.getClassName()).append(" ").append(subjectName)
+                        .append(dataGenerator.canInstantiate(methodModel.getClassName())
+                                ? " = new " + methodModel.getClassName() + "()" : "")
+                        .append(";\n\n");
+            } else {
+                code.append("    @InjectMocks\n");
+                code.append("    private ").append(methodModel.getClassName()).append(" ").append(subjectName).append(";\n\n");
+            }
         }
-        if (!methodModel.isStaticMethod() || hasFieldMocks) {
+        if (hasFieldMocks || (!methodModel.isStaticMethod() && !constructSubjectDirectly)) {
             appendMockitoInitialization(code);
         }
 
         for (TestScenario scenario : scenarios) {
+            // _REASON 结尾的占位场景（"未生成异常/边界场景"）只用于场景页说明根因，
+            // 不应生成为真实测试——其占位输入是普通随机值，执行结果只会制造
+            // 误导性的 boundaryScenarioNotGeneratedForXxx 失败噪音。
+            if (scenario.getType() != null && scenario.getType().endsWith("_REASON")) {
+                continue;
+            }
             code.append("\n");
             appendTestMethod(code, methodModel, scenario, subjectName, mockStrategy);
         }
@@ -117,8 +172,32 @@ public class JUnitMockitoTestGenerator {
         return code.toString();
     }
 
+    /** 接口/抽象主体无法实例化：输出带原因说明的空测试类（编译通过、0 测试被发现）。 */
+    private String untestableSubjectContent(MethodModel methodModel) {
+        StringBuilder code = new StringBuilder();
+        if (methodModel.getPackageName() != null && !methodModel.getPackageName().isBlank()) {
+            code.append("package ").append(methodModel.getPackageName()).append(";\n\n");
+        }
+        code.append("import org.junit.jupiter.api.Test;\n\n");
+        code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
+        code.append("    // UnitMind：被测主体 ")
+                .append(methodModel.isOwnerInterface() ? "是接口" : "是抽象类")
+                .append("（").append(methodModel.getClassName()).append("），无法实例化——\n")
+                .append("    // Mockito 的 InjectMocks 构造注入会抛 Cannot instantiate（整类崩溃），直构也不可行。\n")
+                .append("    // 请选择具体实现类中的方法，或使用大模型路径生成匿名/替身实现。\n");
+        code.append("}\n");
+        return code.toString();
+    }
+
     private boolean shouldGenerateFieldMock(DependencyModel dependency, MockStrategy mockStrategy) {
         if (dependency == null) {
+            return false;
+        }
+        // Mockito 在任何 mock maker 下都禁止 mock String/包装类型/Class——即使策略
+        // 选中也必须拦下，否则 initMocks 崩溃整个测试类（mybatis-3 实测）。
+        // 数组类型同样不可 mock（mock(char[].class) 运行期抛 MockitoException）。
+        if (isUnmockableValueType(dependency.getFieldType())
+                || (dependency.getFieldType() != null && dependency.getFieldType().endsWith("[]"))) {
             return false;
         }
         MockStrategyItem selected = strategyItem(dependency, mockStrategy);
@@ -155,6 +234,19 @@ public class JUnitMockitoTestGenerator {
     private boolean startsWithReceiver(String expression, String receiver) {
         return expression != null && receiver != null && !receiver.isBlank()
                 && (expression.startsWith(receiver + ".") || expression.startsWith(receiver + "("));
+    }
+
+    /** Mockito 禁止 mock 的值类型：String/包装类型/Class/Object 与基本类型。 */
+    static boolean isUnmockableValueType(String type) {
+        String simple = type == null ? "" : type.replaceAll("<.*>", "").strip();
+        int dot = simple.lastIndexOf('.');
+        if (dot >= 0) simple = simple.substring(dot + 1);
+        return switch (simple) {
+            case "String", "CharSequence", "Integer", "Long", "Short", "Byte", "Character",
+                    "Double", "Float", "Boolean", "Class", "Object",
+                    "int", "long", "short", "byte", "char", "double", "float", "boolean" -> true;
+            default -> false;
+        };
     }
 
     private boolean isFieldMockStrategy(String strategy) {
@@ -220,20 +312,26 @@ public class JUnitMockitoTestGenerator {
         imports.add("org.junit.jupiter.api.Test");
         if (!methodModel.isStaticMethod()) {
             imports.add("org.junit.jupiter.api.BeforeEach");
-            imports.add("org.mockito.InjectMocks");
-            imports.add("org.mockito.Mock");
-            imports.add("org.mockito.MockitoAnnotations");
+            if (mockitoAvailable) {
+                imports.add("org.mockito.InjectMocks");
+                imports.add("org.mockito.Mock");
+                imports.add("org.mockito.MockitoAnnotations");
+            }
         }
         for (String importName : imports) {
             code.append("import ").append(importName).append(";\n");
         }
         code.append("\nimport static org.junit.jupiter.api.Assertions.*;\n");
-        code.append("import static org.mockito.Mockito.*;\n\n");
+        if (mockitoAvailable) {
+            code.append("import static org.mockito.Mockito.*;\n");
+        }
+        code.append("\n");
         code.append("class ").append(methodModel.getClassName()).append("Test {\n\n");
-        if (!methodModel.isStaticMethod()) {
+        if (!methodModel.isStaticMethod() && mockitoAvailable) {
             for (DependencyModel dependency : methodModel.getDependencies()) {
                 if (dependency.isMethodParameter() || looksLikeDtoType(dependency.getFieldType())
-                        || looksLikePathType(dependency.getFieldType())) continue;
+                        || looksLikePathType(dependency.getFieldType())
+                        || isUnmockableValueType(dependency.getFieldType())) continue;
                 code.append("    @Mock\n");
                 code.append("    private ").append(dependency.getFieldType()).append(" ")
                         .append(dependency.getFieldName()).append(";\n\n");
@@ -266,7 +364,7 @@ public class JUnitMockitoTestGenerator {
         if ("void".equals(methodModel.getReturnType())) {
             code.append("        assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         } else {
-            code.append("        ").append(methodModel.getReturnType())
+            code.append("        ").append(declarationTypeFor(methodModel.getReturnType(), "value"))
                     .append(" result = assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         }
         code.append("    }\n");
@@ -333,7 +431,8 @@ public class JUnitMockitoTestGenerator {
             code.append("        assertDoesNotThrow(() -> ").append(invocation).append(");\n");
         } else {
             String resultType = methodModel.getReturnType();
-            code.append("        ").append(resultType).append(" result = assertDoesNotThrow(() -> ")
+            code.append("        ").append(declarationTypeFor(resultType, "value"))
+                    .append(" result = assertDoesNotThrow(() -> ")
                     .append(invocation).append(");\n");
         }
         code.append("    }\n");
@@ -373,7 +472,61 @@ public class JUnitMockitoTestGenerator {
             applyCondition(values, methodModel, scenario.getCoveredBranches().get(0));
         }
 
+        if (!"EXCEPTION".equals(scenario.getType())) {
+            // 仅正常/边界场景对齐；EXCEPTION 场景的条件求解定向值（off=-1、start>end 等）
+            // 不能被覆盖——上一轮修复建立的严格不等式异常路径契约依赖它。
+            alignArrayOffsetLength(values, methodModel);
+        }
+        alignBooleanGuardDirection(values, methodModel, scenario);
         return values;
+    }
+
+    /**
+     * 数组 + off/len 参数对齐：数组解析型方法（parseInt(ch, off, len)）的偏移与
+     * 长度独立取值会越界。同方法存在 T[] 参数与名为 off/offset/index 或 len/length
+     * 的 int 参数时，钳 off=0、len=4（与数组字面量长度一致）。
+     */
+    private void alignArrayOffsetLength(Map<String, String> values, MethodModel methodModel) {
+        boolean hasArray = methodModel.getParameters().stream()
+                .anyMatch(parameter -> parameter.getType() != null && parameter.getType().endsWith("[]"));
+        if (!hasArray) return;
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            String name = parameter.getName() == null ? "" : parameter.getName().toLowerCase();
+            if (!"int".equals(simpleType(parameter.getType()))) continue;
+            if (name.equals("off") || name.equals("offset") || name.equals("index")
+                    || name.equals("start") || name.equals("from")) {
+                values.put(parameter.getName(), "0");
+            } else if (name.equals("len") || name.equals("length") || name.equals("count")
+                    || name.equals("end") || name.equals("to")) {
+                values.put(parameter.getName(), "4");
+            }
+        }
+    }
+
+    /**
+     * 布尔守卫方向：applyCondition 文法不含裸布尔/取反条件，boolean 取值与场景
+     * 目标方向脱钩（抛硬币）。场景覆盖分支明确写 param == true / param == false /
+     * !param 时直接取该方向。
+     */
+    private void alignBooleanGuardDirection(Map<String, String> values,
+                                            MethodModel methodModel,
+                                            TestScenario scenario) {
+        if (scenario == null || scenario.getCoveredBranches() == null) return;
+        for (ParameterModel parameter : methodModel.getParameters()) {
+            if (!"boolean".equals(simpleType(parameter.getType()))) continue;
+            for (String branch : scenario.getCoveredBranches()) {
+                String compact = branch == null ? "" : branch.replaceAll("\\s+", "");
+                if (compact.equals(parameter.getName() + "==true")) {
+                    values.put(parameter.getName(), "true");
+                    break;
+                }
+                if (compact.equals(parameter.getName() + "==false")
+                        || compact.equals("!" + parameter.getName())) {
+                    values.put(parameter.getName(), "false");
+                    break;
+                }
+            }
+        }
     }
 
     private boolean hasDirectParameterRelation(MethodModel methodModel, String condition) {
@@ -426,13 +579,23 @@ public class JUnitMockitoTestGenerator {
         if (isOptionalReturn(methodModel)) {
             return stableOptionalInputValue(parameter);
         }
+        // 数组参数优先取字面量：分析器预填充的 normalValues 对数组是 null，
+        // 被测方法首语句解引用即 NPE（commons-codec/jackson 实测全场 0 通过）。
+        if (parameter.getType() != null && parameter.getType().endsWith("[]")
+                && dataGenerator.arrayLiteralAvailable(parameter.getType())) {
+            return dataGenerator.generateValidValueExpression(parameter.getType());
+        }
         if ("BOUNDARY".equals(scenario.getType()) && parameter.getBoundaryValues() != null && !parameter.getBoundaryValues().isEmpty()) {
             return parameter.getBoundaryValues().get(0);
         }
         if (parameter.getNormalValues() != null && !parameter.getNormalValues().isEmpty()) {
             return parameter.getNormalValues().get(0);
         }
-        return dataGenerator.generateValueExpression(parameter.getType());
+        // 正常/边界场景兜底取值钳到非负区间（负值易随机命中 count<0 类守卫）；
+        // 异常场景保留全域取值以触发守卫分支。
+        return "EXCEPTION".equals(scenario.getType())
+                ? dataGenerator.generateValueExpression(parameter.getType())
+                : dataGenerator.generateValidValueExpression(parameter.getType());
     }
 
     /**
@@ -465,20 +628,21 @@ public class JUnitMockitoTestGenerator {
         boolean hasInputVariable = false;
         for (ParameterModel parameter : methodModel.getParameters()) {
             DependencyModel dependency = methodParameterDependency(parameter.getName(), methodModel);
-            if (dependency != null && shouldGenerateFieldMock(dependency, mockStrategy)) {
+            if (dependency != null && mockitoAvailable && shouldGenerateFieldMock(dependency, mockStrategy)) {
                 continue;
             }
             String expression = values.get(parameter.getName());
             expression = safeValueExpression(methodModel, parameter, expression);
             MockStrategyItem selected = strategyItem(dependency, mockStrategy);
-            if (dependency != null && selected != null && selected.isGenerate()
+            boolean arrayTyped = parameter.getType() != null && parameter.getType().endsWith("[]");
+            if (mockitoAvailable && !arrayTyped && dependency != null && selected != null && selected.isGenerate()
                     && isLocalMockStrategy(selected.getMockitoStrategy())) {
                 expression = "mock(" + simpleType(parameter.getType()) + ".class)";
-            } else if (dependency != null && "null".equals(expression)
+            } else if (mockitoAvailable && !arrayTyped && dependency != null && "null".equals(expression)
                     && dependency.getCallExpressions() != null && !dependency.getCallExpressions().isEmpty()) {
                 expression = "mock(" + simpleType(parameter.getType()) + ".class)";
             }
-            code.append("        ").append(parameter.getType()).append(" ")
+            code.append("        ").append(declarationTypeFor(parameter.getType(), expression)).append(" ")
                     .append(parameter.getName()).append(" = ")
                     .append(expression).append(";\n");
             hasInputVariable = true;
@@ -509,21 +673,23 @@ public class JUnitMockitoTestGenerator {
 
         String valueType = optionalValueType(methodModel);
         if ("NORMAL".equals(scenario.getType())) {
-            code.append("        ").append(valueType).append(" expectedValue = ")
+            code.append("        ").append(declarationTypeFor(valueType, "value"))
+                    .append(" expectedValue = ")
                     .append(optionalValueExpression(valueType)).append(";\n\n");
-            if (dependency != null && callExpression != null) {
+            if (mockitoAvailable && dependency != null && callExpression != null) {
                 code.append("        when(").append(dependency.getFieldName()).append(".").append(callExpression)
                         .append(").thenReturn(Optional.of(expectedValue));\n\n");
             }
         } else {
-            if (dependency != null && callExpression != null) {
+            if (mockitoAvailable && dependency != null && callExpression != null) {
                 code.append("        when(").append(dependency.getFieldName()).append(".").append(callExpression)
                         .append(").thenReturn(Optional.empty());\n\n");
             }
         }
 
         String invocation = invocationExpression(methodModel, subjectName, String.join(", ", argumentsFor(methodModel, values)));
-        code.append("        ").append(methodModel.getReturnType()).append(" result = ").append(invocation).append(";\n\n");
+        code.append("        ").append(declarationTypeFor(methodModel.getReturnType(), "value"))
+                .append(" result = ").append(invocation).append(";\n\n");
         if ("NORMAL".equals(scenario.getType())) {
             code.append("        assertTrue(result.isPresent());\n");
             code.append("        assertSame(expectedValue, result.get());\n");
@@ -887,29 +1053,25 @@ public class JUnitMockitoTestGenerator {
      * 汇总测试类需要的 import。
      * 只复用被测源码已经出现的 import，避免为某类框架或业务类型写死兜底包名。
      */
-    private List<String> importsFor(MethodModel methodModel, List<TestScenario> scenarios) {
+    private List<String> importsFor(MethodModel methodModel, List<TestScenario> scenarios,
+                                    boolean hasFieldMocks, boolean usesInjectMocks) {
         Set<String> imports = new LinkedHashSet<>();
-        String returnTypeImport = importForType(methodModel, methodModel.getReturnType());
-        if (returnTypeImport != null) {
-            imports.add(returnTypeImport);
-        }
+        addTypeImports(imports, methodModel, methodModel.getReturnType());
         for (DependencyModel dependency : methodModel.getDependencies()) {
-            String importName = importForType(methodModel, dependency.getFieldType());
-            if (importName != null) {
-                imports.add(importName);
-            }
+            addTypeImports(imports, methodModel, dependency.getFieldType());
         }
         for (ParameterModel parameter : methodModel.getParameters()) {
-            String importName = importForType(methodModel, parameter.getType());
-            if (importName != null) {
-                imports.add(importName);
-            }
+            addTypeImports(imports, methodModel, parameter.getType());
         }
         imports.add("org.junit.jupiter.api.Test");
         imports.add("org.junit.jupiter.api.BeforeEach");
-        imports.add("org.mockito.Mock");
-        imports.add("org.mockito.MockitoAnnotations");
-        if (!methodModel.isStaticMethod()) {
+        if (hasFieldMocks || usesInjectMocks) {
+            imports.add("org.mockito.MockitoAnnotations");
+        }
+        if (hasFieldMocks) {
+            imports.add("org.mockito.Mock");
+        }
+        if (usesInjectMocks) {
             imports.add("org.mockito.InjectMocks");
         }
         // 异常场景使用 assertThrows(异常类型.class)，异常类型同样需要 import，
@@ -972,13 +1134,88 @@ public class JUnitMockitoTestGenerator {
      * 根据简单类型查找源码中的 import。
      */
     private String importForType(MethodModel methodModel, String type) {
-        String simpleType = simpleType(type);
+        for (String simple : simpleNamesIn(type)) {
+            String resolved = resolveImport(methodModel, simple);
+            if (resolved != null) return resolved;
+        }
+        return null;
+    }
+
+    /**
+     * 把类型文本解析到的所有 import 加入集合。
+     * 必须分解泛型实参与数组元素：List<JavaType> 需要 List 与 JavaType 两个 import，
+     * 只按整段文本匹配会漏内层类型（jackson/HikariCP 实测生成代码编译失败）。
+     */
+    private void addTypeImports(Set<String> imports, MethodModel methodModel, String type) {
+        for (String simple : simpleNamesIn(type)) {
+            String resolved = resolveImport(methodModel, simple);
+            if (resolved != null) imports.add(resolved);
+        }
+    }
+
+    private String resolveImport(MethodModel methodModel, String simpleName) {
+        if (simpleName == null || simpleName.isBlank() || isTypeVariableType(simpleName)) return null;
         for (String importName : methodModel.getImports()) {
-            if (importName.endsWith("." + simpleType)) {
+            if (importName.endsWith("." + simpleName)) {
                 return importName;
             }
         }
+        // 通配 import（java.util.concurrent.* 等）无法用 endsWith 解析简单名：
+        // 用插件 JVM 反射确认 JDK 包内确实存在该类型再展开为精确 import。
+        for (String importName : methodModel.getImports()) {
+            if (!importName.endsWith(".*")) continue;
+            String candidate = importName.substring(0, importName.length() - 1) + simpleName;
+            try {
+                Class.forName(candidate, false, getClass().getClassLoader());
+                return candidate;
+            } catch (ClassNotFoundException notInThisPackage) {
+                // 继续尝试下一个通配前缀。
+            } catch (Throwable reflectionFailure) {
+                return null;
+            }
+        }
         return null;
+    }
+
+    /** 提取类型文本中的全部大写开头简单名（分解泛型实参、数组与限定名）。 */
+    static List<String> simpleNamesIn(String type) {
+        List<String> names = new ArrayList<>();
+        if (type == null || type.isBlank()) return names;
+        for (String token : type.split("[<>,\\s\\[\\]?]+")) {
+            if (token.isBlank()) continue;
+            int dot = token.lastIndexOf('.');
+            String simple = dot >= 0 ? token.substring(dot + 1) : token;
+            if (!simple.isEmpty() && Character.isUpperCase(simple.charAt(0))) {
+                names.add(simple);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * 泛型方法类型变量（T/E/K/V、A/B/C、T1/T2 等短全大写名）：不是可解析类型。
+     * 未 import 的 1-2 位大写"类名"在测试类里声明/new 本就编译失败，当作类型变量
+     * （值退字面量、声明退 var）严格优于按类名处理。
+     */
+    static boolean isTypeVariableType(String token) {
+        return token != null && token.matches("[A-Z]{1,2}[0-9]?");
+    }
+
+    /** 类型文本中是否含类型变量（裸 T 或泛型位 Class<T>）——声明侧需要退 var。 */
+    static boolean containsTypeVariable(String type) {
+        if (type == null || type.isBlank()) return false;
+        for (String token : type.split("[<>,\\s\\[\\]?]+")) {
+            int dot = token.lastIndexOf('.');
+            String simple = dot >= 0 ? token.substring(dot + 1) : token;
+            if (isTypeVariableType(simple)) return true;
+        }
+        return false;
+    }
+
+    /** 局部变量声明类型：含类型变量时用 var（T obj = ... 在测试类中无 T 声明必失败）。 */
+    static String declarationTypeFor(String type, String expression) {
+        if (containsTypeVariable(type) && !"null".equals(expression)) return "var";
+        return type;
     }
 
     /**
@@ -1061,8 +1298,11 @@ public class JUnitMockitoTestGenerator {
     private String compileSafeValueExpression(String type) {
         String expression = dataGenerator.generateValueExpression(type);
         if (expression == null || expression.isBlank()) return "null";
+        // 数组字面量自包含且数组不可 mock，直接保留；其余 new 表达式按可解析性降级。
         if (expression.startsWith("new ")) {
-            return "mock(" + simpleType(type) + ".class)";
+            return simpleType(type).endsWith("[]")
+                    ? expression
+                    : (mockitoAvailable ? "mock(" + simpleType(type) + ".class)" : "null");
         }
         return expression;
     }
@@ -1079,12 +1319,18 @@ public class JUnitMockitoTestGenerator {
             return expression;
         }
         String simple = simpleType(parameter.getType());
+        // 数组字面量自包含（无需 import/可解析类型），且数组类型 Mockito 不可 mock
+        // （mock(char[].class) 运行期抛 MockitoException）——必须原样保留，
+        // 否则数组参数退 null、被测方法首语句解引用即 NPE（commons-codec/jackson 实测）。
+        if (simple.endsWith("[]")) {
+            return expression;
+        }
         if (isJavaLangType(simple) || importForType(methodModel, simple) != null) {
             return expression;
         }
         // 静态分析已把嵌套类型改写为“外部类.嵌套类”限定名，限定名在测试类中可见，可用 mock。
         String type = parameter.getType();
-        if (type != null && type.contains(".") && !type.contains("<")) {
+        if (mockitoAvailable && type != null && type.contains(".") && !type.contains("<")) {
             return "mock(" + type.trim() + ".class)";
         }
         return "null";

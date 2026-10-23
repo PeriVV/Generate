@@ -37,12 +37,17 @@ public final class MockitoRuntimeDiagnosticEnricher {
                     + "应改为构造输入状态，或 stub 被测方法真正调用的 @Mock 依赖；@Spy 优先使用 doReturn(...).when(spy)。"
                     : related.getMessage());
         }
+        MockitoMatcherOriginAnalyzer.enrich(diagnostics, testCode);
+        FixtureLifecycleAnalyzer.enrich(diagnostics, testCode);
+        SpringRuntimeFailureAnalyzer.enrich(diagnostics, testCode);
     }
 
     private static void enrichLocationAndCategory(RuntimeDiagnostic diagnostic, String testCode) {
         if (diagnostic == null) return;
         enrichFrames(diagnostic);
-        int line = sourceLine(diagnostic.getStackTrace(), testSimpleName(diagnostic));
+        int line = diagnostic.getTestFrame().isBlank() ? -1
+                : sourceLine(List.of(diagnostic.getTestFrame()), testSimpleName(diagnostic));
+        if (line <= 0) line = sourceLine(diagnostic.getStackTrace(), testSimpleName(diagnostic));
         if (line <= 0) line = sourceLine(diagnostic.getStackTrace(), "");
         diagnostic.setSourceLine(line);
         diagnostic.setSourceSnippet(sourceLine(testCode, line));
@@ -328,6 +333,9 @@ public final class MockitoRuntimeDiagnosticEnricher {
         String rootCauseFrame = "";
         for (String entry : stack) {
             String frame = entry == null ? "" : entry;
+            // Mockito includes "-> at" registration locations in exception messages.
+            // They may belong to an earlier test and are not frames of this failure.
+            if (!frame.strip().startsWith("at ")) continue;
             if (testFrame.isBlank() && !testClass.isBlank() && frame.contains(testClass + ".")) {
                 testFrame = frame;
             }
@@ -338,7 +346,7 @@ public final class MockitoRuntimeDiagnosticEnricher {
         }
         diagnostic.setTestFrame(testFrame);
         diagnostic.setProductionFrame(productionFrame);
-        diagnostic.setRootCauseFrame(rootCauseFrame);
+        if (diagnostic.getRootCauseFrame().isBlank()) diagnostic.setRootCauseFrame(rootCauseFrame);
     }
 
     private static boolean isFrameworkFrame(String frame) {

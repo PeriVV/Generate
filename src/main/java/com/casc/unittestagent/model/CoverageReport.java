@@ -15,6 +15,9 @@ public class CoverageReport {
     private long durationMillis;
     private String codeHash = "";
     private String sourceHash = "";
+    private String runtimeConfigurationOrigin = "IDE";
+    public String getRuntimeConfigurationOrigin() { return runtimeConfigurationOrigin; }
+    public void setRuntimeConfigurationOrigin(String value) { runtimeConfigurationOrigin = value == null ? "IDE" : value; }
     private String message = "";
     private CoveragePhase phase = CoveragePhase.NOT_STARTED;
     private double progressFraction;
@@ -23,6 +26,12 @@ public class CoverageReport {
     private List<CoveragePhase> visitedPhases = new CopyOnWriteArrayList<>();
     /** 实际发出的模型请求数，包含格式重试和瞬时网络重试。 */
     private int modelRequests;
+    private final List<RepairCandidateRejection> candidateRejections = new ArrayList<>();
+    public List<RepairCandidateRejection> getCandidateRejections() { return List.copyOf(candidateRejections); }
+    public void recordCandidateRejection(RepairCandidateRejection rejection) {
+        if (candidateRejections.size() == 64) candidateRejections.remove(0);
+        candidateRejections.add(rejection);
+    }
     /** 已成功返回候选的覆盖率探索调用数。 */
     private int explorationRounds;
     /** 已成功返回候选的编译/运行修复调用数。 */

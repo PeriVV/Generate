@@ -46,8 +46,85 @@ public class ProjectTestEnvironmentResolver {
             environment.error("INDEX_NOT_READY", "IntelliJ 项目索引尚未完成，请等待索引完成后重试。");
             return environment;
         }
-        return ApplicationManager.getApplication().runReadAction(
+        ProjectTestEnvironment resolved = ApplicationManager.getApplication().runReadAction(
                 (Computable<ProjectTestEnvironment>) () -> resolveInReadAction(project, sourceFile, environment));
+        if (resolved.isUsable() && resolved.bundledMockito) attachBundledMockito(resolved, resolved.javaExecutable);
+        return resolved;
+    }
+
+    /** 只在运行阶段解析构建工具配置，避免在 IDE 读锁中等待外部进程。 */
+    public ProjectTestEnvironment resolveForExecution(Project project, PsiFile sourceFile,
+                                                     java.util.function.BooleanSupplier cancelled) {
+        ProjectTestEnvironment environment = resolve(project, sourceFile);
+        if (!environment.isUsable()) return environment;
+        try {
+            java.nio.file.Path source = ApplicationManager.getApplication().runReadAction(
+                    (Computable<java.nio.file.Path>) () -> java.nio.file.Path.of(sourceFile.getVirtualFile().getPath()));
+            environment.runtimeConfiguration = new ProjectTestRuntimeConfigurationResolver().resolve(source,
+                    project.getBasePath() == null ? null : java.nio.file.Path.of(project.getBasePath()),
+                    environment.javaExecutable, environment.workingDirectory, cancelled,
+                    environment.bundledJunit || environment.offlineTestLibrary, project);
+            if (environment.bundledMockito) {
+                String testJava = environment.runtimeConfiguration.getJavaExecutable();
+                attachBundledMockito(environment, testJava.isBlank() ? environment.javaExecutable : testJava);
+                if (!environment.isUsable()) return environment;
+                List<String> args = new ArrayList<>(environment.runtimeConfiguration.getJvmArguments());
+                File core = environment.bundledMockitoLibraries.stream()
+                        .filter(file -> file.getName().startsWith("mockito-core-5.")).findFirst().orElse(null);
+                if (core != null && !hasMockitoAgent(args)) args.add("-javaagent:" + core.getAbsolutePath());
+                environment.runtimeConfiguration = environment.runtimeConfiguration.withJvmArguments(args).withOrigin(
+                        environment.runtimeConfiguration.getOrigin() + "；内置 " + environment.bundledMockitoVersion);
+            }
+            if (environment.offlineMockitoAgent != null && !hasMockitoAgent(environment.runtimeConfiguration.getJvmArguments())) {
+                List<String> args = new ArrayList<>(environment.runtimeConfiguration.getJvmArguments());
+                args.add("-javaagent:" + environment.offlineMockitoAgent.getAbsolutePath());
+                environment.runtimeConfiguration = environment.runtimeConfiguration.withJvmArguments(args).withOrigin(
+                        environment.runtimeConfiguration.getOrigin() + "；IDEA 离线 Mockito");
+            }
+        } catch (com.intellij.openapi.progress.ProcessCanceledException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            environment.error("RUNTIME_CONFIGURATION_UNAVAILABLE", "项目测试运行配置无法复用："
+                    + safeConfigurationMessage(ex));
+        }
+        return environment;
+    }
+
+    private static String safeConfigurationMessage(Exception ex) {
+        // XML/JSON 库错误可能包含配置值，不把它们放进日志或模型上下文。
+        if (ex instanceof java.io.IOException || ex instanceof IllegalArgumentException
+                && !(ex instanceof org.json.JSONException)) return ex.getMessage();
+        return "配置解析失败，请检查构建工具和 .unitmind/test-runtime.json。";
+    }
+
+    private void attachBundledMockito(ProjectTestEnvironment environment, String testJava) {
+        try {
+            int feature = Math.min(BundledMockitoRuntime.javaFeature(environment.javaExecutable),
+                    BundledMockitoRuntime.javaFeature(testJava));
+            List<File> libraries = BundledMockitoRuntime.libraries(feature);
+            environment.classpath.removeAll(environment.bundledMockitoLibraries);
+            environment.bundledMockitoLibraries.clear();
+            environment.bundledMockitoLibraries.addAll(libraries);
+            LinkedHashSet<File> classpath = new LinkedHashSet<>(libraries);
+            classpath.addAll(environment.classpath);
+            environment.classpath.clear();
+            environment.classpath.addAll(classpath);
+            environment.bundledMockitoVersion = feature < 11 ? "Mockito 4.11.0" : "Mockito 5.18.0";
+        } catch (java.io.IOException ex) {
+            environment.error("BUNDLED_MOCKITO_UNAVAILABLE", "内置 Mockito 无法就绪：" + ex.getMessage());
+        }
+    }
+
+    private static boolean hasMockitoAgent(List<String> arguments) {
+        for (String argument : arguments) {
+            if (!argument.startsWith("-javaagent:")) continue;
+            String path = argument.substring("-javaagent:".length()).split("=", 2)[0];
+            try (java.util.jar.JarFile jar = new java.util.jar.JarFile(path)) {
+                if (jar.getManifest() != null && "org.mockito.internal.PremainAttach".equals(
+                        jar.getManifest().getMainAttributes().getValue("Premain-Class"))) return true;
+            } catch (java.io.IOException ignored) { }
+        }
+        return false;
     }
 
     private ProjectTestEnvironment resolveInReadAction(Project project, PsiFile sourceFile,
@@ -88,15 +165,23 @@ public class ProjectTestEnvironmentResolver {
 
         List<Module> modules = testClasspathModules(project, module);
         JavaPsiFacade facade = JavaPsiFacade.getInstance(project);
-        if (!hasClass(facade, modules, "org.junit.jupiter.api.Test")) {
-            environment.error("JUNIT5_NOT_FOUND", "当前模块测试 classpath 中未找到 JUnit 5。");
-        }
-        if (!hasClass(facade, modules, "org.mockito.Mockito")) {
-            environment.error("MOCKITO_NOT_FOUND", "当前模块测试 classpath 中未找到 Mockito。");
-        }
+        environment.bundledJunit = !hasClass(facade, modules, "org.junit.jupiter.api.Test");
+        environment.bundledMockito = !hasClass(facade, modules, "org.mockito.Mockito");
         if (!environment.diagnostics.isEmpty()) return environment;
         for (Module classpathModule : modules) {
             ModuleRootManager roots = ModuleRootManager.getInstance(classpathModule);
+            for (var entry : roots.getOrderEntries()) {
+                if (entry instanceof com.intellij.openapi.roots.LibraryOrderEntry lib
+                        && "UnitMind offline test runtime".equals(lib.getLibraryName()) && lib.getLibrary() != null) {
+                    environment.offlineTestLibrary = true;
+                    for (VirtualFile jarRoot : lib.getLibrary().getFiles(OrderRootType.CLASSES)) {
+                        VirtualFile jar = JarFileSystem.getInstance().getVirtualFileForJar(jarRoot);
+                        if (jar != null && jar.getName().startsWith("mockito-core-5.")) {
+                            environment.offlineMockitoAgent = VfsUtilCore.virtualToIoFile(jar);
+                        }
+                    }
+                }
+            }
             addRoots(environment.classpath, roots.orderEntries().recursively().classes().getRoots());
             addRoots(environment.sourcePath, roots.getSourceRoots(true));
             CompilerModuleExtension extension = CompilerModuleExtension.getInstance(classpathModule);
@@ -132,6 +217,15 @@ public class ProjectTestEnvironmentResolver {
         if (environment.jpms) {
             environment.modulePath.addAll(environment.classpath);
             environment.classpath.clear();
+        }
+        if (environment.bundledJunit) {
+            // 仅补齐测试框架，业务依赖、SDK、处理器仍由当前模块提供。
+            String runtime = com.intellij.util.PathUtil.getJarPathForClass(org.junit.platform.console.ConsoleLauncher.class);
+            if (runtime == null || !new File(runtime).isFile()) {
+                environment.error("BUNDLED_JUNIT_NOT_FOUND", "无法定位插件内置 JUnit 运行时，请重新安装插件。");
+            } else {
+                environment.classpath.add(new File(runtime));
+            }
         }
         return environment;
     }

@@ -7,7 +7,7 @@ public final class CoverageLoopPolicy {
     private CoverageLoopPolicy() {}
 
     public static boolean reached(CoverageSnapshot snapshot, CoverageConfig config) {
-        return snapshot != null && snapshot.isAvailable()
+        return snapshot != null && snapshot.isAvailable() && snapshot.getLine().isApplicable()
                 && snapshot.getLine().getRate() >= config.getLineThreshold()
                 && (!snapshot.getBranch().isApplicable()
                 || snapshot.getBranch().getRate() >= config.getBranchThreshold());
@@ -15,7 +15,7 @@ public final class CoverageLoopPolicy {
 
     /** 达到配置阈值不是探索终点；只有所有适用计数器都没有遗漏时才算满覆盖。 */
     public static boolean perfect(CoverageSnapshot snapshot) {
-        return snapshot != null && snapshot.isAvailable()
+        return snapshot != null && snapshot.isAvailable() && snapshot.getLine().isApplicable()
                 && snapshot.getLine().getMissed() == 0
                 && (!snapshot.getBranch().isApplicable()
                 || snapshot.getBranch().getMissed() == 0);
@@ -27,7 +27,7 @@ public final class CoverageLoopPolicy {
     public static boolean shouldContinueImproving(CoverageSnapshot snapshot,
                                                   boolean hasActionableGaps,
                                                   boolean explorationAvailable) {
-        return snapshot != null && snapshot.isAvailable()
+        return snapshot != null && snapshot.isAvailable() && snapshot.getLine().isApplicable()
                 && !perfect(snapshot)
                 && hasActionableGaps
                 && explorationAvailable;

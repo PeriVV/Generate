@@ -150,7 +150,7 @@ public class CoverageTestClassStabilizer {
                                      List<LlmMethodPatch> patches,
                                      Set<String> editableTestNames) {
         if (currentCode == null || currentCode.isBlank()) {
-            throw new IllegalArgumentException("当前测试类为空，无法应用方法补丁。");
+            throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "当前测试类为空，无法应用方法补丁。");
         }
         if (patches == null || patches.isEmpty()) return currentCode;
         Set<String> editable = editableTestNames == null ? Set.of() : editableTestNames;
@@ -163,18 +163,22 @@ public class CoverageTestClassStabilizer {
         for (LlmMethodPatch patch : patches) {
             String name = patch == null ? "" : patch.getMethodName().strip();
             if (name.isBlank() || !editable.contains(name)) {
-                throw new IllegalArgumentException("方法补丁越界，非本轮失败测试：" + name);
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "方法补丁越界，非本轮失败测试：" + name);
             }
-            if (!applied.add(name)) throw new IllegalArgumentException("重复方法补丁：" + name);
+            if (!applied.add(name)) throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "重复方法补丁：" + name);
             MethodDeclaration original = currentTests.get(name);
-            if (original == null) throw new IllegalArgumentException("当前测试类中不存在目标方法：" + name);
-            BodyDeclaration<?> declaration = StaticJavaParser.parseBodyDeclaration(patch.getMethodCode());
+            if (original == null) throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "当前测试类中不存在目标方法：" + name);
+            BodyDeclaration<?> declaration;
+            try { declaration = StaticJavaParser.parseBodyDeclaration(patch.getMethodCode()); }
+            catch (com.github.javaparser.ParseProblemException ex) {
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.PATCH_SHAPE, "方法补丁 Java 语法无效：" + name);
+            }
             if (!declaration.isMethodDeclaration()) {
-                throw new IllegalArgumentException("方法补丁不是完整方法声明：" + name);
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "方法补丁不是完整方法声明：" + name);
             }
             MethodDeclaration replacement = declaration.asMethodDeclaration();
             if (!name.equals(replacement.getNameAsString()) || !isTestMethod(replacement)) {
-                throw new IllegalArgumentException("方法补丁名称或测试注解不匹配：" + name);
+                throw new RepairCandidateRejectedException(RepairCandidateRejectedException.Stage.REPAIR_SCOPE, "方法补丁名称或测试注解不匹配：" + name);
             }
             original.replace(replacement);
         }

@@ -12,6 +12,10 @@ public class ValidationResult {
     private List<CompileDiagnostic> diagnostics = new ArrayList<>();
     private int repairAttempts;
     private long durationMillis;
+    private String testEnvironmentNote = "";
+
+    public String getTestEnvironmentNote() { return testEnvironmentNote; }
+    public void setTestEnvironmentNote(String note) { testEnvironmentNote = note == null ? "" : note; }
 
     public static ValidationResult status(ValidationStatus status) {
         ValidationResult result = new ValidationResult();
