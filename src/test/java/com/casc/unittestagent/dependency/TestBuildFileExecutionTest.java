@@ -109,13 +109,31 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             assertTrue("Build exceeded 180 seconds", process.waitFor(180, TimeUnit.SECONDS));
             drain.join(5000);
             assertFalse("Build output drain did not finish", drain.isAlive());
-            assertEquals(Files.readString(output), 0, process.exitValue());
+            assertEquals(Files.readString(output) + failedBuildReports(root), 0, process.exitValue());
         } finally {
             if (process.isAlive()) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
             }
         }
+    }
+
+    /** Keep the synthetic child JVM's real failure visible before the fixture is removed. */
+    private String failedBuildReports(Path root) throws Exception {
+        StringBuilder result = new StringBuilder();
+        for (String relative : List.of("build/test-results/test", "target/surefire-reports")) {
+            Path reports = root.resolve(relative);
+            if (!Files.isDirectory(reports)) continue;
+            try (var files = Files.list(reports)) {
+                for (Path file : files.filter(p -> p.getFileName().toString().endsWith(".xml")
+                        || p.getFileName().toString().endsWith(".dumpstream")).sorted().toList()) {
+                    String text = Files.readString(file);
+                    result.append('\n').append(file.getFileName()).append('\n')
+                            .append(text, 0, Math.min(text.length(), 20000));
+                }
+            }
+        }
+        return result.toString();
     }
 
     private void assertReport(Path file) throws Exception {

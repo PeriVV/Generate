@@ -45,6 +45,7 @@ public class IdeMavenBuildConfigurationTest extends LightJavaCodeInsightFixtureT
         Path source = root.resolve("src/main/java/Subject.java");
         Files.createDirectories(source.getParent());
         Files.writeString(source, "class Subject {}");
+        assertMavenExportStarts(ide.executable());
         settings().setWorkOffline(true);
         TestRuntimeConfiguration runtime = background(() -> new ProjectTestRuntimeConfigurationResolver().resolve(
                 source, root, java(), root.toFile(), () -> false, false, getProject()));
@@ -53,6 +54,32 @@ public class IdeMavenBuildConfigurationTest extends LightJavaCodeInsightFixtureT
         Path sandbox = Files.createTempDirectory(root, "junit-");
         TestRuntimeExecutionTest.assertRuntime(sandbox, runtime,
                 "assertEquals(\"yes\", System.getProperty(\"fromIdeaExport\"));", false);
+    }
+
+    private void assertMavenExportStarts(String executable) throws Exception {
+        List<String> command = BuildConfigurationProcess.isWindows()
+                ? BuildConfigurationProcess.windowsExecutable(Path.of(executable))
+                : new java.util.ArrayList<>(List.of(executable));
+        Path output = root.resolve("maven-export-output.txt");
+        command.addAll(List.of("--offline", "-B", "-N", "-f", root.resolve("pom.xml").toString(),
+                "org.apache.maven.plugins:maven-help-plugin:3.5.2:effective-pom",
+                "-Doutput=" + root.resolve("effective-pom.xml")));
+        Process process = new com.casc.unittestagent.util.BuildToolCommandLine(command)
+                .withWorkDirectory(root.toFile()).withRedirectErrorStream(true).createProcess();
+        Thread drain = new Thread(() -> {
+            try (var input = process.getInputStream(); var target = Files.newOutputStream(output)) {
+                input.transferTo(target);
+            } catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+        }, "unitmind-synthetic-maven-output");
+        drain.setDaemon(true);
+        drain.start();
+        process.getOutputStream().close();
+        try {
+            assertTrue("Synthetic Maven export timed out", process.waitFor(90, TimeUnit.SECONDS));
+            drain.join(5000);
+            assertFalse("Maven output drain did not finish", drain.isAlive());
+            assertEquals(Files.readString(output), 0, process.exitValue());
+        } finally { ProcessCleanup.terminate(process); }
     }
 
     public void testIdeaRepositorySettingsAreReadWithoutChangingProjectFiles() throws Exception {

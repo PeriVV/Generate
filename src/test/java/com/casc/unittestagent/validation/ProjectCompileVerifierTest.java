@@ -104,6 +104,13 @@ public class ProjectCompileVerifierTest extends LightJavaCodeInsightFixtureTestC
     }
 
     public void testNormalizesCommonRepairableCompilerFailures() {
+        java.util.Locale previous = java.util.Locale.getDefault();
+        java.util.Locale.setDefault(java.util.Locale.ENGLISH);
+        try { assertCommonRepairableCompilerFailures(); }
+        finally { java.util.Locale.setDefault(previous); }
+    }
+
+    private void assertCommonRepairableCompilerFailures() {
         addFrameworkStubs();
         PsiFile source = myFixture.configureByText(
                 "Subject.java",

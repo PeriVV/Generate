@@ -94,7 +94,10 @@ final class BuildConfigurationProcess {
     }
 
     private static Path findOnPath(String name) {
-        for (String entry : System.getenv().getOrDefault("PATH", "").split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+        // getenv(String) follows Windows' case-insensitive lookup; getenv().get does not
+        // when the inherited spelling is "Path" rather than "PATH".
+        String searchPath = System.getenv("PATH");
+        for (String entry : (searchPath == null ? "" : searchPath).split(java.util.regex.Pattern.quote(File.pathSeparator))) {
             if (entry.isBlank()) continue;
             String value = entry.trim();
             if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) value = value.substring(1, value.length() - 1);

@@ -94,7 +94,8 @@ public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase 
             var writer = new TestFileWriter();
             var prepared = writer.prepare(getProject(), source, generated, generated.getContent(),
                     TestWriteMode.CREATE_NEW, "work");
-            assertEquals(root.resolve("src/test/java/SubjectTest.java").toFile(), prepared.getTargetFile());
+            assertEquals(root.resolve("src/test/java/SubjectTest.java").toFile().getCanonicalFile(),
+                    prepared.getTargetFile().getCanonicalFile());
             writer.commit(getProject(), prepared, null, true);
             assertEquals(generated.getContent(), Files.readString(prepared.getTargetFile().toPath()));
         } finally { delete(root); }

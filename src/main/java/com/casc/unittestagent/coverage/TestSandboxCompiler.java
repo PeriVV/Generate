@@ -538,7 +538,9 @@ public class TestSandboxCompiler {
         if (text.contains("interface expected") || text.contains("此处需要接口")) return "CLASS_USED_AS_INTERFACE";
         if (text.contains("unreported exception") || text.contains("未报告的异常")) return "UNREPORTED_EXCEPTION";
         if (text.contains("cannot find symbol") || text.contains("找不到符号")) return "CANNOT_FIND_SYMBOL";
-        if (text.contains("no suitable method") || text.contains("不适用于") || text.contains("应用到给定类型")) return "NO_SUITABLE_METHOD";
+        if (text.contains("no suitable method") || text.contains("no suitable constructor")
+                || text.contains("cannot be applied to given types")
+                || text.contains("不适用于") || text.contains("应用到给定类型")) return "NO_SUITABLE_METHOD";
         if (text.contains("incompatible types") || text.contains("不兼容的类型")) return "INCOMPATIBLE_TYPES";
         if (text.contains("private access") || text.contains("has private access")
                 || text.contains("是 private 访问控制")) return "INACCESSIBLE_MEMBER";
