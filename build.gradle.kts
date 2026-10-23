@@ -124,6 +124,10 @@ tasks {
         val sandbox = named<PrepareSandboxTask>("prepareSandbox")
         dependsOn(sandbox)
         doFirst {
+            // The flat IDEA test launcher puts its old ASM ahead of the plugin's libraries.
+            // Match the installed plugin's child-first ASM resolution for modern project bytecode.
+            val pluginAsm = configurations.runtimeClasspath.get().filter { it.name.startsWith("asm-") }
+            classpath = files(pluginAsm) + classpath
             systemProperty("unitmind.test.pluginLibDirectory",
                 sandbox.get().destinationDir.resolve("${sandbox.get().pluginName.get()}/lib").absolutePath)
         }
@@ -148,7 +152,8 @@ tasks {
         outputs.upToDateWhen { false }
         include("**/WindowsBatchExecutionTest.class", "**/LongCommandLineLauncherTest.class",
                 "**/BundledMockitoRuntimeTest.class",
-                "**/ProcessTreeLifecycleTest.class", "**/ProjectFileEncodingIntegrationTest.class",
+                "**/ProcessTreeLifecycleTest.class", "**/ProcessCancellationTest.class",
+                "**/JacocoReportIntegrityTest.class", "**/ProjectFileEncodingIntegrationTest.class",
                 "**/BuildRuntimeConfigurationIntegrationTest.class", "**/ProjectTestRuntimeConfigurationTest.class",
                 "**/TestSandboxCompilerTest.class", "**/TestRuntimeExecutionTest.class",
                 "**/TestFileWriterGateTest.class", "**/FinalTestFileReportPanelTest.class",

@@ -46,8 +46,7 @@ public class IdeMavenBuildConfigurationTest extends LightJavaCodeInsightFixtureT
         Files.createDirectories(source.getParent());
         Files.writeString(source, "class Subject {}");
         assertMavenExports(root, root.resolve("pom.xml"),
-                BuildConfigurationProcess.isWindows() ? BuildConfigurationProcess.windowsExecutable(Path.of(ide.executable()))
-                        : new java.util.ArrayList<>(List.of(ide.executable())), List.of("--offline"));
+                BuildConfigurationProcess.executable(root, "maven", ide.executable()), List.of("--offline"));
         settings().setWorkOffline(true);
         TestRuntimeConfiguration runtime = background(() -> new ProjectTestRuntimeConfigurationResolver().resolve(
                 source, root, java(), root.toFile(), () -> false, false, getProject()));

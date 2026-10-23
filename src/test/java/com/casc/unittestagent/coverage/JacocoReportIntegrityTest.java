@@ -5,6 +5,27 @@ import junit.framework.TestCase;
 import java.nio.file.*;
 
 public class JacocoReportIntegrityTest extends TestCase {
+    public void testCoverageAnalyzerReadsJava21AndJava25ClassFiles() throws Exception {
+        byte[] original;
+        try (var input = getClass().getResourceAsStream("JacocoReportIntegrityTest.class")) {
+            assertNotNull(input);
+            original = input.readAllBytes();
+        }
+        for (int major : new int[]{65, 69}) {
+            byte[] bytes = original.clone();
+            bytes[6] = (byte) (major >>> 8);
+            bytes[7] = (byte) major;
+            var coverage = new org.jacoco.core.analysis.CoverageBuilder();
+            try {
+                new org.jacoco.core.analysis.Analyzer(new org.jacoco.core.data.ExecutionDataStore(), coverage)
+                        .analyzeClass(bytes, "Java " + (major - 44));
+            } catch (Exception error) {
+                throw new AssertionError("ASM loaded from " + org.objectweb.asm.ClassReader.class
+                        .getProtectionDomain().getCodeSource().getLocation(), error);
+            }
+            assertEquals(1, coverage.getClasses().size());
+        }
+    }
     public void testOneUnreadableReportCannotBeHiddenByAnotherPassingReport() throws Exception {
         Path root = Files.createTempDirectory("unitmind-report-proof-");
         try {

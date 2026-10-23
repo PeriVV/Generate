@@ -73,6 +73,29 @@ public class PluginHttpClassLoadingTest extends TestCase {
         }
     }
 
+    public void testInstalledPluginCoverageParserReadsJava21AndJava25Bytecode() throws Exception {
+        Class<?> reader = loader.loadClass("org.objectweb.asm.ClassReader");
+        assertSame("Coverage must use the plugin's bundled parser", loader, reader.getClassLoader());
+        Class<?> analyzer = loader.loadClass("org.jacoco.core.analysis.Analyzer");
+        Class<?> store = loader.loadClass("org.jacoco.core.data.ExecutionDataStore");
+        Class<?> builder = loader.loadClass("org.jacoco.core.analysis.CoverageBuilder");
+        Class<?> visitor = loader.loadClass("org.jacoco.core.analysis.ICoverageVisitor");
+        byte[] original;
+        try (var input = getClass().getResourceAsStream("PluginHttpClassLoadingTest.class")) {
+            assertNotNull(input);
+            original = input.readAllBytes();
+        }
+        for (int major : new int[]{65, 69}) {
+            byte[] bytes = original.clone();
+            bytes[6] = (byte) (major >>> 8); bytes[7] = (byte) major;
+            Object coverage = builder.getConstructor().newInstance();
+            Object parser = analyzer.getConstructor(store, visitor)
+                    .newInstance(store.getConstructor().newInstance(), coverage);
+            analyzer.getMethod("analyzeClass", byte[].class, String.class).invoke(parser, bytes, "Java " + (major - 44));
+            assertEquals(1, ((java.util.Collection<?>) builder.getMethod("getClasses").invoke(coverage)).size());
+        }
+    }
+
     public void testConnectivityUsesPostAuthorizationAndJson() throws Exception {
         AtomicReference<String> method = new AtomicReference<>();
         AtomicReference<String> authorization = new AtomicReference<>();
