@@ -12,12 +12,12 @@ public class WindowsBatchExecutionTest extends TestCase {
         Path root = Files.createTempDirectory("unitmind batch ");
         try {
             Path folder = Files.createDirectories(root.resolve("中文 tool (space) & special!"));
-            Path classes = Files.createDirectories(folder.resolve("classes"));
-            Path source = folder.resolve("Recorder.java");
-            Files.writeString(source, "class Recorder { public static void main(String[] args) throws Exception { java.nio.file.Files.writeString(java.nio.file.Path.of(args[0]), args[1]); } }");
-            LocalCoverageClosureSupport.compile(source, classes, List.of());
+            // Record cmd's argument handoff with a native Unicode-aware program. Java launchers'
+            // separate ANSI conversion is covered by the real javac/JVM tests.
+            Files.writeString(folder.resolve("Recorder.ps1"), "param([string]$OutputPath, [string]$Value)\r\n"
+                    + "[System.IO.File]::WriteAllText($OutputPath, $Value, [System.Text.UTF8Encoding]::new($false))\r\n");
             Path batch = folder.resolve("gradlew.bat");
-            Files.writeString(batch, "@echo off\r\n\"%JAVA_HOME%\\bin\\java.exe\" -cp \"%~dp0classes\" Recorder %*\r\nexit /b %errorlevel%\r\n");
+            Files.writeString(batch, "@echo off\r\npowershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%~dp0Recorder.ps1\" %*\r\nexit /b %errorlevel%\r\n");
             Path output = root.resolve("中文 result file.txt");
             String literal = "中文 value & (x) !literal! %JAVA_HOME% C:\\path\\new\\";
             List<String> command = BuildConfigurationProcess.windowsExecutable(batch);

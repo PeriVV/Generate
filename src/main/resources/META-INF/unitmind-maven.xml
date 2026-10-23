@@ -1,0 +1,3 @@
+<idea-plugin>
+    <!-- Maven integration is accessed only after checking that the optional plugin is enabled. -->
+</idea-plugin>

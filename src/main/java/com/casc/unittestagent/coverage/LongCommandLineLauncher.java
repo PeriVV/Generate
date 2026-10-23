@@ -131,8 +131,10 @@ public final class LongCommandLineLauncher {
         StringBuilder manifestClassPath = new StringBuilder();
         File base = workingDirectory == null ? new File("").getAbsoluteFile() : workingDirectory.getAbsoluteFile();
         for (String entry : command.get(classpathValueIndex).split(Pattern.quote(File.pathSeparator), -1)) {
-            File path = entry.isEmpty() ? base : new File(entry);
-            if (!path.isAbsolute()) path = new File(base, entry);
+            Path resolved = entry.isEmpty() ? base.toPath() : Path.of(entry);
+            // Path.resolve also handles Windows drive-root-relative entries such as \repo.
+            if (!resolved.isAbsolute()) resolved = base.toPath().resolve(resolved);
+            File path = resolved.toAbsolutePath().normalize().toFile();
             if (path.getName().equals("*")) {
                 File[] jars = path.getParentFile().listFiles(file -> file.isFile()
                         && file.getName().toLowerCase(Locale.ROOT).endsWith(".jar"));

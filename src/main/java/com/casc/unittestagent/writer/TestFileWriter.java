@@ -385,7 +385,9 @@ public class TestFileWriter {
                               GenerationTarget generationTarget, boolean replaceExistingRegion,
                               SelectionExclusionGuard exclusions) {
             this.targetFile = targetFile;
-            this.content = content == null ? "" : content;
+            // IDEA documents and post-save proofs use LF, including candidates produced by
+            // JavaParser on Windows. Validate this exact representation before committing it.
+            this.content = com.intellij.openapi.util.text.StringUtil.convertLineSeparators(content == null ? "" : content);
             this.mode = mode;
             this.cancelled = cancelled;
             this.targetExisted = targetExisted;

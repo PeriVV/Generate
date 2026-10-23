@@ -19,6 +19,22 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 public class TestFileWriterGateTest extends LightJavaCodeInsightFixtureTestCase {
+    public void testCrLfGeneratedCandidateIsValidatedAndSavedAsEditorText() throws Exception {
+        Path root = Files.createTempDirectory("unitmind-generated-crlf-");
+        try {
+            var source = sourceFile(root);
+            var writer = new TestFileWriter();
+            String expected = "package sample;\nclass SubjectTest {\n @org.junit.jupiter.api.Test void generated() {}\n}\n";
+            var generated = generatedFile(expected.replace("\n", "\r\n"));
+            var prepared = writer.prepare(getProject(), source, generated, generated.getContent(), TestWriteMode.CREATE_NEW, "work");
+            assertEquals(expected, prepared.getContent());
+            var validation = ValidationResult.status(ValidationStatus.PASSED);
+            validation.setCodeHash(CodeFingerprint.sha256(prepared.getContent()));
+            writer.commit(getProject(), prepared, validation, runtimePassed(prepared, source), false);
+            assertEquals(expected, com.casc.unittestagent.util.ProjectFileText.read(prepared.getTargetFile().toPath()));
+        } finally { delete(root); }
+    }
+
     public void testCrLfAndGbkSourceAndExistingTestUseTheEditorTextFingerprint() throws Exception {
         Path root = Files.createTempDirectory("unitmind Windows 中文 空格-");
         try {

@@ -225,8 +225,10 @@ public class JacocoCoverageExecutor {
         ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory).redirectErrorStream(true)
                 .redirectOutput(reports.resolve("process-output.log").toFile());
         configureEnvironment(builder.environment(), runtime, BuildConfigurationProcess.isWindows());
-        Process process = LongCommandLineLauncher.start(builder, artifact.getRoot());
+        Path stagedAgents = stageWindowsAgents(builder.command(), workingDirectory);
+        Process process = null;
         try {
+            process = LongCommandLineLauncher.start(builder, artifact.getRoot());
             long deadline = System.nanoTime() + Duration.ofSeconds(config.getExecutionTimeoutSeconds()).toNanos();
             boolean finished = false;
             while (!finished && System.nanoTime() < deadline && (cancelled == null || !cancelled.getAsBoolean())) {
@@ -249,6 +251,32 @@ public class JacocoCoverageExecutor {
         } finally {
             // Cancellation/interruption must not leave a JVM writing into a deleted sandbox.
             ProcessCleanup.terminate(process);
+            CompiledTestArtifact.deleteRecursively(stagedAgents);
+        }
+    }
+
+    private static Path stageWindowsAgents(List<String> command, File directory) throws IOException {
+        if (!BuildConfigurationProcess.isWindows()) return null;
+        Path stage = null;
+        try {
+            for (int index = 1; index < command.size(); index++) {
+                String argument = command.get(index);
+                if (!argument.startsWith("-javaagent:")) continue;
+                int separator = argument.indexOf('=', "-javaagent:".length());
+                String path = argument.substring("-javaagent:".length(), separator < 0 ? argument.length() : separator);
+                Path jar = directory.toPath().resolve(path).toAbsolutePath().normalize();
+                if (jar.toString().chars().noneMatch(value -> value > 127)) continue;
+                // libinstrument's native classpath append can reject a Unicode agent path even
+                // when the command uses a relative name. Preserve the exact agent in a temp copy.
+                if (stage == null) stage = Files.createTempDirectory("unitmind-jvm-agents-");
+                Path copy = stage.resolve("agent-" + index + ".jar");
+                Files.copy(jar, copy);
+                command.set(index, "-javaagent:" + copy + (separator < 0 ? "" : argument.substring(separator)));
+            }
+            return stage;
+        } catch (IOException | RuntimeException error) {
+            CompiledTestArtifact.deleteRecursively(stage);
+            throw error;
         }
     }
 
