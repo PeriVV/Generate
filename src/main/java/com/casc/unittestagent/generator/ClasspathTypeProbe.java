@@ -21,17 +21,23 @@ import java.util.function.Predicate;
  * 接口/抽象类/无公共无参构造；任一候选不可实例化即保守返回不可，生成端退回
  * null 由 mock 策略或断言结构兜底。
  */
-public final class ClasspathTypeProbe implements Predicate<String> {
+public final class ClasspathTypeProbe implements Predicate<String>, AutoCloseable {
     private final List<File> classpath;
+    private final com.casc.unittestagent.util.OperationContext operation;
     private Map<String, Set<String>> simpleNameIndex;
     private URLClassLoader loader;
 
     public static ClasspathTypeProbe from(List<File> classpath) {
-        return new ClasspathTypeProbe(classpath);
+        return from(classpath, null);
     }
 
-    private ClasspathTypeProbe(List<File> classpath) {
-        this.classpath = classpath == null ? List.of() : classpath;
+    public static ClasspathTypeProbe from(List<File> classpath, java.util.function.BooleanSupplier cancelled) {
+        return new ClasspathTypeProbe(classpath, cancelled);
+    }
+
+    private ClasspathTypeProbe(List<File> classpath, java.util.function.BooleanSupplier cancelled) {
+        this.classpath = classpath == null ? List.of() : new ArrayList<>(classpath);
+        this.operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
     }
 
     /**
@@ -41,6 +47,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
      */
     @Override
     public boolean test(String simpleName) {
+        operation.checkCancelled();
         if (simpleName == null || simpleName.isBlank()) return false;
         String name = simpleName.strip();
         int generic = name.indexOf('<');
@@ -59,6 +66,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
             try {
                 clazz = Class.forName(qualified, false, classLoader());
             } catch (Throwable resolutionFailure) {
+                if (resolutionFailure instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                 return false;
             }
             int modifiers = clazz.getModifiers();
@@ -79,6 +87,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
         if (simpleNameIndex != null) return simpleNameIndex;
         Map<String, Set<String>> index = new HashMap<>();
         for (File entry : classpath) {
+            operation.checkCancelled();
             if (entry == null || !entry.exists()) continue;
             if (entry.isDirectory()) {
                 indexDirectory(entry, entry, index);
@@ -94,6 +103,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
         File[] children = directory.listFiles();
         if (children == null) return;
         for (File child : children) {
+            operation.checkCancelled();
             if (child.isDirectory()) {
                 indexDirectory(root, child, index);
             } else if (child.getName().endsWith(".class")) {
@@ -106,6 +116,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
         try (java.util.jar.JarFile opened = new java.util.jar.JarFile(jar)) {
             java.util.Enumeration<java.util.jar.JarEntry> entries = opened.entries();
             while (entries.hasMoreElements()) {
+                operation.checkCancelled();
                 String entry = entries.nextElement().getName();
                 if (!entry.endsWith(".class") || entry.startsWith("META-INF")
                         || entry.endsWith("module-info.class")) {
@@ -114,6 +125,7 @@ public final class ClasspathTypeProbe implements Predicate<String> {
                 addCandidate(index, entry.substring(0, entry.length() - ".class".length()).replace('/', '.'));
             }
         } catch (Exception unreadableJar) {
+            if (unreadableJar instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
             // 不可读的依赖不影响其余索引；对应类型会保守判为不可实例化。
         }
     }
@@ -145,5 +157,16 @@ public final class ClasspathTypeProbe implements Predicate<String> {
         // 父委托保留 JDK/插件类可见性：java.lang 等平台类型不来自 classpath。
         loader = new URLClassLoader(urls.toArray(new URL[0]), getClass().getClassLoader());
         return loader;
+    }
+
+    /** Release Windows JAR handles after each generation; cached names can be reused with a fresh loader. */
+    @Override
+    public synchronized void close() {
+        if (loader == null) return;
+        try { loader.close(); }
+        catch (java.io.IOException error) {
+            com.intellij.openapi.diagnostic.Logger.getInstance(ClasspathTypeProbe.class)
+                    .warn("UnitMind: failed to close type-probe classloader", error);
+        } finally { loader = null; }
     }
 }

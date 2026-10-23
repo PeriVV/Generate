@@ -347,7 +347,7 @@ public class UnitTestGenerationService {
             if (!environment.isUsable()) return true;
             List<java.io.File> probeClasspath = new ArrayList<>(environment.getRuntimeClasspath());
             testGenerator.setTypeInstantiabilityProbe(
-                    com.casc.unittestagent.generator.ClasspathTypeProbe.from(probeClasspath));
+                    com.casc.unittestagent.generator.ClasspathTypeProbe.from(probeClasspath, taskCancellation));
             boolean available = probeClasspath.stream()
                     .anyMatch(file -> file != null && file.getName().startsWith("mockito-core"));
             testGenerator.setMockitoAvailable(available);

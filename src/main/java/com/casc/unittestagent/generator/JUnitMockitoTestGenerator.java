@@ -30,9 +30,12 @@ public class JUnitMockitoTestGenerator {
     private static final Logger LOG = Logger.getInstance(JUnitMockitoTestGenerator.class);
     /** 测试数据生成器，负责按类型提供可写入源码的参数值。 */
     private final RandomTestDataGenerator dataGenerator = new RandomTestDataGenerator();
+    private ClasspathTypeProbe ownedTypeProbe;
 
     /** 注入真实 classpath 的可实例化探针，抑制 new 第三方接口/抽象类型。 */
     public void setTypeInstantiabilityProbe(java.util.function.Predicate<String> probe) {
+        if (ownedTypeProbe != null && ownedTypeProbe != probe) ownedTypeProbe.close();
+        ownedTypeProbe = probe instanceof ClasspathTypeProbe typed ? typed : null;
         dataGenerator.setTypeInstantiabilityProbe(probe);
     }
 
@@ -60,23 +63,28 @@ public class JUnitMockitoTestGenerator {
      * @return 生成流程结果或生成的测试文件模型
      */
     public GeneratedTestFile generate(MethodModel methodModel, List<TestScenario> scenarios, MockStrategy mockStrategy) {
-        GeneratedTestFile file = new GeneratedTestFile();
-        String testClassName = methodModel.getClassName() + "Test";
-        file.setPackageName(methodModel.getPackageName());
-        file.setClassName(testClassName);
-        file.setFileName(testClassName + ".java");
-        String content;
         try {
-            content = buildContent(methodModel, scenarios == null ? new ArrayList<>() : scenarios, mockStrategy);
-        } catch (Exception ex) {
-            LOG.warn("UnitMind: generate test code failed", ex);
-            content = fallbackContent(methodModel);
+            GeneratedTestFile file = new GeneratedTestFile();
+            String testClassName = methodModel.getClassName() + "Test";
+            file.setPackageName(methodModel.getPackageName());
+            file.setClassName(testClassName);
+            file.setFileName(testClassName + ".java");
+            String content;
+            try {
+                content = buildContent(methodModel, scenarios == null ? new ArrayList<>() : scenarios, mockStrategy);
+            } catch (Exception ex) {
+                if (ex instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
+                LOG.warn("UnitMind: generate test code failed", ex);
+                content = fallbackContent(methodModel);
+            }
+            if (content == null || content.trim().isEmpty()) {
+                content = fallbackContent(methodModel);
+            }
+            file.setContent(content);
+            return file;
+        } finally {
+            if (ownedTypeProbe != null) ownedTypeProbe.close();
         }
-        if (content == null || content.trim().isEmpty()) {
-            content = fallbackContent(methodModel);
-        }
-        file.setContent(content);
-        return file;
     }
 
     /**
@@ -1171,6 +1179,7 @@ public class JUnitMockitoTestGenerator {
             } catch (ClassNotFoundException notInThisPackage) {
                 // 继续尝试下一个通配前缀。
             } catch (Throwable reflectionFailure) {
+                if (reflectionFailure instanceof com.intellij.openapi.progress.ProcessCanceledException cancellation) throw cancellation;
                 return null;
             }
         }

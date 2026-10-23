@@ -54,7 +54,9 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         this.config = config;
         this.cancelled = cancelled;
         this.httpClient = SHARED_HTTP_CLIENT.newBuilder()
-                .callTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
+                // Preserve connect/write/read timeout types. A total budget equal to one phase
+                // races the read deadline and turns SocketTimeoutException into a call timeout.
+                .callTimeout(3L * config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)

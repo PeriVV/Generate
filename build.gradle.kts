@@ -161,7 +161,7 @@ tasks {
         testClassesDirs = sourceSets["test"].output.classesDirs
         classpath = sourceSets["test"].runtimeClasspath
         outputs.upToDateWhen { false }
-        include("**/LlmCancellationTest.class", "**/CandidateEvidenceTest.class",
+        include("**/LlmCancellationTest.class", "**/CandidateEvidenceTest.class", "**/ClasspathTypeProbeTest.class",
                 "**/ExecutionEnvironmentSessionTest.class", "**/TestWriteValidationServiceTest.class",
                 "**/WindowsBatchExecutionTest.class", "**/LongCommandLineLauncherTest.class",
                 "**/BundledMockitoRuntimeTest.class",
