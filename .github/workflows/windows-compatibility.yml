@@ -28,6 +28,27 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Diagnose Windows launcher paths
+        shell: pwsh
+        working-directory: '工作区 UnitMind'
+        run: |
+          & "$env:JAVA_HOME/bin/java.exe" -XshowSettings:properties -version
+          Write-Host "Workspace: $PWD"
+          Get-FileHash 'gradle/wrapper/gradle-wrapper.jar'
+          Write-Host 'Direct Java, absolute Unicode classpath'
+          & "$env:JAVA_HOME/bin/java.exe" -cp "$PWD/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain --version
+          Write-Host "Direct absolute classpath exit: $LASTEXITCODE"
+          Write-Host 'Direct Java, relative ASCII classpath'
+          & "$env:JAVA_HOME/bin/java.exe" -cp 'gradle/wrapper/gradle-wrapper.jar' org.gradle.wrapper.GradleWrapperMain --version
+          Write-Host "Direct relative classpath exit: $LASTEXITCODE"
+          $env:DEBUG = '1'
+          .\gradlew.bat --version
+          Write-Host "Batch default codepage exit: $LASTEXITCODE"
+          chcp.com 65001
+          .\gradlew.bat --version
+          Write-Host "Batch UTF8 codepage exit: $LASTEXITCODE"
+          Remove-Item Env:DEBUG
+          exit 0
       - name: Native Windows regression and plugin package
         shell: pwsh
         working-directory: '工作区 UnitMind'
