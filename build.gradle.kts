@@ -138,6 +138,7 @@ tasks {
             systemProperty("unitmind.test.java$feature.home", providers.gradleProperty("unitmindTestJava${feature}Home").orElse("").get())
         }
         systemProperty("unitmind.test.setupFixturesOnline", providers.gradleProperty("unitmindSetupFixturesOnline").orElse("false").get())
+        systemProperty("unitmind.test.reportRoot", layout.buildDirectory.dir("reports/unitmind").get().asFile.absolutePath)
     }
 
     named<Test>("test") {

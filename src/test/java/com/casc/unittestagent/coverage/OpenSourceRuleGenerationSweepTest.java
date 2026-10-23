@@ -96,8 +96,10 @@ public class OpenSourceRuleGenerationSweepTest extends TestCase {
                     .append(" |\n");
         }
 
-        report.insert(0, summaryHeader(targets.size(), analyzed, compiled, executed, allPass));
-        Path output = Path.of("build/reports/unitmind/oss-rule-sweep.md").toAbsolutePath();
+        long repositories = targets.stream().map(target -> target.repo).distinct().count();
+        report.insert(0, summaryHeader(targets.size(), repositories, analyzed, compiled, executed, allPass));
+        Path output = Path.of(System.getProperty("unitmind.test.reportRoot", "build/reports/unitmind"),
+                "oss-rule-sweep.md").toAbsolutePath();
         Files.createDirectories(output.getParent());
         Files.writeString(output, report.toString(), StandardCharsets.UTF_8);
         System.out.println(report);
@@ -106,12 +108,12 @@ public class OpenSourceRuleGenerationSweepTest extends TestCase {
                 envErrors.isEmpty());
     }
 
-    private String summaryHeader(int targets, int analyzed, int compiled, int executed, int allPass) {
+    private String summaryHeader(int targets, long repositories, int analyzed, int compiled, int executed, int allPass) {
         return "# UnitMind 多项目多方法规则生成扫描\n\n"
-                + "- 扫描目标：" + targets + " 个方法（" + "14 个仓库）\n"
+                + "- 扫描目标：" + targets + " 个方法（" + repositories + " 个仓库）\n"
                 + "- 完整执行到沙箱运行：" + executed + " 个\n"
                 + "- 全部生成测试通过：" + allPass + " 个\n"
-                + "- 存在失败生成测试/编译失败的目标：" + (executed - allPass) + " 个（编目见下表）\n\n"
+                + "- 未全部通过的目标（含分析/编译/执行失败）：" + (targets - allPass) + " 个（编目见下表）\n\n"
                 + "| 仓库 | 目标 | 阶段 | 结果 | 状态 | 失败明细 |\n|---|---|---|---|---|---|\n";
     }
 
