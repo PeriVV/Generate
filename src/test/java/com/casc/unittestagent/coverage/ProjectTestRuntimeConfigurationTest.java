@@ -158,23 +158,29 @@ public class ProjectTestRuntimeConfigurationTest extends TestCase {
     }
 
     public void testBuildExportFailureTimeoutAndCancellationDoNotExposeOutput() throws Exception {
-        if (LocalCoverageClosureSupport.isWindows()) return;
         Path root = Files.createTempDirectory("unitmind-export-process-");
         try {
+            boolean windows = LocalCoverageClosureSupport.isWindows();
+            List<String> failure = windows
+                    ? List.of("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'SENSITIVE_TEST_VALUE'; exit 3")
+                    : List.of("/bin/sh", "-c", "printf 'SENSITIVE_TEST_VALUE'; exit 3");
+            List<String> sleeper = windows
+                    ? List.of("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30")
+                    : List.of("/bin/sh", "-c", "sleep 30");
             try {
-                BuildConfigurationProcess.run(List.of("/bin/sh", "-c", "printf 'SENSITIVE_TEST_VALUE'; exit 3"), root.toFile(), "", 5, () -> false);
+                BuildConfigurationProcess.run(failure, root.toFile(), "", 5, () -> false);
                 fail();
             } catch (java.io.IOException expected) {
                 assertFalse(expected.getMessage().contains("SENSITIVE_TEST_VALUE"));
                 assertTrue(expected.getMessage().contains("3"));
             }
             try {
-                BuildConfigurationProcess.run(List.of("/bin/sh", "-c", "sleep 30"), root.toFile(), "", 1, () -> false);
+                BuildConfigurationProcess.run(sleeper, root.toFile(), "", 1, () -> false);
                 fail();
             } catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("超时")); }
             long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(200);
             try {
-                BuildConfigurationProcess.run(List.of("/bin/sh", "-c", "sleep 30"), root.toFile(), "", 5, () -> System.nanoTime() > deadline);
+                BuildConfigurationProcess.run(sleeper, root.toFile(), "", 5, () -> System.nanoTime() > deadline);
                 fail();
             } catch (ProcessCanceledException expected) { }
         } finally { CompiledTestArtifact.deleteRecursively(root); }

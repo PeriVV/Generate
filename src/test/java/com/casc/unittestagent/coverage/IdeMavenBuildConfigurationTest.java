@@ -45,7 +45,9 @@ public class IdeMavenBuildConfigurationTest extends LightJavaCodeInsightFixtureT
         Path source = root.resolve("src/main/java/Subject.java");
         Files.createDirectories(source.getParent());
         Files.writeString(source, "class Subject {}");
-        assertMavenExportStarts(ide.executable());
+        assertMavenExports(root, root.resolve("pom.xml"),
+                BuildConfigurationProcess.isWindows() ? BuildConfigurationProcess.windowsExecutable(Path.of(ide.executable()))
+                        : new java.util.ArrayList<>(List.of(ide.executable())), List.of("--offline"));
         settings().setWorkOffline(true);
         TestRuntimeConfiguration runtime = background(() -> new ProjectTestRuntimeConfigurationResolver().resolve(
                 source, root, java(), root.toFile(), () -> false, false, getProject()));
@@ -56,16 +58,25 @@ public class IdeMavenBuildConfigurationTest extends LightJavaCodeInsightFixtureT
                 "assertEquals(\"yes\", System.getProperty(\"fromIdeaExport\"));", false);
     }
 
-    private void assertMavenExportStarts(String executable) throws Exception {
-        List<String> command = BuildConfigurationProcess.isWindows()
-                ? BuildConfigurationProcess.windowsExecutable(Path.of(executable))
-                : new java.util.ArrayList<>(List.of(executable));
-        Path output = root.resolve("maven-export-output.txt");
-        command.addAll(List.of("--offline", "-B", "-N", "-f", root.resolve("pom.xml").toString(),
-                "org.apache.maven.plugins:maven-help-plugin:3.5.2:effective-pom",
-                "-Doutput=" + root.resolve("effective-pom.xml")));
+    static void assertMavenExports(Path directory, Path pom, List<String> executable, List<String> arguments) throws Exception {
+        for (String goal : List.of("effective-pom", "evaluate")) {
+            assertMavenExport(directory, pom, executable, arguments, goal);
+        }
+    }
+
+    private static void assertMavenExport(Path directory, Path pom, List<String> executable,
+                                          List<String> arguments, String goal) throws Exception {
+        List<String> command = new java.util.ArrayList<>(executable);
+        Path output = directory.resolve("maven-" + goal + "-output.txt");
+        command.addAll(arguments);
+        command.addAll(List.of("-B", "-N", "-f", pom.toString(),
+                "org.apache.maven.plugins:maven-help-plugin:3.5.2:" + goal,
+                "-Doutput=" + directory.resolve(goal + ".xml")));
+        if (goal.equals("evaluate")) command.add("-Dexpression=session.userProperties");
         Process process = new com.casc.unittestagent.util.BuildToolCommandLine(command)
-                .withWorkDirectory(root.toFile()).withRedirectErrorStream(true).createProcess();
+                .withWorkDirectory(directory.toFile()).withRedirectErrorStream(true)
+                .withParentEnvironmentType(com.intellij.execution.configurations.GeneralCommandLine.ParentEnvironmentType.SYSTEM)
+                .createProcess();
         Thread drain = new Thread(() -> {
             try (var input = process.getInputStream(); var target = Files.newOutputStream(output)) {
                 input.transferTo(target);

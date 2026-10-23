@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Builds generic fixtures with the exact generated edits; no real API or private project inputs. */
 public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestCase {
+    private Path buildDirectory;
     private static final List<TestBuildFileEditor.Dependency> DEPENDENCIES = List.of(
             new TestBuildFileEditor.Dependency("org.junit.jupiter", "junit-jupiter", "5.12.0"),
             new TestBuildFileEditor.Dependency("org.mockito", "mockito-core", "5.18.0"),
@@ -23,6 +24,7 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
                       <modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>dependency-button</artifactId><version>1</version>
                       <properties><maven.compiler.source>17</maven.compiler.source><maven.compiler.target>17</maven.compiler.target>
                       <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+                      <build><directory>${env.UNITMIND_FIXTURE_BUILD}</directory></build>
                     </project>
                     """;
             Files.writeString(root.resolve("pom.xml"), TestBuildFileEditor.maven(getProject(), before, DEPENDENCIES, true));
@@ -30,8 +32,8 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             if (!online()) command.add("--offline");
             command.add("test");
             run(root, command);
-            assertReport(root.resolve("target/surefire-reports/TEST-example.SubjectTest.xml"));
-        } finally { delete(root); }
+            assertReport(buildDirectory.resolve("surefire-reports/TEST-example.SubjectTest.xml"));
+        } finally { delete(root); delete(buildDirectory); }
     }
 
     public void testGeneratedGradleGroovyConfigurationExecutesJUnitWithMockito() throws Exception { gradle(false); }
@@ -41,7 +43,8 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
         Path root = fixture();
         try {
             Files.writeString(root.resolve("settings.gradle"), "rootProject.name='unitmind-dependency-button'\n");
-            String before = "plugins { id(\"java\") }\nrepositories { mavenCentral() }\n";
+            String before = "plugins { id(\"java\") }\nrepositories { mavenCentral() }\n"
+                    + "layout.buildDirectory.set(file(System.getenv(\"UNITMIND_FIXTURE_BUILD\")))\n";
             Files.writeString(root.resolve(kotlin ? "build.gradle.kts" : "build.gradle"),
                     TestBuildFileEditor.gradle(before, DEPENDENCIES, true, kotlin));
             List<String> command = new ArrayList<>(List.of(System.getProperty("unitmind.test.gradleExecutable"),
@@ -49,12 +52,15 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             if (!online()) command.add("--offline");
             command.add("test");
             run(root, command);
-            assertReport(root.resolve("build/test-results/test/TEST-example.SubjectTest.xml"));
-        } finally { delete(root); }
+            assertReport(buildDirectory.resolve("test-results/test/TEST-example.SubjectTest.xml"));
+        } finally { delete(root); delete(buildDirectory); }
     }
 
     private Path fixture() throws Exception {
         Path root = Files.createTempDirectory("unitmind dependency build 中文 ");
+        // Gradle 8's native-encoding worker argfiles cannot represent this checkout on Cp1252.
+        // Keep the real Unicode project and its sources; use an explicit ASCII output directory.
+        buildDirectory = Files.createTempDirectory("unitmind-dependency-output-");
         Path source = root.resolve("src/main/java/example/Subject.java");
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
@@ -91,11 +97,25 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
         Path output = root.resolve("build-output.txt");
         if (isWindows() && command.get(0).toLowerCase(java.util.Locale.ROOT).matches(".*\\.(cmd|bat)$")) {
             command = new ArrayList<>(command);
+            if (!Path.of(command.get(0)).isAbsolute()) {
+                Path binary = root.resolve(command.get(0));
+                if (!Files.isRegularFile(binary)) {
+                    for (String entry : System.getenv("PATH").split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+                        if (entry.isBlank()) continue;
+                        Path candidate = Path.of(entry.replace("\"", "")).resolve(command.get(0));
+                        if (Files.isRegularFile(candidate)) { binary = candidate; break; }
+                    }
+                }
+                assertTrue("Native build tool was not found", Files.isRegularFile(binary));
+                command.set(0, binary.toString());
+            }
             command.addAll(0, List.of("cmd.exe", "/d", "/v:off", "/c"));
         }
         var builder = new com.casc.unittestagent.util.BuildToolCommandLine(command)
                 .withWorkDirectory(root.toFile()).withRedirectErrorStream(true)
-                .withEnvironment("JAVA_HOME", System.getProperty("java.home"));
+                .withEnvironment("JAVA_HOME", System.getProperty("java.home"))
+                .withEnvironment("UNITMIND_FIXTURE_BUILD", buildDirectory.toString())
+                .withEnvironment("MAVEN_BASEDIR", ".");
         Process process = builder.createProcess();
         var drain = new Thread(() -> {
             try (var input = process.getInputStream(); var target = Files.newOutputStream(output)) {
@@ -121,8 +141,8 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
     /** Keep the synthetic child JVM's real failure visible before the fixture is removed. */
     private String failedBuildReports(Path root) throws Exception {
         StringBuilder result = new StringBuilder();
-        for (String relative : List.of("build/test-results/test", "target/surefire-reports")) {
-            Path reports = root.resolve(relative);
+        for (String relative : List.of("test-results/test", "surefire-reports")) {
+            Path reports = buildDirectory.resolve(relative);
             if (!Files.isDirectory(reports)) continue;
             try (var files = Files.list(reports)) {
                 for (Path file : files.filter(p -> p.getFileName().toString().endsWith(".xml")

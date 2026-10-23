@@ -5,6 +5,7 @@ import junit.framework.TestCase;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,22 +30,27 @@ public class ProcessCancellationTest extends TestCase {
     }
 
     private void exercise(boolean compiler, boolean timeout, boolean versionProbe) throws Exception {
-        if (LocalCoverageClosureSupport.isWindows()) return;
         Path root = Files.createTempDirectory("unitmind-process-cleanup-");
         ProcessHandle parent = null;
         ProcessHandle child = null;
         Thread task = null;
         try {
             Path bin = Files.createDirectories(root.resolve("jdk/bin"));
-            Path java = bin.resolve("java");
-            String script = "#!/bin/sh\n"
+            boolean windows = LocalCoverageClosureSupport.isWindows();
+            Path java = bin.resolve(windows ? "java.exe" : "java");
+            Path javac = bin.resolve(windows ? "javac.exe" : "javac");
+            if (windows) {
+                createWindowsWorker(root, java, javac);
+            } else {
+                String script = "#!/bin/sh\n"
                     + "printf '%s\\n' $$ > " + quote(root.resolve("parent.pid")) + "\n"
                     + "sleep 30 &\n"
                     + "printf '%s\\n' $! > " + quote(root.resolve("child.pid")) + "\nwait\n";
-            Files.writeString(java, script);
-            Files.writeString(bin.resolve("javac"), script);
-            assertTrue(java.toFile().setExecutable(true));
-            assertTrue(bin.resolve("javac").toFile().setExecutable(true));
+                Files.writeString(java, script);
+                Files.writeString(javac, script);
+                assertTrue(java.toFile().setExecutable(true));
+                assertTrue(javac.toFile().setExecutable(true));
+            }
             Path sources = Files.createDirectories(root.resolve("source"));
             Path classes = Files.createDirectories(root.resolve("classes"));
             Path source = sources.resolve("Subject.java");
@@ -60,7 +66,7 @@ public class ProcessCancellationTest extends TestCase {
             task = new Thread(() -> {
                 try {
                     if (compiler) {
-                        if (versionProbe) TestSandboxCompiler.detectJavacMajorVersion(bin.resolve("javac").toString());
+                        if (versionProbe) TestSandboxCompiler.detectJavacMajorVersion(javac.toString());
                         else new TestSandboxCompiler().compileTargetWithModuleJdk(environment, sources, classes, source, "Subject");
                         failure.set(new AssertionError("compiler interruption must propagate cancellation"));
                     } else {
@@ -98,6 +104,38 @@ public class ProcessCancellationTest extends TestCase {
             if (task != null && task.isAlive()) { task.interrupt(); task.join(3000); }
             CompiledTestArtifact.deleteRecursively(root);
         }
+    }
+
+    /** A real native entry point lets the Windows compiler/JVM launch paths be cancelled too. */
+    private void createWindowsWorker(Path root, Path java, Path javac) throws Exception {
+        Path source = root.resolve("FakeJdk.cs");
+        Files.writeString(source, """
+                using System;
+                using System.IO;
+                using System.Diagnostics;
+                using System.Threading;
+                class FakeJdk {
+                    static void Main(string[] args) {
+                        if (args.Length > 0 && args[0] == "child") { Thread.Sleep(30000); return; }
+                        string executable = typeof(FakeJdk).Assembly.Location;
+                        string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable), "..", ".."));
+                        var child = Process.Start(new ProcessStartInfo(executable, "child") { UseShellExecute = false });
+                        File.WriteAllText(Path.Combine(root, "parent.pid"), Process.GetCurrentProcess().Id.ToString());
+                        File.WriteAllText(Path.Combine(root, "child.pid"), child.Id.ToString());
+                        child.WaitForExit();
+                    }
+                }
+                """);
+        Path compiler = Path.of(System.getenv("SystemRoot"), "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+        assertTrue("Windows .NET Framework compiler is required for native cancellation acceptance", Files.isRegularFile(compiler));
+        Process process = new ProcessBuilder(compiler.toString(), "/nologo", "/target:exe", "/out:" + java, source.toString())
+                .redirectErrorStream(true).start();
+        try {
+            assertTrue("Native fixture compilation timed out", process.waitFor(30, TimeUnit.SECONDS));
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(output, 0, process.exitValue());
+            Files.copy(java, javac);
+        } finally { ProcessCleanup.terminate(process); }
     }
 
     private static String quote(Path path) {

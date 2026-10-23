@@ -49,6 +49,8 @@ public class BuildRuntimeConfigurationIntegrationTest extends TestCase {
             Files.createDirectories(root.resolve(".unitmind"));
             Files.writeString(root.resolve(".unitmind/test-runtime.json"), new JSONObject()
                     .put("arguments", List.of("--offline", "-Pcorp", "-Dpriority=user")).toString());
+            IdeMavenBuildConfigurationTest.assertMavenExports(module, module.resolve("pom.xml"),
+                    BuildConfigurationProcess.executable(root, "maven", ""), List.of("--offline", "-Pcorp", "-Dpriority=user"));
             TestRuntimeConfiguration runtime = resolve(source, root);
             assertEquals(module.resolve("run dir").toFile(), runtime.getWorkingDirectory());
             assertEquals("inherited", runtime.getSystemProperties().get("parentOnly"));

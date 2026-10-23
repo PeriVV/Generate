@@ -73,12 +73,18 @@ public class BundledMockitoRuntimeTest extends TestCase {
             String classpath = libraries.stream().map(File::getAbsolutePath)
                     .collect(java.util.stream.Collectors.joining(File.pathSeparator));
             String javac = Path.of(home, "bin", LocalCoverageClosureSupport.isWindows() ? "javac.exe" : "javac").toString();
-            String target = feature == 8 ? "8" : "11";
-            Process compiler = new ProcessBuilder(javac, "-encoding", "UTF-8", "-source", target, "-target", target,
+            String target = Integer.toString(feature);
+            ProcessBuilder compilerBuilder = new ProcessBuilder(javac, "-encoding", "UTF-8", "-source", target, "-target", target,
                     "-g", "-cp", classpath, "-d", classes.toString(), production.toString(), tests.toString())
-                    .redirectErrorStream(true).start();
+                    .redirectErrorStream(true);
+            Process compiler = LongCommandLineLauncher.start(compilerBuilder, root);
             String output = new String(compiler.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             assertEquals(output, 0, compiler.waitFor());
+            try (var input = new java.io.DataInputStream(Files.newInputStream(classes.resolve("LegacySubject.class")))) {
+                assertEquals(0xCAFEBABE, input.readInt());
+                input.readUnsignedShort();
+                assertEquals(feature + 44, input.readUnsignedShort());
+            }
             List<File> runtime = new ArrayList<>();
             runtime.add(classes.toFile());
             runtime.addAll(libraries);

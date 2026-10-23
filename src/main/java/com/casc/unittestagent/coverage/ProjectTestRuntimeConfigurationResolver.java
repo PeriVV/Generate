@@ -76,7 +76,8 @@ public class ProjectTestRuntimeConfigurationResolver {
         String executable = options.optString("executable", "");
         if (!executable.isBlank() && !Path.of(executable).isAbsolute()) executable = optionsBase.resolve(executable).normalize().toString();
         // Wrapper 通常遵从父进程 JAVA_HOME；只有未设置时才用模块 SDK。允许显式选择构建工具 JDK。
-        String buildJava = System.getenv().getOrDefault("JAVA_HOME", "").isBlank() ? javaExecutable : "";
+        String inheritedJavaHome = System.getenv("JAVA_HOME");
+        String buildJava = inheritedJavaHome == null || inheritedJavaHome.isBlank() ? javaExecutable : "";
         String buildJavaHome = options.optString("buildJavaHome", "");
         if (!buildJavaHome.isBlank()) {
             Path home = optionsBase.resolve(buildJavaHome).normalize();
@@ -100,8 +101,9 @@ public class ProjectTestRuntimeConfigurationResolver {
                 if (ide != null) command.addAll(mavenIdeArguments(ide.arguments(), arguments));
                 command.addAll(arguments);
                 command.addAll(List.of("-B", "-q", "-N", "-f", pom.toString()));
+                String inheritedMavenArgs = System.getenv("MAVEN_ARGS");
                 List<String> userArguments = new ArrayList<>(ParametersListUtil.parse(
-                        System.getenv().getOrDefault("MAVEN_ARGS", "")));
+                        inheritedMavenArgs == null ? "" : inheritedMavenArgs));
                 Path config = nearest(module, boundary, ".mvn/maven.config");
                 if (config != null) userArguments.addAll(ParametersListUtil.parse(Files.readString(config, StandardCharsets.UTF_8)));
                 userArguments.addAll(arguments);

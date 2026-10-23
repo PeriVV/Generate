@@ -87,7 +87,7 @@ jobs:
           }
           mvn.cmd -B org.apache.maven.plugins:maven-help-plugin:3.5.2:help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\gradlew.bat windowsCompatibilityTest --tests '*WindowsBatchExecutionTest' --tests '*LongCommandLineLauncherTest' --tests '*BundledMockitoRuntimeTest' --tests '*TestRuntimeExecutionTest' "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindTestJava11Home=$env:UNITMIND_JAVA11_HOME" "-PunitmindTestJava21Home=$env:UNITMIND_JAVA21_HOME" "-PunitmindTestJava25Home=$env:UNITMIND_JAVA25_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" --no-daemon --console=plain
+          .\gradlew.bat windowsCompatibilityTest --tests '*WindowsBatchExecutionTest' --tests '*LongCommandLineLauncherTest' --tests '*BundledMockitoRuntimeTest' --tests '*TestRuntimeExecutionTest' --tests '*BuildRuntimeConfigurationIntegrationTest' --tests '*IdeMavenBuildConfigurationTest' --tests '*TestBuildFileExecutionTest' --tests '*ProcessCancellationTest' --tests '*ProjectTestRuntimeConfigurationTest' "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindTestJava11Home=$env:UNITMIND_JAVA11_HOME" "-PunitmindTestJava21Home=$env:UNITMIND_JAVA21_HOME" "-PunitmindTestJava25Home=$env:UNITMIND_JAVA25_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" --no-daemon --console=plain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Full Windows regression, package and IDE compatibility
         shell: pwsh
