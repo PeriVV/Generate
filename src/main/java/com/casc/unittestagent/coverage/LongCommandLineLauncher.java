@@ -157,7 +157,7 @@ public final class LongCommandLineLauncher {
         return adapted;
     }
 
-    private static String commandPath(Path file, File workingDirectory) {
+    static String commandPath(Path file, File workingDirectory) {
         Path absolute = file.toAbsolutePath().normalize();
         if (hasUnicode(absolute.toString())) {
             Path base = (workingDirectory == null ? Path.of("") : workingDirectory.toPath()).toAbsolutePath().normalize();

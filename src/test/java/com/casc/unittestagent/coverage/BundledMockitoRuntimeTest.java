@@ -25,11 +25,20 @@ public class BundledMockitoRuntimeTest extends TestCase {
     }
 
     public void testLegacyMockitoActuallyExecutesWithJUnitAndCoverage() throws Exception {
-        String configured = System.getProperty("unitmind.test.java8.home", "");
+        executeWithProjectJdk(8);
+    }
+
+    public void testModernMockitoExecutesOnJava11WithJUnitAndCoverage() throws Exception { executeWithProjectJdk(11); }
+    public void testModernMockitoExecutesOnJava21WithJUnitAndCoverage() throws Exception { executeWithProjectJdk(21); }
+    public void testModernMockitoExecutesOnJava25WithJUnitAndCoverage() throws Exception { executeWithProjectJdk(25); }
+
+    private void executeWithProjectJdk(int feature) throws Exception {
+        String configured = System.getProperty("unitmind.test.java" + feature + ".home", "");
+        if (configured.isBlank() && feature != 8) return;
         String home = configured.isBlank() ? System.getProperty("java.home") : configured;
         String executable = Path.of(home, "bin", LocalCoverageClosureSupport.isWindows() ? "java.exe" : "java").toString();
-        if (!configured.isBlank()) assertEquals(8, BundledMockitoRuntime.javaFeature(executable));
-        List<File> libraries = new ArrayList<>(BundledMockitoRuntime.libraries(8));
+        if (!configured.isBlank()) assertEquals(feature, BundledMockitoRuntime.javaFeature(executable));
+        List<File> libraries = new ArrayList<>(BundledMockitoRuntime.libraries(feature));
         libraries.add(new File(PathUtil.getJarPathForClass(org.junit.platform.console.ConsoleLauncher.class)));
         Path root = Files.createTempDirectory("unitmind-mockito-java8-");
         try {
@@ -64,7 +73,8 @@ public class BundledMockitoRuntimeTest extends TestCase {
             String classpath = libraries.stream().map(File::getAbsolutePath)
                     .collect(java.util.stream.Collectors.joining(File.pathSeparator));
             String javac = Path.of(home, "bin", LocalCoverageClosureSupport.isWindows() ? "javac.exe" : "javac").toString();
-            Process compiler = new ProcessBuilder(javac, "-encoding", "UTF-8", "-source", "8", "-target", "8",
+            String target = feature == 8 ? "8" : "11";
+            Process compiler = new ProcessBuilder(javac, "-encoding", "UTF-8", "-source", target, "-target", target,
                     "-g", "-cp", classpath, "-d", classes.toString(), production.toString(), tests.toString())
                     .redirectErrorStream(true).start();
             String output = new String(compiler.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

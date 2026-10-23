@@ -185,6 +185,9 @@ public class JacocoCoverageExecutor {
         if (cancelled != null && cancelled.getAsBoolean()) throw new ProcessCanceledException();
         List<String> command = new ArrayList<>();
         TestRuntimeConfiguration runtime = artifact.getRuntimeConfiguration();
+        File workingDirectory = runtime.getWorkingDirectory();
+        if (workingDirectory == null) workingDirectory = artifact.getRoot().toFile();
+        if (!workingDirectory.isDirectory()) throw new IOException("项目测试 workingDirectory 不可用。");
         command.add(runtime.getJavaExecutable().isBlank() ? artifact.getJavaExecutable() : runtime.getJavaExecutable());
         // Keep redirected diagnostics readable on Windows without changing the SUT's default charset.
         command.add("-Dsun.stdout.encoding=UTF-8");
@@ -197,11 +200,11 @@ public class JacocoCoverageExecutor {
         if (artifact.isPreviewLanguage()) command.add("--enable-preview");
         if (agent != null && !reusedJacoco) {
             AgentOptions agentOptions = new AgentOptions();
-            agentOptions.setDestfile(execFile.toAbsolutePath().toString());
+            agentOptions.setDestfile(runtimePath(execFile, workingDirectory));
             agentOptions.setAppend(false);
             agentOptions.setDumpOnExit(true);
             agentOptions.setIncludes(artifact.getTargetClassName() + "*");
-            command.add(agentOptions.getVMArgument(agent.toFile()));
+            command.add(agentOptions.getVMArgument(new File(runtimePath(agent, workingDirectory))));
         }
         command.add("-cp");
         command.add(runtimeClasspath(artifact));
@@ -210,16 +213,13 @@ public class JacocoCoverageExecutor {
         command.add("--disable-banner");
         command.add("--disable-ansi-colors");
         command.add("--details=none");
-        command.add("--reports-dir=" + reports.toAbsolutePath());
+        command.add("--reports-dir=" + runtimePath(reports, workingDirectory));
         // Generated tests are JUnit Jupiter tests. Restrict discovery to that engine so unrelated
         // suite/vintage engines from a standalone launcher cannot fail before the selected class
         // is discovered.
         command.add("--include-engine=junit-jupiter");
         command.add("--select-class=" + artifact.getTestClassName());
 
-        File workingDirectory = runtime.getWorkingDirectory();
-        if (workingDirectory == null) workingDirectory = artifact.getRoot().toFile();
-        if (!workingDirectory.isDirectory()) throw new IOException("项目测试 workingDirectory 不可用。");
         // Windows 命令行约 32K 上限：项目运行时 classpath 整体传给 java -cp 时超限
         // 会以“文件名或扩展名太长”失败，超限时自动改写为 pathing jar 形式。
         ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory).redirectErrorStream(true)
@@ -286,13 +286,20 @@ public class JacocoCoverageExecutor {
             if (premain == null || !premain.startsWith("org.jacoco.agent.rt.")) continue;
             if (found) throw new IOException("项目测试配置包含多个 JaCoCo 代理，无法执行覆盖率采集。");
             AgentOptions options = new AgentOptions(separator < 0 ? "" : spec.substring(separator + 1));
-            options.setDestfile(execFile.toAbsolutePath().toString());
+            File directory = artifact.getRuntimeConfiguration().getWorkingDirectory();
+            if (directory == null) directory = artifact.getRoot().toFile();
+            options.setDestfile(runtimePath(execFile, directory));
             options.setAppend(false);
             options.setOutput("file");
-            arguments.set(index, options.getVMArgument(jar));
+            arguments.set(index, options.getVMArgument(new File(runtimePath(jar.toPath(), directory))));
             found = true;
         }
         return found;
+    }
+
+    private static String runtimePath(Path file, File directory) {
+        return BuildConfigurationProcess.isWindows() ? LongCommandLineLauncher.commandPath(file, directory)
+                : file.toAbsolutePath().toString();
     }
 
     /**

@@ -93,6 +93,11 @@ tasks {
     }
 
     runPluginVerifier {
+        providers.gradleProperty("unitmindVerifierJavaHome").orNull?.let { runtimeDir.set(it) }
+        failureLevel.set(listOf(
+            org.jetbrains.intellij.tasks.RunPluginVerifierTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+            org.jetbrains.intellij.tasks.RunPluginVerifierTask.FailureLevel.INVALID_PLUGIN,
+            org.jetbrains.intellij.tasks.RunPluginVerifierTask.FailureLevel.MISSING_DEPENDENCIES))
         val localIdea262Path = providers.gradleProperty("idea262Path").orNull
         if (localIdea262Path.isNullOrBlank()) {
             ideVersions.set(listOf("IC-2022.2.5", "IC-2025.3", "IU-2026.2.0.1"))
@@ -125,6 +130,9 @@ tasks {
         val windows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
         systemProperty("unitmind.test.gradleExecutable", gradle.gradleHomeDir!!.resolve(if (windows) "bin/gradle.bat" else "bin/gradle").absolutePath)
         systemProperty("unitmind.test.java8.home", providers.gradleProperty("unitmindTestJava8Home").orElse("").get())
+        listOf(11, 21, 25).forEach { feature ->
+            systemProperty("unitmind.test.java$feature.home", providers.gradleProperty("unitmindTestJava${feature}Home").orElse("").get())
+        }
         systemProperty("unitmind.test.setupFixturesOnline", providers.gradleProperty("unitmindSetupFixturesOnline").orElse("false").get())
     }
 

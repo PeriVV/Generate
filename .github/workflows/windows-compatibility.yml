@@ -29,7 +29,36 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
+          java-version: '11'
+      - name: Remember project JDK 11
+        shell: pwsh
+        run: '"UNITMIND_JAVA11_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Remember project JDK 21
+        shell: pwsh
+        run: '"UNITMIND_JAVA21_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Remember project JDK 25
+        shell: pwsh
+        run: '"UNITMIND_JAVA25_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
           java-version: '17'
+      - uses: actions/cache/restore@v4
+        id: native-cache
+        with:
+          key: unitmind-windows-gradle-8.1.1-idea-2022.2.5-v1
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.m2/repository
       - name: Verify Windows wrapper in Unicode directories
         shell: pwsh
         working-directory: '工作区 UnitMind'
@@ -45,16 +74,25 @@ jobs:
             if (Get-ChildItem -Force -Filter '.unitmind-gradle-*.jar') { throw 'Bootstrap JAR was not cleaned up' }
           } finally { Pop-Location }
           if (Get-ChildItem -Force -Filter '.unitmind-gradle-*.jar') { throw 'Bootstrap JAR was not cleaned up' }
-      - name: Native Windows regression and plugin package
+      - name: Native Windows process and JDK smoke tests
         shell: pwsh
         working-directory: '工作区 UnitMind'
         run: |
-          if (-not (Test-Path "$env:UNITMIND_JAVA8_HOME/bin/javac.exe")) { throw 'A real JDK 8 is required for native acceptance' }
-          & "$env:UNITMIND_JAVA8_HOME/bin/java.exe" -version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($feature in @(8, 11, 21, 25)) {
+            $home = [Environment]::GetEnvironmentVariable("UNITMIND_JAVA${feature}_HOME")
+            if (-not (Test-Path "$home/bin/javac.exe")) { throw "A real JDK $feature is required for native acceptance" }
+            & "$home/bin/java.exe" -version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           mvn.cmd -B org.apache.maven.plugins:maven-help-plugin:3.5.2:help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\gradlew.bat test windowsCompatibilityTest buildPlugin "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" -PunitmindSetupFixturesOnline=true --no-daemon --console=plain
+          .\gradlew.bat windowsCompatibilityTest --tests '*WindowsBatchExecutionTest' --tests '*LongCommandLineLauncherTest' --tests '*BundledMockitoRuntimeTest' --tests '*TestRuntimeExecutionTest' "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindTestJava11Home=$env:UNITMIND_JAVA11_HOME" "-PunitmindTestJava21Home=$env:UNITMIND_JAVA21_HOME" "-PunitmindTestJava25Home=$env:UNITMIND_JAVA25_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" --no-daemon --console=plain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Full Windows regression, package and IDE compatibility
+        shell: pwsh
+        working-directory: '工作区 UnitMind'
+        run: |
+          .\gradlew.bat test windowsCompatibilityTest buildPlugin runPluginVerifier "-PunitmindTestJava8Home=$env:UNITMIND_JAVA8_HOME" "-PunitmindTestJava11Home=$env:UNITMIND_JAVA11_HOME" "-PunitmindTestJava21Home=$env:UNITMIND_JAVA21_HOME" "-PunitmindTestJava25Home=$env:UNITMIND_JAVA25_HOME" "-PunitmindVerifierJavaHome=$env:UNITMIND_JAVA25_HOME" "-PunitmindBuildDirectory=$env:UNITMIND_NATIVE_BUILD" -PunitmindSetupFixturesOnline=true --no-daemon --console=plain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native evidence and package fingerprint
         shell: pwsh
@@ -84,7 +122,11 @@ jobs:
             commit = (git rev-parse HEAD)
             run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             java8 = $env:UNITMIND_JAVA8_HOME
+            java11 = $env:UNITMIND_JAVA11_HOME
             java17 = $env:JAVA_HOME
+            java21 = $env:UNITMIND_JAVA21_HOME
+            java25 = $env:UNITMIND_JAVA25_HOME
+            ide_verifier_targets = @('IC-2022.2.5', 'IC-2025.3', 'IU-2026.2.0.1')
             source_checkout = "$PWD"
             build_directory = $env:UNITMIND_NATIVE_BUILD
             test_results = $results
@@ -104,6 +146,7 @@ jobs:
             ${{ env.UNITMIND_NATIVE_BUILD }}/reports/tests/windowsCompatibilityTest/
             ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/test/
             ${{ env.UNITMIND_NATIVE_BUILD }}/test-results/windowsCompatibilityTest/
+            ${{ env.UNITMIND_NATIVE_BUILD }}/reports/pluginVerifier/
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -112,3 +155,12 @@ jobs:
           path: |
             ${{ env.UNITMIND_NATIVE_BUILD }}/reports/windows-native/summary.json
             ${{ env.UNITMIND_NATIVE_BUILD }}/distributions/UnitMind-*.zip
+      - uses: actions/cache/save@v4
+        if: always() && steps.native-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          key: unitmind-windows-gradle-8.1.1-idea-2022.2.5-v1
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.m2/repository
