@@ -14,7 +14,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     env:
-      UNITMIND_NATIVE_BUILD: '${{ github.workspace }}/../unitmind-native-build'
+      UNITMIND_NATIVE_BUILD: '${{ github.workspace }}/unitmind-native-build'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,9 +79,9 @@ jobs:
         working-directory: '工作区 UnitMind'
         run: |
           foreach ($feature in @(8, 11, 21, 25)) {
-            $home = [Environment]::GetEnvironmentVariable("UNITMIND_JAVA${feature}_HOME")
-            if (-not (Test-Path "$home/bin/javac.exe")) { throw "A real JDK $feature is required for native acceptance" }
-            & "$home/bin/java.exe" -version
+            $projectJdkHome = [Environment]::GetEnvironmentVariable("UNITMIND_JAVA${feature}_HOME")
+            if (-not (Test-Path "$projectJdkHome/bin/javac.exe")) { throw "A real JDK $feature is required for native acceptance" }
+            & "$projectJdkHome/bin/java.exe" -version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           mvn.cmd -B org.apache.maven.plugins:maven-help-plugin:3.5.2:help
