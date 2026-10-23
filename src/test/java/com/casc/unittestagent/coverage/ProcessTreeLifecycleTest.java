@@ -20,15 +20,16 @@ public class ProcessTreeLifecycleTest extends TestCase {
                         public static void main(String[] args) throws Exception {
                             if (args[0].equals("child")) { Thread.sleep(30000); return; }
                             String binary = java.nio.file.Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
-                            Process child = new ProcessBuilder(binary, "-cp", args[1], "Worker", "child").start();
-                            java.nio.file.Files.writeString(java.nio.file.Path.of(args[1], "child.pid"), Long.toString(child.pid()));
+                            Process child = new ProcessBuilder(binary, "-cp", ".", "Worker", "child").start();
+                            java.nio.file.Files.writeString(java.nio.file.Path.of("child.pid"), Long.toString(child.pid()));
                             child.waitFor();
                         }
                     }
                     """);
             LocalCoverageClosureSupport.compile(source, root, java.util.List.of());
             String binary = Path.of(System.getProperty("java.home"), "bin", BuildConfigurationProcess.isWindows() ? "java.exe" : "java").toString();
-            process = new ProcessBuilder(binary, "-cp", root.toString(), "Worker", "parent", root.toString()).redirectErrorStream(true).start();
+            process = LongCommandLineLauncher.start(new ProcessBuilder(binary, "-cp", root.toString(), "Worker", "parent")
+                    .directory(root.toFile()).redirectErrorStream(true), root);
             Path pid = root.resolve("child.pid"); long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while ((!Files.exists(pid) || Files.size(pid) == 0) && System.nanoTime() < deadline) Thread.sleep(20);
             child = ProcessHandle.of(Long.parseLong(Files.readString(pid))).orElseThrow();

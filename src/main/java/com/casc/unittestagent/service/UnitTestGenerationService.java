@@ -3621,7 +3621,7 @@ public class UnitTestGenerationService {
     static String testCodeFingerprint(String code) {
         String source = code == null ? "" : code;
         try {
-            return CodeFingerprint.sha256(StaticJavaParser.parse(source).toString());
+            return CodeFingerprint.sha256(StaticJavaParser.parse(source).toString().replace("\r\n", "\n").replace('\r', '\n'));
         } catch (RuntimeException ignored) {
             return CodeFingerprint.sha256(source);
         }

@@ -34,7 +34,8 @@ public class ProjectFileEncodingIntegrationTest extends LightJavaCodeInsightFixt
             assertTrue(Files.isRegularFile(classes.resolve("sample/Tail.class")));
             assertTrue(Files.readString(sandbox.resolve("sample/Helper.java")).contains("中文"));
             assertEquals(helper, Files.readString(project.resolve("Helper.java"), gbk));
-            var run = new ProcessBuilder(env.javaExecutable, "-Dfile.encoding=UTF-8", "-cp", classes.toString(), "sample.Subject").redirectErrorStream(true).start();
+            var run = LongCommandLineLauncher.start(new ProcessBuilder(env.javaExecutable, "-Dfile.encoding=UTF-8", "-cp", classes.toString(), "sample.Subject")
+                    .directory(root.toFile()).redirectErrorStream(true), root);
             assertTrue(run.waitFor(30, TimeUnit.SECONDS));
             String output = new String(run.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
             assertEquals(output, 0, run.exitValue()); assertEquals("中文尾", output);

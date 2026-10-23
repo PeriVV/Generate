@@ -21,7 +21,7 @@ final class BuildConfigurationProcess {
                     int timeoutSeconds, BooleanSupplier cancelled) throws IOException {
         checkCancelled(cancelled);
         // IDEA's launcher escapes Windows batch arguments, including spaces and cmd metacharacters.
-        var builder = new com.intellij.execution.configurations.GeneralCommandLine(command)
+        var builder = new com.casc.unittestagent.util.BuildToolCommandLine(command)
                 .withWorkDirectory(directory).withRedirectErrorStream(true)
                 .withParentEnvironmentType(com.intellij.execution.configurations.GeneralCommandLine.ParentEnvironmentType.SYSTEM);
         if (javaExecutable != null && !javaExecutable.isBlank()) {

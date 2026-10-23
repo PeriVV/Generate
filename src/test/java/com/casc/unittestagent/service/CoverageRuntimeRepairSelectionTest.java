@@ -98,6 +98,8 @@ public class CoverageRuntimeRepairSelectionTest extends TestCase {
 
         assertEquals(UnitTestGenerationService.testCodeFingerprint(compact),
                 UnitTestGenerationService.testCodeFingerprint(formatted));
+        assertEquals(UnitTestGenerationService.testCodeFingerprint(compact),
+                UnitTestGenerationService.testCodeFingerprint(formatted.replace("\n", "\r\n")));
         assertFalse(UnitTestGenerationService.testCodeFingerprint(compact)
                 .equals(UnitTestGenerationService.testCodeFingerprint(changed)));
     }

@@ -93,7 +93,7 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             command = new ArrayList<>(command);
             command.addAll(0, List.of("cmd.exe", "/d", "/v:off", "/c"));
         }
-        var builder = new com.intellij.execution.configurations.GeneralCommandLine(command)
+        var builder = new com.casc.unittestagent.util.BuildToolCommandLine(command)
                 .withWorkDirectory(root.toFile()).withRedirectErrorStream(true)
                 .withEnvironment("JAVA_HOME", System.getProperty("java.home"));
         Process process = builder.createProcess();

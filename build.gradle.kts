@@ -154,7 +154,10 @@ tasks {
                 "**/TestFileWriterGateTest.class", "**/FinalTestFileReportPanelTest.class",
                 "**/PluginHttpClassLoadingTest.class", "**/TestDependencySetupTest.class",
                 "**/RuntimeWriteGateIntegrationTest.class", "**/TestClassMergerTest.class",
-                "**/TestBuildFileExecutionTest.class")
+                "**/TestBuildFileExecutionTest.class", "**/IdeMavenBuildConfigurationTest.class",
+                "**/CoverageRuntimeRepairSelectionTest.class", "**/ProjectCompileVerifierTest.class",
+                "**/OpenSourceRuleGenerationPipelineTest.class", "**/EvalInfrastructureTest.class",
+                "**/RunnableTestSelectionIntegrationTest.class")
         doFirst {
             check(System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
                 "windowsCompatibilityTest requires a real Windows host; ordinary test can exercise portable contracts on other OSes."

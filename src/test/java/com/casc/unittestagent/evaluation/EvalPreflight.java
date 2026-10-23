@@ -86,7 +86,8 @@ public final class EvalPreflight {
             command.addAll(List.of("-proc:none", "--release", "17", "-encoding", "UTF-8",
                     "-d", output.toString()));
             for (Path source : sources) command.add(source.toString());
-            Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            Process process = com.casc.unittestagent.coverage.LongCommandLineLauncher.start(
+                    new ProcessBuilder(command).redirectErrorStream(true), output);
             ByteArrayOutputStream processOutput = new ByteArrayOutputStream();
             process.getInputStream().transferTo(processOutput);
             int exitCode = process.waitFor();
