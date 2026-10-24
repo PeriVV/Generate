@@ -62,6 +62,45 @@ public class CandidateEvidenceTest extends TestCase {
         } finally { CompiledTestArtifact.deleteRecursively(root); }
     }
 
+    public void testExternalMavenPropertiesChangesInvalidateExportedRuntimeEvidence() throws Exception {
+        verifyExternalMavenRuntimeInput("runtime.properties");
+    }
+
+    public void testExternalMavenInputWithoutExtensionUsesContentEvenWhenMetadataIsUnchanged() throws Exception {
+        verifyExternalMavenRuntimeInput("runtime-settings");
+    }
+
+    private void verifyExternalMavenRuntimeInput(String name) throws Exception {
+        Path root = Files.createTempDirectory("evidence-maven-input-");
+        try {
+            Path module = Files.createDirectories(root.resolve("module"));
+            Path shared = Files.createDirectories(root.resolve("shared 中文"));
+            Path properties = shared.resolve(name);
+            Files.writeString(properties, "mode=before\n");
+            var modified = Files.getLastModifiedTime(properties);
+            long size = Files.size(properties);
+            Path exported = Files.createDirectories(root.resolve("export")).resolve("effective-pom.xml");
+            Files.writeString(exported, "<project><build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>"
+                    + "<configuration><systemPropertiesFile>${basedir}/../shared 中文/" + name
+                    + "</systemPropertiesFile></configuration></plugin></plugins></build></project>");
+            var environment = environment(module);
+            environment.runtimeConfiguration = MavenTestRuntimeConfiguration.parse(exported, module, "", Map.of())
+                    .withOrigin("IDEA Maven settings").withJvmArguments(List.of("-ea"));
+            assertEquals("before", environment.runtimeConfiguration.getSystemProperties().get("mode"));
+            var first = CandidateEvidenceFactory.capture(environment, "class SubjectTest {}");
+            assertTrue(CandidateEvidenceFactory.isCurrent(null, first));
+            Files.writeString(properties, "mode=after!\n");
+            Files.setLastModifiedTime(properties, modified);
+            assertEquals(size, Files.size(properties));
+            assertFalse("External runtime configuration changed after export; old evidence must expire",
+                    CandidateEvidenceFactory.isCurrent(null, first));
+            environment.runtimeConfiguration = MavenTestRuntimeConfiguration.parse(exported, module, "", Map.of());
+            var next = CandidateEvidenceFactory.capture(environment, "class SubjectTest {}");
+            assertFalse(first.identity().equals(next.identity()));
+            assertFalse(next.toString().contains("after!"));
+        } finally { CompiledTestArtifact.deleteRecursively(root); }
+    }
+
     private ProjectTestEnvironment environment(Path root) {
         var environment = new ProjectTestEnvironment();
         environment.workingDirectory = root.toFile(); environment.sourceText = "class Subject {}";

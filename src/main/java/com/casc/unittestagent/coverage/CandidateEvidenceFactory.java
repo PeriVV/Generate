@@ -30,6 +30,7 @@ public final class CandidateEvidenceFactory {
         addFiles(inputs, ProjectSourceDependencyResolver.resolve(environment.getSourcePath(), environment.getSourceText(), code));
         addExecutable(inputs, environment.getJavaExecutable());
         var runtime = environment.getRuntimeConfiguration();
+        for (File input : runtime.getConfigurationInputs()) add(inputs, input.toPath(), true);
         addExecutable(inputs, runtime.getJavaExecutable());
         Path directory = !environment.getSourceFilePath().isBlank() ? Path.of(environment.getSourceFilePath()).getParent()
                 : environment.getWorkingDirectory() == null ? null : environment.getWorkingDirectory().toPath();
@@ -64,7 +65,8 @@ public final class CandidateEvidenceFactory {
     public static boolean isCurrent(Project project, CandidateEvidence evidence) {
         if (evidence == null || project != null && project.isDisposed()
                 || rootsRevision(project) != evidence.projectRootsRevision()) return false;
-        return evidence.inputs().entrySet().stream().allMatch(entry -> entry.getValue().equals(stamp(Path.of(entry.getKey()))));
+        return evidence.inputs().entrySet().stream().allMatch(entry -> entry.getValue().equals(
+                stamp(Path.of(entry.getKey()), entry.getValue().startsWith("TEXT:"))));
     }
 
     private static long rootsRevision(Project project) {
@@ -95,18 +97,22 @@ public final class CandidateEvidenceFactory {
     }
 
     private static void add(Map<String, String> inputs, Path path) {
+        add(inputs, path, false);
+    }
+
+    private static void add(Map<String, String> inputs, Path path, boolean configurationText) {
         Path absolute = path.toAbsolutePath().normalize();
-        String value = stamp(absolute);
+        String value = stamp(absolute, configurationText);
         if (value.equals("UNREADABLE")) throw new IllegalStateException("无法读取验证输入：" + absolute.getFileName());
         inputs.put(absolute.toString(), value);
     }
 
-    private static String stamp(Path path) {
+    private static String stamp(Path path, boolean configurationText) {
         try {
             if (!Files.exists(path)) return "ABSENT";
             if (Files.isDirectory(path)) return "DIRECTORY:" + Files.getLastModifiedTime(path);
             String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
-            if (!(name.endsWith(".java") || name.endsWith(".xml") || name.endsWith(".json")
+            if (!configurationText && !(name.endsWith(".java") || name.endsWith(".xml") || name.endsWith(".json")
                     || name.endsWith(".properties") || name.endsWith(".gradle") || name.endsWith(".kts")
                     || name.endsWith(".config") || name.endsWith(".txt") || name.equals("release")))
                 return "BINARY:" + Files.size(path) + ":" + Files.getLastModifiedTime(path);

@@ -93,8 +93,10 @@ final class MavenTestRuntimeConfiguration {
             system.put(text(property, "name"), expand(text(property, "value"), properties, "systemProperties"));
         }
         String propertyFile = userProperties.getOrDefault("surefire.systemPropertiesFile", text(config, "systemPropertiesFile"));
+        List<File> configurationInputs = new ArrayList<>();
         if (!propertyFile.isBlank()) {
             Path file = module.resolve(expand(propertyFile, properties, "systemPropertiesFile")).normalize();
+            configurationInputs.add(file.toFile());
             Properties external = new Properties();
             try (InputStream input = Files.newInputStream(file)) { external.load(input); }
             for (String key : external.stringPropertyNames()) system.put(key, external.getProperty(key));
@@ -120,7 +122,8 @@ final class MavenTestRuntimeConfiguration {
             throw new IOException("Surefire 使用 jdkToolchain；请通过本地 runtime 配置指定已选定的 javaExecutable。");
         }
         return new TestRuntimeConfiguration(args, system, environment, excluded, true,
-                directory, jvm, "Maven Surefire" + (execution == null ? "" : ":" + text(execution, "id")));
+                directory, jvm, "Maven Surefire" + (execution == null ? "" : ":" + text(execution, "id")))
+                .withConfigurationInputs(configurationInputs);
     }
 
     static Map<String, String> exportedUserProperties(Path file) throws Exception {

@@ -21,11 +21,20 @@ public final class TestRuntimeConfiguration {
     private final File workingDirectory;
     private final String javaExecutable;
     private final String origin;
+    private final List<File> configurationInputs;
 
     public TestRuntimeConfiguration(List<String> jvmArguments, Map<String, String> systemProperties,
                                     Map<String, String> environment, Set<String> excludedEnvironment,
                                     boolean inheritEnvironment, File workingDirectory,
                                     String javaExecutable, String origin) {
+        this(jvmArguments, systemProperties, environment, excludedEnvironment, inheritEnvironment,
+                workingDirectory, javaExecutable, origin, List.of());
+    }
+
+    private TestRuntimeConfiguration(List<String> jvmArguments, Map<String, String> systemProperties,
+                                     Map<String, String> environment, Set<String> excludedEnvironment,
+                                     boolean inheritEnvironment, File workingDirectory,
+                                     String javaExecutable, String origin, List<File> configurationInputs) {
         this.jvmArguments = List.copyOf(jvmArguments);
         this.systemProperties = Map.copyOf(systemProperties);
         this.environment = Map.copyOf(environment);
@@ -34,6 +43,8 @@ public final class TestRuntimeConfiguration {
         this.workingDirectory = workingDirectory;
         this.javaExecutable = javaExecutable == null ? "" : javaExecutable;
         this.origin = origin == null ? "" : origin;
+        this.configurationInputs = configurationInputs.stream()
+                .map(file -> file.toPath().toAbsolutePath().normalize().toFile()).distinct().toList();
         validate();
     }
 
@@ -43,12 +54,19 @@ public final class TestRuntimeConfiguration {
 
     public TestRuntimeConfiguration withOrigin(String value) {
         return new TestRuntimeConfiguration(jvmArguments, systemProperties, environment, excludedEnvironment,
-                inheritEnvironment, workingDirectory, javaExecutable, value);
+                inheritEnvironment, workingDirectory, javaExecutable, value, configurationInputs);
     }
 
     public TestRuntimeConfiguration withJvmArguments(List<String> args) {
         return new TestRuntimeConfiguration(args, systemProperties, environment, excludedEnvironment,
-                inheritEnvironment, workingDirectory, javaExecutable, origin);
+                inheritEnvironment, workingDirectory, javaExecutable, origin, configurationInputs);
+    }
+
+    TestRuntimeConfiguration withConfigurationInputs(List<File> inputs) {
+        var combined = new ArrayList<>(configurationInputs);
+        combined.addAll(inputs);
+        return new TestRuntimeConfiguration(jvmArguments, systemProperties, environment, excludedEnvironment,
+                inheritEnvironment, workingDirectory, javaExecutable, origin, combined);
     }
 
     static TestRuntimeConfiguration fromJson(JSONObject json, File baseDirectory, String origin) {
@@ -116,4 +134,5 @@ public final class TestRuntimeConfiguration {
     public File getWorkingDirectory() { return workingDirectory; }
     public String getJavaExecutable() { return javaExecutable; }
     public String getOrigin() { return origin; }
+    public List<File> getConfigurationInputs() { return configurationInputs; }
 }
