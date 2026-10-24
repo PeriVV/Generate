@@ -222,4 +222,69 @@ public class LongCommandLineLauncherTest extends TestCase {
         assertEquals(output, 0, runtime.exitValue());
         assertEquals("中文", output);
     }
+
+    public void testUnicodeAuxiliaryWithoutExplicitDirectoryPreservesWorkingDirectoryAndArguments() throws Exception {
+        verifyUnicodeAuxiliaryWithoutDirectory(false);
+    }
+
+    public void testUnicodeTemporaryRootFallsBackWithoutChangingWorkingDirectory() throws Exception {
+        verifyUnicodeAuxiliaryWithoutDirectory(true);
+    }
+
+    private void verifyUnicodeAuxiliaryWithoutDirectory(boolean unicodeTemporaryRoot) throws Exception {
+        Path folder = Files.createDirectories(auxiliaryDirectory.resolve("中文 bootstrap space"));
+        Path source = folder.resolve("WorkingDirectory.java");
+        Files.writeString(source, "public class WorkingDirectory { public static void main(String[] args) { "
+                + "System.out.print(System.getProperty(\"user.dir\") + \"\\n\" + args[0]); } }");
+        String suffix = BuildConfigurationProcess.isWindows() ? ".exe" : "";
+        String previousTemporary = System.getProperty("java.io.tmpdir");
+        try {
+            if (unicodeTemporaryRoot) System.setProperty("java.io.tmpdir", folder.toString());
+            ProcessBuilder compiler = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "javac" + suffix).toString(),
+                    "-encoding", "UTF-8", "-d", folder.toString(), source.toString()).redirectErrorStream(true);
+            Process compile = LongCommandLineLauncher.start(compiler, folder);
+            assertTrue(compile.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(new String(compile.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, compile.exitValue());
+            assertNull(compiler.directory());
+            assertBootstrapRemoved(compiler, true);
+            ProcessBuilder runtime = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java" + suffix).toString(),
+                    "-Dfile.encoding=UTF-8", "-cp", folder.toString(), "WorkingDirectory", "@kept-as-application-argument")
+                    .redirectErrorStream(true);
+            Process run = LongCommandLineLauncher.start(runtime, folder);
+            assertTrue(run.waitFor(30, java.util.concurrent.TimeUnit.SECONDS));
+            String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(output, 0, run.exitValue());
+            String[] lines = output.split("\\R", 2);
+            assertEquals(Path.of("").toRealPath(), Path.of(lines[0]).toRealPath());
+            assertEquals("@kept-as-application-argument", lines[1]);
+            assertNull(runtime.directory());
+            assertBootstrapRemoved(runtime, false);
+        } finally {
+            System.setProperty("java.io.tmpdir", previousTemporary);
+        }
+    }
+
+    public void testFailedLaunchCleansStagedBootstrap() throws Exception {
+        Path folder = Files.createDirectories(auxiliaryDirectory.resolve("中文 failed launch"));
+        ProcessBuilder builder = new ProcessBuilder(folder.resolve("missing").resolve("javac.exe").toString(),
+                "-d", folder.toString(), folder.resolve("Missing.java").toString());
+        try {
+            LongCommandLineLauncher.start(builder, folder);
+            fail("Missing executable must fail to launch");
+        } catch (java.io.IOException expected) {
+            assertBootstrapRemoved(builder, true);
+        }
+    }
+
+    private void assertBootstrapRemoved(ProcessBuilder builder, boolean compiler) throws Exception {
+        if (!BuildConfigurationProcess.isWindows()) return;
+        String reference = compiler ? builder.command().get(builder.command().size() - 1).substring(1)
+                : builder.command().get(builder.command().indexOf("-cp") + 1);
+        assertTrue("Bootstrap reference must survive ANSI launchers: " + reference,
+                reference.chars().allMatch(value -> value < 128));
+        Path bootstrap = Path.of(reference).toAbsolutePath();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (Files.exists(bootstrap) && System.nanoTime() < deadline) Thread.sleep(20);
+        assertFalse("Process-owned bootstrap must be deleted after exit or launch failure: " + bootstrap, Files.exists(bootstrap));
+    }
 }

@@ -27,7 +27,7 @@ import java.util.zip.ZipOutputStream;
  * - java：@argfile 需 JDK 9+，改用对版本无要求的 pathing jar——manifest 的
  *   Class-Path 引用原始 classpath 条目，命令行上只保留单个 jar 路径。
  *
- * 辅助文件写在沙箱临时目录内，随既有 sandbox 清理流程一起删除。
+ * 辅助文件优先写在沙箱内；无法以 ASCII 引用的启动文件会临时转存，进程退出后清理。
  */
 public final class LongCommandLineLauncher {
     /** CreateProcessW 的 lpCommandLine 上限是 32767 个 UTF-16 字符，留出余量。 */
@@ -44,10 +44,62 @@ public final class LongCommandLineLauncher {
      */
     public static Process start(ProcessBuilder builder, Path auxiliaryDirectory) throws IOException {
         List<String> command = builder.command();
-        if (isWindows() && (exceedsWindowsLimit(command) || hasUnicodeCompilerOrClasspathArguments(command))) {
-            builder.command(adapt(command, auxiliaryDirectory, builder.directory()));
+        Path staged = null;
+        try {
+            if (isWindows() && (exceedsWindowsLimit(command) || hasUnicodeCompilerOrClasspathArguments(command))) {
+                List<String> adapted = adapt(command, auxiliaryDirectory, builder.directory());
+                staged = stageBootstrapIfNeeded(adapted, builder.directory());
+                builder.command(adapted);
+            }
+            Process process = builder.start();
+            if (staged != null) {
+                Path owned = staged;
+                process.onExit().thenRun(() -> removeBootstrap(owned));
+            }
+            return process;
+        } catch (IOException | RuntimeException | Error failure) {
+            removeBootstrap(staged);
+            throw failure;
         }
-        return builder.start();
+    }
+
+    /** Never change the process directory: relative compiler options and application paths depend on it. */
+    private static Path stageBootstrapIfNeeded(List<String> command, File workingDirectory) throws IOException {
+        int index = classpathValueIndex(command);
+        if (index < 0 && command.get(command.size() - 1).startsWith("@")) index = command.size() - 1;
+        if (index < 0) return null;
+        String value = command.get(index);
+        String prefix = value.startsWith("@") ? "@" : "";
+        String reference = prefix.isEmpty() ? value : value.substring(1);
+        if (!hasUnicode(reference)) return null;
+        Path base = (workingDirectory == null ? Path.of("") : workingDirectory.toPath()).toAbsolutePath().normalize();
+        Path original = Path.of(reference);
+        if (!original.isAbsolute()) original = base.resolve(original);
+        Path temporary = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
+        List<Path> locations = new ArrayList<>();
+        if (!hasUnicode(temporary.toString())) locations.add(temporary);
+        if (!locations.contains(base)) locations.add(base);
+        IOException last = null;
+        for (Path location : locations) {
+            Path candidate = null;
+            try {
+                candidate = Files.createTempFile(location, ".unitmind-bootstrap-", prefix.isEmpty() ? ".jar" : ".args");
+                Files.copy(original, candidate, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                String argument = location.equals(base) ? candidate.getFileName().toString() : candidate.toString();
+                command.set(index, prefix + argument);
+                return candidate;
+            } catch (IOException failure) {
+                removeBootstrap(candidate);
+                last = failure;
+            }
+        }
+        throw new IOException("无法为 Windows 启动器创建 ASCII 参数引用，请检查临时目录或进程工作目录的写入权限。", last);
+    }
+
+    private static void removeBootstrap(Path file) {
+        if (file == null) return;
+        try { Files.deleteIfExists(file); }
+        catch (IOException failure) { file.toFile().deleteOnExit(); }
     }
 
     private static boolean hasUnicodeCompilerOrClasspathArguments(List<String> command) {
