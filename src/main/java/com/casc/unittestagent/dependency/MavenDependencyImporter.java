@@ -33,7 +33,8 @@ public final class MavenDependencyImporter {
                 target = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(pom);
                 if (target == null) throw new IllegalStateException("找不到待导入的 pom.xml：" + pom);
                 manager = MavenProjectsManager.getInstance(project);
-                manager.addManagedFilesOrUnignore(List.of(target));
+                var existing = manager.findProject(target);
+                if (existing == null || manager.isIgnored(existing)) manager.addManagedFilesOrUnignore(List.of(target));
             }
             @Override public Promise<?> read() {
                 checkProject();
