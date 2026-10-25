@@ -50,7 +50,11 @@ public final class TestDependencySetupService {
                 text.append("缺省建议（已有声明/BOM 优先，实际内容见差异预览）：\n");
                 for (var dependency : context.dependencies()) text.append("  ").append(dependency.group()).append(':')
                         .append(dependency.artifact()).append(':').append(dependency.version()).append('\n');
-                text.append("应用后请求 IDEA 重新导入；仓库或构建插件不可用时需在同步窗口处理。\n");
+                if (context.buildFile().getFileName().toString().equals("pom.xml"))
+                    text.append("确保 Surefire 可执行 JUnit 5，即使项目已有 JUnit 依赖。\n")
+                            .append("关联当前 pom.xml，等待 Maven 同步完成后检查依赖是否对 IDEA 测试模块可见。\n")
+                            .append("此模式不把内置 JAR 安装到 Maven 本地仓库；依赖下载使用项目已有仓库和离线设置。\n");
+                else text.append("应用后请求 IDEA 重新导入；仓库或构建插件不可用时需在同步窗口处理。\n");
             } else {
                 text.append("离线复制到 .unitmind/test-libs，并给 IDEA 模块添加 TEST 作用域库。\n")
                         .append("不会修改 Maven/Gradle 构建文件；后续构建工具刷新可能重置手工模块依赖。\n");
@@ -61,6 +65,16 @@ public final class TestDependencySetupService {
         }
     }
     public record Applied(Path backup, String message) { }
+
+    public static String resolutionMessage(Context context) {
+        if (context.dependencies().isEmpty())
+            return "Maven 同步完成，JUnit 5 API/引擎及 Mockito/扩展已对模块 " + context.module().getName()
+                    + " 的测试可见。请重新运行代码验证；依赖导入不代表测试已通过。";
+        return "Maven 已完成同步，但模块 " + context.module().getName() + " 仍缺少以下测试依赖：\n"
+                + context.dependencies().stream().map(d -> d.group() + ":" + d.artifact())
+                .collect(java.util.stream.Collectors.joining("\n"))
+                + "\n请检查 Maven 同步窗口中的仓库访问、离线模式、版本冲突及当前模块关联。";
+    }
 
     public Context inspect(Project project, PsiFile source) throws IOException {
         ProjectTestEnvironment environment = new ProjectTestEnvironmentResolver().resolve(project, source);
@@ -157,8 +171,8 @@ public final class TestDependencySetupService {
         if (context.buildFile() == null) throw new IllegalArgumentException("没有 Maven/Gradle 构建文件，请使用 IDEA 离线模式。");
         String name = context.buildFile().getFileName().toString();
         String after = name.equals("pom.xml")
-                ? TestBuildFileEditor.maven(context.project(), context.before(), context.dependencies(), context.junit())
-                : TestBuildFileEditor.gradle(context.before(), context.dependencies(), context.junit(), name.endsWith(".kts"));
+                ? TestBuildFileEditor.maven(context.project(), context.before(), context.dependencies(), true)
+                : TestBuildFileEditor.gradle(context.before(), context.dependencies(), true, name.endsWith(".kts"));
         return new Plan(context, mode, after);
     }
 

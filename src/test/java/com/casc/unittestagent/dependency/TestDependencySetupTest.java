@@ -180,6 +180,55 @@ public class TestDependencySetupTest extends LightJavaCodeInsightFixtureTestCase
         assertTrue(after.contains("-Xmx256m"));
     }
 
+    public void testExistingJupiterLibrariesStillRequireCompatibleSurefire() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), POM.replace("</project>",
+                "<build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>"
+                        + "<version>2.12.4</version></plugin></plugins></build></project>"));
+        var found = service.inspect(getProject(), source);
+        var complete = new TestDependencySetupService.Context(found.project(), found.module(), found.directory(),
+                found.buildFile(), found.before(), found.diskBeforeHash(), found.refreshRoot(), List.of(), List.of(),
+                false, found.note(), found.buildCharset(), found.lineSeparator());
+        var plan = service.plan(complete, TestDependencySetupService.Mode.PROJECT);
+        assertTrue(plan.after(), plan.after().contains("3.5.4"));
+        assertTrue(plan.summary(), plan.summary().contains("不把内置 JAR 安装到 Maven 本地仓库"));
+    }
+
+    public void testExistingSurefireWithoutVersionDoesNotInheritUnsupportedDefaults() {
+        String before = POM.replace("</project>", "<build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>"
+                + "<configuration><argLine>-Xmx256m</argLine></configuration></plugin></plugins></build></project>");
+        String after = TestBuildFileEditor.maven(getProject(), before, List.of(), true);
+        assertTrue(after, after.contains("3.5.4")); assertTrue(after.contains("-Xmx256m"));
+        assertEquals(after, TestBuildFileEditor.maven(getProject(), after, List.of(), true));
+    }
+
+    public void testSurefireLocalVersionPropertyIsCheckedWithoutChangingProjectProperty() {
+        String before = POM.replace("</properties>", "<surefire.version>2.12.4</surefire.version></properties>")
+                .replace("</project>", "<build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>"
+                + "<version>${surefire.version}</version></plugin></plugins></build></project>");
+        String after = TestBuildFileEditor.maven(getProject(), before, List.of(), true);
+        assertTrue(after, after.contains("3.5.4")); assertTrue(after.contains("<surefire.version>2.12.4</surefire.version>"));
+    }
+
+    public void testUnresolvedClasspathProducesActionableImportReceipt() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), POM);
+        String message = TestDependencySetupService.resolutionMessage(service.inspect(getProject(), source));
+        assertTrue(message, message.contains("仍缺少"));
+        assertTrue(message, message.contains("org.junit.jupiter:junit-jupiter"));
+        assertTrue(message, message.contains("org.mockito:mockito-core"));
+        assertTrue(message, message.contains("离线模式"));
+    }
+
+    public void testResolvedClasspathReceiptDoesNotClaimTestsHavePassed() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), POM);
+        var c = service.inspect(getProject(), source);
+        var resolved = new TestDependencySetupService.Context(c.project(), c.module(), c.directory(), c.buildFile(),
+                c.before(), c.diskBeforeHash(), c.refreshRoot(), List.of(), List.of(), false,
+                c.note(), c.buildCharset(), c.lineSeparator());
+        String message = TestDependencySetupService.resolutionMessage(resolved);
+        assertTrue(message, message.contains("测试可见"));
+        assertTrue(message, message.contains("不代表测试已通过"));
+    }
+
     public void testConcurrentDocumentOrDiskChangePreventsApply() throws Exception {
         Path pom = root.resolve("pom.xml");
         Files.writeString(pom, POM);

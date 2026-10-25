@@ -16,7 +16,11 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             new TestBuildFileEditor.Dependency("org.mockito", "mockito-core", "5.18.0"),
             new TestBuildFileEditor.Dependency("org.mockito", "mockito-junit-jupiter", "5.18.0"));
 
-    public void testGeneratedMavenConfigurationExecutesJUnitWithMockito() throws Exception {
+    public void testGeneratedMavenConfigurationExecutesJUnitWithMockito() throws Exception { maven(false); }
+
+    public void testExistingLibrariesWithOldSurefireExecuteTestsAfterConfiguration() throws Exception { maven(true); }
+
+    private void maven(boolean existingDependencies) throws Exception {
         Path root = fixture();
         try {
             String before = """
@@ -27,7 +31,19 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
                       <build><directory>${env.UNITMIND_FIXTURE_BUILD}</directory></build>
                     </project>
                     """;
-            Files.writeString(root.resolve("pom.xml"), TestBuildFileEditor.maven(getProject(), before, DEPENDENCIES, true));
+            if (existingDependencies) {
+                StringBuilder declarations = new StringBuilder("<dependencies>");
+                for (var dependency : DEPENDENCIES) declarations.append("<dependency><groupId>")
+                        .append(dependency.group()).append("</groupId><artifactId>").append(dependency.artifact())
+                        .append("</artifactId><version>").append(dependency.version())
+                        .append("</version><scope>test</scope></dependency>");
+                declarations.append("</dependencies>");
+                before = before.replace("</build>", "<plugins><plugin><artifactId>maven-surefire-plugin</artifactId>"
+                        + "<version>2.12.4</version></plugin></plugins></build>")
+                        .replace("</project>", declarations + "</project>");
+            }
+            Files.writeString(root.resolve("pom.xml"), TestBuildFileEditor.maven(getProject(), before,
+                    existingDependencies ? List.of() : DEPENDENCIES, true));
             List<String> command = new ArrayList<>(List.of(isWindows() ? "mvn.cmd" : "mvn", "-B", "-q", "-ntp"));
             if (!online()) command.add("--offline");
             command.add("test");

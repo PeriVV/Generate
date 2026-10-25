@@ -33,6 +33,31 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class TestCodeStepPanelTest extends LightPlatformTestCase {
+    public void testDependencyImportDisablesExecutionButKeepsCodeCopyAvailable() {
+        var panel = panel("class T {}", "class T {}");
+        panel.configureRunnableSelection(null, () -> {}, () -> {}, () -> {}, false);
+        panel.setDependencyImportPending();
+        assertFalse(findButton(panel, "运行覆盖率").isEnabled());
+        assertFalse(findButton(panel, "重新校验").isEnabled());
+        assertFalse(findButton(panel, "再次生成").isEnabled());
+        assertFalse(findButton(panel, "保留可运行用例并测覆盖率").isEnabled());
+        assertTrue(findButton(panel, "复制").isEnabled());
+    }
+
+    public void testLiveCoverageRefreshShowsMeasurementsBeforeLoopCompletes() {
+        String code = "class T {}";
+        var panel = panel(code, code);
+        var report = CoverageReport.status(CoverageStatus.RUNNING);
+        report.setPhase(CoveragePhase.IMPROVING);
+        var measured = new CoverageSnapshot(); measured.setAvailable(true);
+        measured.setLine(new CoverageMetric(3, 1)); measured.setBranch(new CoverageMetric(1, 1));
+        report.setGenerated(measured);
+        panel.updateCoverageReport(report.snapshotForDisplay());
+        assertTrue(componentContainsText(panel, "75.0%  (3/4)"));
+        assertTrue(componentContainsText(panel, "50.0%  (1/2)"));
+        assertEquals(code, panel.getCode());
+    }
+
     public void testFailedDraftStillOffersSubsetExitWithoutPassingCompilation() {
         String code="class T { @org.junit.jupiter.api.Test void test() {} }";
         var panel=new TestCodeStepPanel(getProject(),GenerationStatus.FAILED,code,code,"preflight rejected","",

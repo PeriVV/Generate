@@ -20,6 +20,7 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
     /** 源码位置标签。 */
     private final JBLabel pathLabel = new JBLabel("源码位置：-");
     private final JButton dependenciesButton = new JButton("配置测试依赖");
+    private final JBLabel dependencyStatus = new JBLabel();
 
     /**
      * 创建 Header。
@@ -62,6 +63,8 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
         JBPanel<?> dependencyActions = new JBPanel<>(new FlowLayout(FlowLayout.LEFT, 0, 4));
         dependenciesButton.setToolTipText("为当前 Java 文件所属模块配置 JUnit / Mockito 测试依赖");
         dependencyActions.add(dependenciesButton);
+        dependencyStatus.setForeground(UIUtil.getContextHelpForeground());
+        dependencyActions.add(dependencyStatus);
         contextPanel.add(dependencyActions, BorderLayout.SOUTH);
 
         add(titlePanel, BorderLayout.NORTH);
@@ -69,6 +72,7 @@ public class UnitMindHeaderPanel extends JBPanel<UnitMindHeaderPanel> {
     }
 
     public void setDependenciesEnabled(boolean enabled) { dependenciesButton.setEnabled(enabled); }
+    public void setDependencyStatus(String text) { dependencyStatus.setText(text == null ? "" : text); }
 
     /**
      * 更新当前方法与源码位置。

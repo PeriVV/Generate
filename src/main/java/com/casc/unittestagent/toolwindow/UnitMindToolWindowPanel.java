@@ -160,6 +160,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
         TestDependencySetupService service = new TestDependencySetupService();
         dependencySetupRunning = true;
         headerPanel.setDependenciesEnabled(false);
+        headerPanel.setDependencyStatus("分析依赖中...");
         new Task.Backgroundable(project, "分析当前模块的测试依赖", true) {
             private TestDependencySetupService.Context context;
             @Override public void run(@NotNull ProgressIndicator indicator) {
@@ -169,7 +170,8 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                 indicator.checkCanceled();
             }
             @Override public void onSuccess() {
-                if (project.isDisposed()) return;
+                if (project.isDisposed() || disposed) { dependencySetupRunning = false; return; }
+                boolean importingMaven = false;
                 try {
                     TestDependencySetupDialog dialog = new TestDependencySetupDialog(service, context);
                     if (!dialog.showAndGet()) return;
@@ -180,18 +182,47 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                         generationResult.getCoverageReport().setStatus(CoverageStatus.STALE);
                         generationResult.getCoverageReport().setMessage("测试依赖已变更，请重新运行验证。");
                     }
+                    if (plan.mode() == TestDependencySetupService.Mode.PROJECT
+                            && context.buildFile().getFileName().toString().equals("pom.xml")) {
+                        var sourceFile = source.getVirtualFile();
+                        headerPanel.setDependencyStatus("Maven 同步中...");
+                        rebuildSteps();
+                        new com.casc.unittestagent.dependency.MavenDependencyImporter(project).importPom(context.buildFile())
+                                .onSuccess(ignored -> ApplicationManager.getApplication().invokeLater(() ->
+                                        verifyMavenDependencyImport(service, context, applied, sourceFile)))
+                                .onError(error -> ApplicationManager.getApplication().invokeLater(() ->
+                                        finishDependencyImport(false, "Maven 同步未完成："
+                                                + (error.getMessage() == null ? "同步已取消或异常中断" : error.getMessage())
+                                                + "\n配置文件：" + context.buildFile()
+                                                + "\n请查看 Maven 同步窗口的仓库、离线模式和依赖解析错误。")));
+                        importingMaven = true;
+                        return;
+                    }
                     String refresh = plan.mode() == TestDependencySetupService.Mode.PROJECT ? refreshDependencyProject(context) : "请等待 IDEA 索引完成后重新验证。";
                     Messages.showInfoMessage(project, applied.message() + "\n" + refresh
                             + (applied.backup() == null ? "" : "\n修改前备份：" + applied.backup()), "测试依赖配置结果");
-                    rebuildSteps();
                 } catch (Exception error) {
                     Messages.showErrorDialog(project, error.getMessage(), "测试依赖配置未完成");
-                } finally { dependencySetupRunning = false; showCurrentStep(); }
+                } catch (LinkageError unavailableMavenApi) {
+                    Messages.showErrorDialog(project,
+                            "pom.xml 已保存，但 Maven 导入接口不可用。请确认 Maven 插件已启用，或选择仅 IDEA 的离线导入模式。",
+                            "测试依赖尚未导入");
+                } finally {
+                    if (!importingMaven) {
+                        dependencySetupRunning = false;
+                        headerPanel.setDependencyStatus("");
+                        if (!disposed && !project.isDisposed()) rebuildSteps();
+                    }
+                }
             }
-            @Override public void onCancel() { dependencySetupRunning = false; if (!project.isDisposed()) showCurrentStep(); }
+            @Override public void onCancel() {
+                dependencySetupRunning = false;
+                if (!disposed && !project.isDisposed()) { headerPanel.setDependencyStatus(""); showCurrentStep(); }
+            }
             @Override public void onThrowable(@NotNull Throwable error) {
                 dependencySetupRunning = false;
-                if (!project.isDisposed()) {
+                if (!disposed && !project.isDisposed()) {
+                    headerPanel.setDependencyStatus("依赖分析失败");
                     Messages.showErrorDialog(project, error.getMessage(), "测试依赖分析失败");
                     showCurrentStep();
                 }
@@ -199,13 +230,47 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
         }.queue();
     }
 
+    private void verifyMavenDependencyImport(TestDependencySetupService service,
+                                             TestDependencySetupService.Context before,
+                                             TestDependencySetupService.Applied applied,
+                                             com.intellij.openapi.vfs.VirtualFile sourceFile) {
+        if (disposed || project.isDisposed()) { dependencySetupRunning = false; return; }
+        headerPanel.setDependencyStatus("检查 Maven 依赖...");
+        new Task.Backgroundable(project, "检查 Maven 测试依赖是否生效", true) {
+            private TestDependencySetupService.Context imported;
+            @Override public void run(@NotNull ProgressIndicator indicator) {
+                indicator.checkCanceled();
+                PsiFile current = com.intellij.openapi.application.ReadAction.compute(() ->
+                        sourceFile == null || !sourceFile.isValid() ? null : com.intellij.psi.PsiManager.getInstance(project).findFile(sourceFile));
+                if (current == null) throw new IllegalStateException("原 Java 源文件已不可用，请重新检查目标模块的依赖。");
+                try { imported = service.inspect(project, current); }
+                catch (java.io.IOException error) { throw new IllegalStateException(error.getMessage(), error); }
+                indicator.checkCanceled();
+            }
+            @Override public void onSuccess() {
+                String message = TestDependencySetupService.resolutionMessage(imported)
+                        + "\n配置文件：" + before.buildFile()
+                        + (applied.backup() == null ? "" : "\n修改前备份：" + applied.backup());
+                finishDependencyImport(imported.dependencies().isEmpty(), message);
+            }
+            @Override public void onCancel() { finishDependencyImport(false, "依赖检查已取消；pom.xml 已保存，尚未确认依赖可见性。"); }
+            @Override public void onThrowable(@NotNull Throwable error) { finishDependencyImport(false, "依赖检查未完成：" + error.getMessage()); }
+        }.queue();
+    }
+
+    private void finishDependencyImport(boolean resolved, String message) {
+        dependencySetupRunning = false;
+        if (disposed || project.isDisposed()) return;
+        headerPanel.setDependencyStatus(resolved ? "Maven 依赖已导入" : "Maven 依赖待处理");
+        if (resolved) Messages.showInfoMessage(project, message, "测试依赖已导入");
+        else Messages.showWarningDialog(project, message, "测试依赖尚未生效");
+        rebuildSteps();
+    }
+
     private String refreshDependencyProject(TestDependencySetupService.Context context) {
         try {
             if (context.buildFile().getFileName().toString().equals("pom.xml")) {
-                var action = com.intellij.openapi.actionSystem.ActionManager.getInstance().getAction("Maven.Reimport");
-                if (action == null) return "当前 IDE 没有 Maven 刷新入口，请在 Maven 窗口重新导入。";
-                var data = com.intellij.openapi.actionSystem.impl.SimpleDataContext.getProjectContext(project);
-                com.intellij.openapi.actionSystem.ex.ActionUtil.invokeAction(action, data, "UnitMind.TestDependencies", null, null);
+                throw new IllegalStateException("Maven 必须使用带结果检查的导入流程。");
             } else {
                 var system = new com.intellij.openapi.externalSystem.model.ProjectSystemId("GRADLE");
                 com.intellij.openapi.externalSystem.util.ExternalSystemUtil.refreshProject(context.refreshRoot().toString(),
@@ -603,6 +668,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                 generationResult == null ? null : generationResult.getRunnableTestSelectionReport(),
                 this::retainRunnableTests, this::restoreBeforeRunnableSelection, this::openBeforeRunnableSelection,
                 coverageRunning || writeRunning);
+        if (dependencySetupRunning) testCodeStepPanel.setDependencyImportPending();
         contentPanel.add(testCodeStepPanel, STEPS[3]);
         contentPanel.add(new WriteFileStepPanel(generationResult, targetFile(), this::writeTestFile), STEPS[4]);
         showCurrentStep();
@@ -803,6 +869,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
      * 写入测试文件。
      */
     private void writeTestFile(TestWriteMode mode, boolean force) {
+        if (dependencySetupRunning) return;
         if (mode == TestWriteMode.CANCEL) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null) {
             Messages.showWarningDialog(project, "请先生成测试代码。", "UnitMind");
@@ -1079,6 +1146,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
     }
 
     private void runCoverageLoop() {
+        if (dependencySetupRunning) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
         if (!ensureTestExecutionConfirmed()) return;
         editedCode = currentCode();
@@ -1103,10 +1171,11 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                         candidate, () -> indicator.isCanceled() || !current(), (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
+                            CoverageReport display = taskResult.getCoverageReport().snapshotForDisplay();
                             ApplicationManager.getApplication().invokeLater(() -> {
                                 if (current() && coverageRunning) {
                                     if (testCodeStepPanel != null) {
-                                        testCodeStepPanel.updateCoverageReport(taskResult.getCoverageReport());
+                                        testCodeStepPanel.updateCoverageReport(display);
                                     }
                                 }
                             });
@@ -1164,6 +1233,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
     }
 
     private void retainRunnableTests() {
+        if (dependencySetupRunning) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
         String originalCode = currentCode();
         if (originalCode == null || originalCode.isBlank()) {
@@ -1312,6 +1382,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
      * 失败测试名单等续修赖以工作的诊断状态。RUNNING 报告由服务端 runCoverageLoop 自建。
      */
     private void resumeWithEvidence(String evidence) {
+        if (dependencySetupRunning) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null || coverageRunning || writeRunning) return;
         if (evidence == null || evidence.isBlank()) {
             Messages.showWarningDialog(project, "请先在补充要求中填写证据内容。", "UnitMind");
@@ -1367,10 +1438,11 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                         (text, fraction) -> {
                             indicator.setText(text);
                             indicator.setFraction(Math.max(0d, Math.min(1d, fraction)));
+                            CoverageReport display = taskResult.getCoverageReport().snapshotForDisplay();
                             ApplicationManager.getApplication().invokeLater(() -> {
                                 if (current() && coverageRunning) {
                                     if (testCodeStepPanel != null) {
-                                        testCodeStepPanel.updateCoverageReport(taskResult.getCoverageReport());
+                                        testCodeStepPanel.updateCoverageReport(display);
                                     }
                                 }
                             });
@@ -1445,6 +1517,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
     }
 
     private void validateCurrentCode() {
+        if (dependencySetupRunning) return;
         if (generationResult == null || generationResult.getGeneratedTestFile() == null) {
             return;
         }
@@ -1512,6 +1585,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
      * 使用当前代码和用户补充要求再次请求大模型。
      */
     private void regenerateTestCode(String feedback) {
+        if (dependencySetupRunning) return;
         if (coverageRunning || writeRunning || mockStrategyLlmRunning || generationStatus == GenerationStatus.RUNNING) return;
         if (generationResult == null || generationResult.getMethodModel() == null) {
             Messages.showWarningDialog(project, "请先完成方法分析。", "UnitMind");

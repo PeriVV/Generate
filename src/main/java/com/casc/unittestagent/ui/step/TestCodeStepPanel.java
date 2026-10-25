@@ -283,6 +283,7 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
         JPanel buttons = new JPanel(new UnitMindWrapLayout(FlowLayout.LEFT, 8, 4));
         actionsPanel = buttons;
         JButton copy = new JButton("复制");
+        copy.putClientProperty("unitmind.readOnlyDuringImport", true);
         copy.setToolTipText("复制当前测试代码到剪贴板");
         JButton restore = new JButton("还原");
         restore.setToolTipText("丢弃手动修改，恢复为最近一次生成的测试代码");
@@ -414,6 +415,15 @@ public class TestCodeStepPanel extends JBPanel<TestCodeStepPanel> {
                 && (report.getStatus() == CoverageStatus.SUSPECTED_SUT_BUG
                 || report.getStatus() == CoverageStatus.NEEDS_REVIEW
                 || report.getStatus() == CoverageStatus.TEST_FAILED));
+    }
+
+    public void setDependencyImportPending() {
+        if (actionsPanel != null) for (var component : actionsPanel.getComponents()) {
+            if (component instanceof JButton button
+                    && !Boolean.TRUE.equals(button.getClientProperty("unitmind.readOnlyDuringImport"))) button.setEnabled(false);
+        }
+        if (editorTextField != null) editorTextField.setEnabled(false);
+        if (feedbackArea != null) feedbackArea.setEnabled(false);
     }
 
     public void updateClassJUnitReport(ClassJUnitRepairReport report) {

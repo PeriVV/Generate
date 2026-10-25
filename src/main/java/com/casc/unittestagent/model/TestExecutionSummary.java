@@ -22,6 +22,16 @@ public class TestExecutionSummary {
     private List<TestCaseExecution> testCases = new ArrayList<>();
     private final List<String> evidenceFailures = new ArrayList<>();
 
+    public TestExecutionSummary snapshotForDisplay() {
+        var copy = new TestExecutionSummary();
+        copy.found = found; copy.succeeded = succeeded; copy.failed = failed; copy.skipped = skipped;
+        copy.timedOut = timedOut; copy.exitCode = exitCode; copy.output = output;
+        copy.evidenceArchivePath = evidenceArchivePath; copy.evidenceArchiveError = evidenceArchiveError;
+        copy.diagnostics = List.copyOf(diagnostics); copy.testCases = List.copyOf(testCases);
+        copy.evidenceFailures.addAll(evidenceFailures);
+        return copy;
+    }
+
     public int getFound() { return found; }
     public void setFound(int found) { this.found = found; }
     public int getSucceeded() { return succeeded; }

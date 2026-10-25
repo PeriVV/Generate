@@ -142,14 +142,15 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
 
     private boolean usable(CoverageSnapshot snapshot) {
         return snapshot != null && snapshot.isAvailable()
-                && (report.getStatus() == CoverageStatus.PASSED || report.getStatus() == CoverageStatus.BELOW_THRESHOLD);
+                && (report.getStatus() == CoverageStatus.RUNNING || report.getStatus() == CoverageStatus.PASSED
+                || report.getStatus() == CoverageStatus.BELOW_THRESHOLD);
     }
 
     private JComponent metricCards() {
         // 纵向卡片在窄工具窗口中不会互相挤压或制造整页横向滚动。
         JPanel cards = new JPanel(new java.awt.GridLayout(0, 1, 0, JBUI.scale(8)));
         cards.setOpaque(false);
-        cards.add(metricCard("当前测试集合 → 所选方法（含 lambda）", report.getGenerated()));
+        cards.add(metricCard("当前测试集合 → 所选方法", report.getGenerated()));
         return cards;
     }
 
@@ -217,6 +218,12 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         card.add(Box.createVerticalStrut(JBUI.scale(5)));
 
         boolean running = report.getStatus() == CoverageStatus.RUNNING;
+        if (running && usable(snapshot)) {
+            JBLabel measured = new JBLabel("已完成候选的测量结果；补测仍在进行");
+            measured.setForeground(UIUtil.getContextHelpForeground());
+            card.add(measured);
+            card.add(Box.createVerticalStrut(JBUI.scale(4)));
+        }
         card.add(metricRow("行", snapshot == null ? null : snapshot.getLine(),
                 config.getLineThreshold(), usable(snapshot), false, running));
         card.add(Box.createVerticalStrut(JBUI.scale(4)));
@@ -242,7 +249,7 @@ public class CoverageReportPanel extends JBPanel<CoverageReportPanel> {
         JProgressBar bar = new JProgressBar(0, 1000);
         bar.setStringPainted(false);
         bar.setPreferredSize(new Dimension(JBUI.scale(150), JBUI.scale(19)));
-        if (running) {
+        if (running && !available) {
             bar.setIndeterminate(true);
             bar.setString("执行中...");
         } else if (!available || metric == null) {

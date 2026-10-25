@@ -61,13 +61,23 @@ public final class TestBuildFileEditor {
                     XmlTag managedPlugins = child(management, "plugins");
                     XmlTag inherited = managedPlugins == null ? null : Arrays.stream(managedPlugins.getSubTags())
                             .filter(tag -> text(tag, "artifactId").equals("maven-surefire-plugin")).findFirst().orElse(null);
-                    if (inherited == null || oldSurefire(text(inherited, "version"))) value(plugin, "version", "3.5.4");
+                    if (inherited == null || text(inherited, "version").isBlank()
+                            || oldSurefire(resolveVersion(root, text(inherited, "version")))) value(plugin, "version", "3.5.4");
                     changed.add(plugin);
                 } else {
                     XmlTag plugin = Arrays.stream(plugins.getSubTags()).filter(tag -> text(tag, "artifactId").equals("maven-surefire-plugin")).findFirst().orElseThrow();
                     String version = text(plugin, "version");
-                    if (oldSurefire(version)) {
-                        child(plugin, "version").getValue().setText("3.5.4");
+                    String effective = resolveVersion(root, version);
+                    if (version.isBlank()) {
+                        XmlTag management = child(child(child(root, "build"), "pluginManagement"), "plugins");
+                        XmlTag inherited = management == null ? null : Arrays.stream(management.getSubTags())
+                                .filter(tag -> text(tag, "artifactId").equals("maven-surefire-plugin")).findFirst().orElse(null);
+                        effective = resolveVersion(root, text(inherited, "version"));
+                    }
+                    if (effective.isBlank() || oldSurefire(effective)) {
+                        XmlTag existingVersion = child(plugin, "version");
+                        if (existingVersion == null) value(plugin, "version", "3.5.4");
+                        else existingVersion.getValue().setText("3.5.4");
                         changed.add(plugin);
                     }
                 }
@@ -84,6 +94,16 @@ public final class TestBuildFileEditor {
         var match = Pattern.compile("(\\d+)\\.(\\d+).*?").matcher(version);
         return match.matches() && (Integer.parseInt(match.group(1)) < 2
                 || Integer.parseInt(match.group(1)) == 2 && Integer.parseInt(match.group(2)) < 22);
+    }
+
+    private static String resolveVersion(XmlTag root, String version) {
+        String value = version;
+        for (int i = 0; i < 8 && value.startsWith("${") && value.endsWith("}"); i++) {
+            String resolved = text(child(root, "properties"), value.substring(2, value.length() - 1));
+            if (resolved.isBlank() || resolved.equals(value)) break;
+            value = resolved;
+        }
+        return value;
     }
 
     private static boolean managed(XmlTag root, Dependency dependency) {

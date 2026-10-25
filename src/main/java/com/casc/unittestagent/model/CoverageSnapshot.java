@@ -2,6 +2,16 @@ package com.casc.unittestagent.model;
 
 /** 单组测试对当前方法产生的覆盖率。 */
 public class CoverageSnapshot {
+    public CoverageSnapshot snapshotForDisplay() {
+        var copy = new CoverageSnapshot();
+        copy.candidateEvidence = candidateEvidence; copy.available = available;
+        copy.measurementScope = measurementScope; copy.measuredMethods = java.util.List.copyOf(measuredMethods);
+        copy.message = message;
+        copy.line = new CoverageMetric(line.getCovered(), line.getMissed());
+        copy.branch = new CoverageMetric(branch.getCovered(), branch.getMissed());
+        copy.execution = execution.snapshotForDisplay();
+        return copy;
+    }
     private CandidateEvidence candidateEvidence;
     public CandidateEvidence getCandidateEvidence() { return candidateEvidence; }
     public void setCandidateEvidence(CandidateEvidence value) { candidateEvidence = value; }

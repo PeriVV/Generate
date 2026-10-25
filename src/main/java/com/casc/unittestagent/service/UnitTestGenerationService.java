@@ -2420,9 +2420,6 @@ public class UnitTestGenerationService {
                     compilerDiagnosticHistory.clear();
                     runtimeDiagnosticHistory.clear();
 
-                    updateCoverageProgress(report, listener, config, CoveragePhase.ANALYZING,
-                            attemptBudget.totalCalls() + 1,
-                            "正在分析当前方法的行和分支覆盖率...", 0.75d);
                     AcceptedCoverageCandidate selected = chooseCoverageCandidate(
                             bestAccepted, candidateCode, run.getSnapshot(), run.getGaps());
                     boolean accepted = selected != bestAccepted;
@@ -2431,6 +2428,10 @@ public class UnitTestGenerationService {
                         acceptCoverageCandidate(result, report, template, bestAccepted);
                         report.incrementAcceptedCandidates();
                     }
+                    else restoreReportCheckpoint(report, bestAccepted);
+                    updateCoverageProgress(report, listener, config, CoveragePhase.ANALYZING,
+                            attemptBudget.totalCalls() + 1,
+                            "候选测量完成，正在分析当前方法的行和分支覆盖率...", 0.75d);
                     boolean targetReached = coverageTargetReached(bestAccepted, config);
                     boolean hasActionableGaps = bestAccepted != null && !bestAccepted.gaps.isEmpty();
                     boolean explorationAvailable = canImprove(

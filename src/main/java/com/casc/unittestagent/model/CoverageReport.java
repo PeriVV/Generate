@@ -69,6 +69,31 @@ public class CoverageReport {
         return report;
     }
 
+    /** Capture on the task thread before queuing an EDT update; later rounds must not alter queued counters. */
+    public CoverageReport snapshotForDisplay() {
+        var copy = new CoverageReport();
+        copy.candidateEvidence = candidateEvidence; copy.status = status; copy.stopReason = stopReason;
+        copy.generated = generated.snapshotForDisplay(); copy.gaps = List.copyOf(gaps);
+        copy.history = history.stream().map(CoverageSnapshot::snapshotForDisplay).toList();
+        copy.rounds = rounds; copy.durationMillis = durationMillis;
+        copy.codeHash = codeHash; copy.sourceHash = sourceHash;
+        copy.runtimeConfigurationOrigin = runtimeConfigurationOrigin; copy.message = message;
+        copy.phase = phase; copy.progressFraction = progressFraction;
+        copy.progressMessage = progressMessage; copy.currentCandidate = currentCandidate;
+        copy.visitedPhases = new CopyOnWriteArrayList<>(visitedPhases);
+        copy.modelRequests = modelRequests; copy.candidateRejections.addAll(candidateRejections);
+        copy.explorationRounds = explorationRounds; copy.repairRounds = repairRounds;
+        copy.transportRetries = transportRetries; copy.formatRetries = formatRetries;
+        copy.acceptedCandidates = acceptedCandidates; copy.compileFailures = compileFailures;
+        copy.runtimeFailures = runtimeFailures; copy.noProgressCandidates = noProgressCandidates;
+        copy.runtimeNoProgressCandidates = runtimeNoProgressCandidates;
+        copy.unchangedResponses = unchangedResponses; copy.modelUnchangedResponses = modelUnchangedResponses;
+        copy.discardedChanges = discardedChanges; copy.lastUnchangedStage = lastUnchangedStage;
+        copy.oracleAssessment = oracleAssessment; copy.sourceBugAnalysis = sourceBugAnalysis;
+        copy.failingTestNamesAtStop = List.copyOf(failingTestNamesAtStop);
+        return copy;
+    }
+
     public CoverageStatus getStatus() { return status; }
     public void setStatus(CoverageStatus status) { this.status = status == null ? CoverageStatus.NOT_RUN : status; }
     public CoverageStopReason getStopReason() { return stopReason; }

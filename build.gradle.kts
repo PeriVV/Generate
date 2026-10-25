@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0.52"
+version = "1.0.53"
 
 // Old IDEA test launchers cannot decode Unicode classpath arguments on an ANSI Windows locale.
 // Keep the source checkout unchanged and allow CI to place JVM bootstrap artifacts in an ASCII path.
@@ -161,7 +161,8 @@ tasks {
         testClassesDirs = sourceSets["test"].output.classesDirs
         classpath = sourceSets["test"].runtimeClasspath
         outputs.upToDateWhen { false }
-        include("**/LlmCancellationTest.class", "**/CandidateEvidenceTest.class", "**/ClasspathTypeProbeTest.class",
+        include("**/CoveragePresentationIntegrityTest.class", "**/TestCodeStepPanelTest.class", "**/MavenDependencyImporterTest.class",
+                "**/LlmCancellationTest.class", "**/CandidateEvidenceTest.class", "**/ClasspathTypeProbeTest.class",
                 "**/ExecutionEnvironmentSessionTest.class", "**/TestWriteValidationServiceTest.class",
                 "**/WindowsBatchExecutionTest.class", "**/LongCommandLineLauncherTest.class",
                 "**/BundledMockitoRuntimeTest.class",

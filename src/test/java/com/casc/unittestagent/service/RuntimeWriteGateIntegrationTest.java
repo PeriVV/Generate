@@ -105,6 +105,27 @@ public class RuntimeWriteGateIntegrationTest extends LightJavaCodeInsightFixture
         assertEquals(1, result.getRuntimeValidationReport().getFinalExecution().getSucceeded());
     }
 
+    public void testCoverageMeasurementIsPublishedWhileLoopIsStillRunning() throws Exception {
+        PsiFile source = source();
+        String code = "package sample; class SubjectTest { @org.junit.jupiter.api.Test void trims() {"
+                + "org.junit.jupiter.api.Assertions.assertEquals(\"ok\", new Subject().normalize(\" ok \")); } }";
+        GenerationResult candidate = candidate(code);
+        candidate.setMethodModel(new com.casc.unittestagent.parser.JavaSourceAnalyzer().analyze(SOURCE, "normalize"));
+        var frames = new java.util.concurrent.CopyOnWriteArrayList<CoverageReport>();
+        ApplicationManager.getApplication().executeOnPooledThread(() -> ProgressManager.getInstance().runProcess(
+                () -> new UnitTestGenerationService().runCoverageLoop(getProject(), source, candidate, code, () -> false,
+                        (text, fraction) -> frames.add(candidate.getCoverageReport().snapshotForDisplay())),
+                new EmptyProgressIndicator())).get(90, TimeUnit.SECONDS);
+        var live = frames.stream().filter(frame -> frame.getStatus() == CoverageStatus.RUNNING
+                && frame.getGenerated().isAvailable()).findFirst();
+        assertTrue(candidate.getCoverageReport().getMessage(), live.isPresent());
+        assertTrue(live.get().getGenerated().getExecution().isFullySuccessful());
+        assertTrue(live.get().getGenerated().getLine().getCovered() > 0);
+        assertEquals(.5d, live.get().getGenerated().getBranch().getRate(), .0001d);
+        assertFalse(CoverageStatus.RUNNING == candidate.getCoverageReport().getStatus());
+        assertEquals(CoverageStatus.RUNNING, live.get().getStatus());
+    }
+
     public void testChangedBuildConfigurationCannotReusePassingRuntimeEvidence() throws Exception {
         PsiFile source = source();
         var result = execute(service(config -> { throw new AssertionError("no model expected"); }),
