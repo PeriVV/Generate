@@ -39,7 +39,15 @@ public final class TestDependencySetupService {
     public record Context(Project project, Module module, Path directory, Path buildFile, String before,
                           String diskBeforeHash, Path refreshRoot, List<TestBuildFileEditor.Dependency> dependencies,
                           List<File> offlineJars, boolean junit, String note,
-                          java.nio.charset.Charset buildCharset, String lineSeparator) { }
+                          java.nio.charset.Charset buildCharset, String lineSeparator, String legacyJUnitVersion) {
+        public Context(Project project, Module module, Path directory, Path buildFile, String before,
+                       String diskBeforeHash, Path refreshRoot, List<TestBuildFileEditor.Dependency> dependencies,
+                       List<File> offlineJars, boolean junit, String note,
+                       java.nio.charset.Charset buildCharset, String lineSeparator) {
+            this(project, module, directory, buildFile, before, diskBeforeHash, refreshRoot, dependencies,
+                    offlineJars, junit, note, buildCharset, lineSeparator, "");
+        }
+    }
     public record Plan(Context context, Mode mode, String after) {
         public String summary() {
             StringBuilder text = new StringBuilder("模块：").append(context.module().getName())
@@ -52,6 +60,7 @@ public final class TestDependencySetupService {
                         .append(dependency.artifact()).append(':').append(dependency.version()).append('\n');
                 if (context.buildFile().getFileName().toString().equals("pom.xml"))
                     text.append("确保 Surefire 可执行 JUnit 5，即使项目已有 JUnit 依赖。\n")
+                            .append("JUnit 4 混合项目补充 Vintage 保留旧测试；已知旧于 4.12 的版本先确认升级。\n")
                             .append("关联当前 pom.xml，等待 Maven 同步完成后检查依赖是否对 IDEA 测试模块可见。\n")
                             .append("此模式不把内置 JAR 安装到 Maven 本地仓库；依赖下载使用项目已有仓库和离线设置。\n");
                 else text.append("应用后请求 IDEA 重新导入；仓库或构建插件不可用时需在同步窗口处理。\n");
@@ -67,6 +76,9 @@ public final class TestDependencySetupService {
     public record Applied(Path backup, String message) { }
 
     public static String resolutionMessage(Context context) {
+        if (TestBuildFileEditor.unsupportedLegacyJUnit(context.legacyJUnitVersion()))
+            return "项目使用 JUnit " + context.legacyJUnitVersion()
+                    + "，Vintage 需要 JUnit 4.12 或以上。请先确认旧测试迁移；当前未确认项目测试配置可用。";
         if (context.dependencies().isEmpty())
             return "Maven 同步完成，JUnit 5 API/引擎及 Mockito/扩展已对模块 " + context.module().getName()
                     + " 的测试可见。请重新运行代码验证；依赖导入不代表测试已通过。";
@@ -74,6 +86,10 @@ public final class TestDependencySetupService {
                 + context.dependencies().stream().map(d -> d.group() + ":" + d.artifact())
                 .collect(java.util.stream.Collectors.joining("\n"))
                 + "\n请检查 Maven 同步窗口中的仓库访问、离线模式、版本冲突及当前模块关联。";
+    }
+
+    public static boolean dependenciesResolved(Context context) {
+        return context.dependencies().isEmpty() && !TestBuildFileEditor.unsupportedLegacyJUnit(context.legacyJUnitVersion());
     }
 
     public Context inspect(Project project, PsiFile source) throws IOException {
@@ -101,6 +117,8 @@ public final class TestDependencySetupService {
         }
         if (!Files.isDirectory(directory)) throw new IOException("无法确定模块目录。");
         List<File> projectLibraries = new ArrayList<>(environment.getRuntimeClasspath());
+        if (environment.isBundledJunit()) projectLibraries.remove(
+                new File(PathUtil.getJarPathForClass(org.junit.platform.console.ConsoleLauncher.class)));
         if (environment.hasOfflineTestLibrary()) {
             List<File> owned = ReadAction.compute(() -> {
               List<File> files = new ArrayList<>();
@@ -127,9 +145,18 @@ public final class TestDependencySetupService {
         int feature = BundledMockitoRuntime.javaFeature(environment.getJavaExecutable());
         String mockitoVersion = version(projectLibraries, "mockito-core-", feature < 11 ? "4.11.0" : "5.18.0");
         String junitVersion = version(projectLibraries, "junit-jupiter-api-", "5.12.0");
+        boolean legacyJUnit = contains(projectLibraries, "org/junit/Test.class")
+                || contains(projectLibraries, "junit/framework/TestCase.class");
+        String legacyVersion = "";
+        if (legacyJUnit) for (File file : projectLibraries) {
+            var match = java.util.regex.Pattern.compile("junit-(?:dep-)?(\\d+(?:\\.\\d+)+).*\\.jar").matcher(file.getName());
+            if (match.matches()) { legacyVersion = match.group(1); break; }
+        }
         List<TestBuildFileEditor.Dependency> dependencies = new ArrayList<>();
         if (junit) dependencies.add(new TestBuildFileEditor.Dependency("org.junit.jupiter",
                 apiMissing ? "junit-jupiter" : "junit-jupiter-engine", junitVersion));
+        if (legacyJUnit && !contains(projectLibraries, "org/junit/vintage/engine/VintageTestEngine.class"))
+            dependencies.add(new TestBuildFileEditor.Dependency("org.junit.vintage", "junit-vintage-engine", junitVersion));
         if (core) dependencies.add(new TestBuildFileEditor.Dependency("org.mockito", "mockito-core", mockitoVersion));
         if (extension) dependencies.add(new TestBuildFileEditor.Dependency("org.mockito", "mockito-junit-jupiter", mockitoVersion));
         List<File> offline = new ArrayList<>();
@@ -163,12 +190,15 @@ public final class TestDependencySetupService {
             }
         }
         return new Context(project, environment.getModule(), directory, build, before, disk, refreshRoot,
-                List.copyOf(dependencies), List.copyOf(offline), junit, note, charset, separator);
+                List.copyOf(dependencies), List.copyOf(offline), junit, note, charset, separator, legacyVersion);
     }
 
     public Plan plan(Context context, Mode mode) {
         if (mode == Mode.IDEA_OFFLINE) return new Plan(context, mode, context.before());
         if (context.buildFile() == null) throw new IllegalArgumentException("没有 Maven/Gradle 构建文件，请使用 IDEA 离线模式。");
+        if (TestBuildFileEditor.unsupportedLegacyJUnit(context.legacyJUnitVersion()))
+            throw new IllegalArgumentException("已有 JUnit " + context.legacyJUnitVersion()
+                    + " 不能直接使用 Vintage。请先确认升级到 JUnit 4.12 或以上，或选择仅 IDEA 离线模式。");
         String name = context.buildFile().getFileName().toString();
         String after = name.equals("pom.xml")
                 ? TestBuildFileEditor.maven(context.project(), context.before(), context.dependencies(), true)

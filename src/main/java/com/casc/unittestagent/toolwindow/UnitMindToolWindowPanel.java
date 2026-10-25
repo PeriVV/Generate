@@ -251,7 +251,7 @@ public class UnitMindToolWindowPanel extends JPanel implements com.intellij.open
                 String message = TestDependencySetupService.resolutionMessage(imported)
                         + "\n配置文件：" + before.buildFile()
                         + (applied.backup() == null ? "" : "\n修改前备份：" + applied.backup());
-                finishDependencyImport(imported.dependencies().isEmpty(), message);
+                finishDependencyImport(TestDependencySetupService.dependenciesResolved(imported), message);
             }
             @Override public void onCancel() { finishDependencyImport(false, "依赖检查已取消；pom.xml 已保存，尚未确认依赖可见性。"); }
             @Override public void onThrowable(@NotNull Throwable error) { finishDependencyImport(false, "依赖检查未完成：" + error.getMessage()); }

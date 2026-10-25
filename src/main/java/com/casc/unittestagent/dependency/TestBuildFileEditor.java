@@ -32,7 +32,26 @@ public final class TestBuildFileEditor {
                 throw new IllegalArgumentException("pom.xml 含有语法错误，请先修复。");
             }
             List<XmlTag> changed = new ArrayList<>();
-            for (Dependency dependency : dependencies) {
+            List<Dependency> required = new ArrayList<>(dependencies);
+            XmlTag existingDependencies = child(root, "dependencies");
+            XmlTag legacy = existingDependencies == null ? null : Arrays.stream(existingDependencies.getSubTags())
+                    .filter(tag -> text(tag, "groupId").equals("junit")
+                            && (text(tag, "artifactId").equals("junit") || text(tag, "artifactId").equals("junit-dep")))
+                    .findFirst().orElse(null);
+            if (junit && legacy != null) {
+                if (unsupportedLegacyJUnit(resolveVersion(root, text(legacy, "version"))))
+                    throw new IllegalArgumentException("已有 JUnit 版本不能直接使用 Vintage，请先确认升级到 JUnit 4.12 或以上，或使用仅 IDEA 离线模式。");
+                String engineVersion = dependencies.stream().filter(d -> d.group().equals("org.junit.jupiter"))
+                        .map(Dependency::version).findFirst().orElse("5.12.0");
+                if (existingDependencies != null) for (XmlTag tag : existingDependencies.getSubTags()) {
+                    if (text(tag, "groupId").equals("org.junit.jupiter") && !text(tag, "version").isBlank()) {
+                        engineVersion = text(tag, "version"); break;
+                    }
+                }
+                if (required.stream().noneMatch(d -> d.artifact().equals("junit-vintage-engine")))
+                    required.add(new Dependency("org.junit.vintage", "junit-vintage-engine", engineVersion));
+            }
+            for (Dependency dependency : required) {
                 XmlTag existing = child(root, "dependencies");
                 if (existing != null && Arrays.stream(existing.getSubTags()).anyMatch(tag -> matches(tag, dependency))) continue;
                 XmlTag container = ensure(root, "dependencies");
@@ -96,6 +115,13 @@ public final class TestBuildFileEditor {
                 || Integer.parseInt(match.group(1)) == 2 && Integer.parseInt(match.group(2)) < 22);
     }
 
+    static boolean unsupportedLegacyJUnit(String version) {
+        if (version == null) return false;
+        var match = Pattern.compile("(\\d+)\\.(\\d+).*?").matcher(version);
+        return match.matches() && (Integer.parseInt(match.group(1)) < 4
+                || Integer.parseInt(match.group(1)) == 4 && Integer.parseInt(match.group(2)) < 12);
+    }
+
     private static String resolveVersion(XmlTag root, String version) {
         String value = version;
         for (int i = 0; i < 8 && value.startsWith("${") && value.endsWith("}"); i++) {
@@ -112,7 +138,7 @@ public final class TestBuildFileEditor {
             if (matches(tag, dependency)) return true;
             String artifact = text(tag, "artifactId");
             if (text(tag, "scope").equals("import") && (artifact.equals("spring-boot-dependencies")
-                    || dependency.group().equals("org.junit.jupiter") && artifact.equals("junit-bom")
+                    || dependency.group().startsWith("org.junit.") && artifact.equals("junit-bom")
                     || dependency.group().equals("org.mockito") && artifact.equals("mockito-bom"))) return true;
         }
         return text(child(root, "parent"), "artifactId").equals("spring-boot-starter-parent");
@@ -139,7 +165,7 @@ public final class TestBuildFileEditor {
             block.append("dependencies {").append(nl);
             for (Dependency dependency : missing) {
                 boolean managed = code.contains("org.springframework.boot:spring-boot-dependencies")
-                        || dependency.group().equals("org.junit.jupiter") && code.contains("org.junit:junit-bom")
+                        || dependency.group().startsWith("org.junit.") && code.contains("org.junit:junit-bom")
                         || dependency.group().equals("org.mockito") && code.contains("org.mockito:mockito-bom");
                 String version = dependency.version();
                 if (dependency.artifact().equals("mockito-junit-jupiter")) {

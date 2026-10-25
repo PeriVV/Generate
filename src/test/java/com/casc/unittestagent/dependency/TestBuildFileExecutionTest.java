@@ -20,7 +20,11 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
 
     public void testExistingLibrariesWithOldSurefireExecuteTestsAfterConfiguration() throws Exception { maven(true); }
 
-    private void maven(boolean existingDependencies) throws Exception {
+    public void testMixedJUnit4AndJupiterConfigurationRunsBothTestClasses() throws Exception { maven(true, true); }
+
+    private void maven(boolean existingDependencies) throws Exception { maven(existingDependencies, false); }
+
+    private void maven(boolean existingDependencies, boolean legacyJUnit) throws Exception {
         Path root = fixture();
         try {
             String before = """
@@ -42,6 +46,13 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
                         + "<version>2.12.4</version></plugin></plugins></build>")
                         .replace("</project>", declarations + "</project>");
             }
+            if (legacyJUnit) {
+                before = before.replace("</dependencies>", "<dependency><groupId>junit</groupId><artifactId>junit</artifactId>"
+                        + "<version>4.13.2</version><scope>test</scope></dependency></dependencies>");
+                Path legacy = root.resolve("src/test/java/example/LegacySubjectTest.java");
+                Files.writeString(legacy, "package example; public class LegacySubjectTest {"
+                        + "@org.junit.Test public void legacyContract() { org.junit.Assert.assertTrue(true); } }");
+            }
             Files.writeString(root.resolve("pom.xml"), TestBuildFileEditor.maven(getProject(), before,
                     existingDependencies ? List.of() : DEPENDENCIES, true));
             List<String> command = new ArrayList<>(List.of(isWindows() ? "mvn.cmd" : "mvn", "-B", "-q", "-ntp"));
@@ -49,6 +60,7 @@ public class TestBuildFileExecutionTest extends LightJavaCodeInsightFixtureTestC
             command.add("test");
             run(root, command);
             assertReport(buildDirectory.resolve("surefire-reports/TEST-example.SubjectTest.xml"));
+            if (legacyJUnit) assertReport(buildDirectory.resolve("surefire-reports/TEST-example.LegacySubjectTest.xml"));
         } finally { delete(root); delete(buildDirectory); }
     }
 

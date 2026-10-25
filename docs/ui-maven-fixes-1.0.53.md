@@ -1,6 +1,6 @@
 # 1.0.53 UI 覆盖率与 Maven 测试依赖修复
 
-状态：81 项定向回归通过，完整本机、IDEA API 和 Windows 原生验收进行中，尚未交付新包。
+状态：定向回归通过，最终代码的完整本机、IDEA API 和 Windows 原生验收进行中，尚未交付新包。
 
 ## 三项反馈的处理
 
@@ -12,6 +12,7 @@
 
 - 修改当前 Java 文件最近的模块 pom.xml，补充 test 作用域的 JUnit Jupiter（或缺失的 engine）、Mockito core、Mockito Jupiter 扩展。保留已有依赖版本/BOM 管理；缺省 JUnit 5.12.0，Mockito 在 Java 8 使用 4.11.0、Java 11 及以上使用 5.18.0。
 - 即使已经有 JUnit 库，也检查 JUnit 5 执行配置。缺少可用 Surefire 声明或已知旧于 2.22 时使用 3.5.4；处理本地版本属性及没有活动版本的情况，保留现有插件配置。
+- JUnit 4/5 混合项目补充 Vintage 引擎，避免切到 JUnit Platform 后旧测试静默漏跑。保留已有 JUnit 4 版本，Vintage 跟随 Jupiter/BOM；已知低于 JUnit 4.12 时停止自动配置并说明原因。真实 Maven 对照夹具修复前只执行 1 个 Jupiter 测试，修复后两类共 2 个测试均实际执行并产生 XML 报告。规则依据 [Surefire 3.5.4 JUnit Platform 文档](https://maven.apache.org/surefire-archives/surefire-3.5.4/maven-surefire-plugin/examples/junit-platform.html)和 [JUnit 5.12 用户指南](https://docs.junit.org/5.12.0/user-guide/)。
 - 不更换项目仓库或 Maven 离线设置，也不把插件内置 JAR 直接安装到 Maven 本地仓库。依赖解析沿用项目 Maven 设置；仓库不可达、离线缓存缺失、版本冲突会在同步或可见性检查中反馈。
 - 先备份变更前的构建文件，创建 src/test/java，再通过 IDEA Maven 导入所选 POM。完成提示表示依赖对模块可见，不表示业务测试已经通过，仍需重新运行代码验证。
 - “仅 IDEA：离线导入内置 JAR”是另一种模式：添加模块 TEST 库，不写入 Maven/Gradle 构建声明，不能代替 Maven/CI 的依赖配置。

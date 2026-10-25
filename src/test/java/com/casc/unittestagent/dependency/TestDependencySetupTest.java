@@ -229,6 +229,60 @@ public class TestDependencySetupTest extends LightJavaCodeInsightFixtureTestCase
         assertTrue(message, message.contains("不代表测试已通过"));
     }
 
+    public void testProjectJUnit4IsNotHiddenByThePluginsBundledJUnitFallback() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), POM);
+        var jar = root.resolve("junit-4.13.2.jar").toFile();
+        // The test process can load org.junit.Test from the standalone console JAR,
+        // which also contains Jupiter and Vintage. Model a real JUnit 4-only library.
+        try (var output = new java.util.jar.JarOutputStream(Files.newOutputStream(jar.toPath()))) {
+            output.putNextEntry(new java.util.jar.JarEntry("org/junit/Test.class"));
+            try (var input = org.junit.Test.class.getResourceAsStream("/org/junit/Test.class")) {
+                assertNotNull(input);
+                input.transferTo(output);
+            }
+            output.closeEntry();
+        }
+        PsiTestUtil.addLibrary(getTestRootDisposable(), getModule(), "existing-junit4", jar.getParent(), jar.getName());
+        var context = service.inspect(getProject(), source);
+        assertTrue(context.dependencies().toString(), context.dependencies().stream()
+                .anyMatch(d -> d.group().equals("org.junit.vintage") && d.artifact().equals("junit-vintage-engine")));
+    }
+
+    public void testMavenJUnit4AndBomRetainLegacyTestsWithoutPinningAnUnrelatedEngineVersion() throws Exception {
+        String before = POM.replace("</project>", "<dependencyManagement><dependencies><dependency>"
+                + "<groupId>org.junit</groupId><artifactId>junit-bom</artifactId><version>5.10.2</version>"
+                + "<type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>"
+                + "<dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId>"
+                + "<version>4.13.2</version><scope>test</scope></dependency></dependencies></project>");
+        String after = TestBuildFileEditor.maven(getProject(), before, requested(), true);
+        var dependencies = parse(after).getElementsByTagNameNS("*", "dependency");
+        int vintage = 0;
+        for (int i = 0; i < dependencies.getLength(); i++) {
+            var d = (org.w3c.dom.Element) dependencies.item(i);
+            if (d.getElementsByTagNameNS("*", "artifactId").item(0).getTextContent().equals("junit-vintage-engine")) {
+                vintage++; assertEquals(0, d.getElementsByTagNameNS("*", "version").getLength());
+            }
+        }
+        assertEquals(1, vintage); assertTrue(after.contains("4.13.2"));
+        assertEquals(after, TestBuildFileEditor.maven(getProject(), after, requested(), true));
+    }
+
+    public void testTooOldJUnitIsNotSilentlyMigratedToAnIncompatibleEngine() throws Exception {
+        String before = POM.replace("</project>", "<dependencies><dependency><groupId>junit</groupId>"
+                + "<artifactId>junit</artifactId><version>4.11</version></dependency></dependencies></project>");
+        try { TestBuildFileEditor.maven(getProject(), before, requested(), true); fail(); }
+        catch (IllegalArgumentException expected) { assertTrue(expected.getMessage().contains("4.12")); }
+        Files.writeString(root.resolve("pom.xml"), POM);
+        var c = service.inspect(getProject(), source);
+        var old = new TestDependencySetupService.Context(c.project(), c.module(), c.directory(), c.buildFile(), c.before(),
+                c.diskBeforeHash(), c.refreshRoot(), List.of(), c.offlineJars(), false, c.note(), c.buildCharset(), c.lineSeparator(), "4.11");
+        assertFalse(TestDependencySetupService.dependenciesResolved(old));
+        assertTrue(TestDependencySetupService.resolutionMessage(old).contains("4.12"));
+        try { service.plan(old, TestDependencySetupService.Mode.PROJECT); fail(); }
+        catch (IllegalArgumentException expected) { assertTrue(expected.getMessage().contains("4.12")); }
+        assertNotNull(service.plan(old, TestDependencySetupService.Mode.IDEA_OFFLINE));
+    }
+
     public void testConcurrentDocumentOrDiskChangePreventsApply() throws Exception {
         Path pom = root.resolve("pom.xml");
         Files.writeString(pom, POM);
