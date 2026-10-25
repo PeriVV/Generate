@@ -89,7 +89,9 @@ public final class MavenDependencyImporter {
             if (value instanceof Promise<?> promise) return promise;
             throw new IllegalStateException("无法确认 Maven 模块导入完成。");
         } catch (NoSuchMethodException modernIde) {
-            return Promise.resolve(null);
+            var completed = new AsyncPromise<Void>();
+            completed.setResult(null);
+            return completed;
         } catch (java.lang.reflect.InvocationTargetException error) {
             if (error.getCause() instanceof RuntimeException cause) throw cause;
             throw new IllegalStateException("等待 Maven 模块导入失败。", error.getCause());
