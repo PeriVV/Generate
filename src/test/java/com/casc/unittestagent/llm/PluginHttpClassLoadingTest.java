@@ -159,6 +159,27 @@ public class PluginHttpClassLoadingTest extends TestCase {
         assertTrue(failure.getMessage(), failure.getMessage().contains("local gateway unavailable"));
     }
 
+    public void testInstalledPluginDiagnosticsUsesRealTransportAndHidesCredentials() throws Exception {
+        String payload = new JSONObject().put("testCode", "class LocalDiagnosticTest {}")
+                .put("mockStrategies", List.of()).put("warnings", List.of()).toString();
+        startServer(200, chatResponse(payload));
+        Class<?> configType = loader.loadClass(LlmConfig.class.getName());
+        Object config = configType.getConstructor().newInstance();
+        configType.getMethod("setApiUrl", String.class).invoke(config, endpoint());
+        configType.getMethod("setApiKey", String.class).invoke(config, "local-diagnostic-private-key");
+        configType.getMethod("setModel", String.class).invoke(config, "local-model");
+        configType.getMethod("setTimeoutSeconds", int.class).invoke(config, 5);
+        Class<?> modeType = loader.loadClass("com.casc.unittestagent.llm.LlmDiagnosticReport$Mode");
+        Object mode = java.util.Arrays.stream(modeType.getEnumConstants()).filter(item -> ((Enum<?>) item).name().equals("GENERATION")).findFirst().orElseThrow();
+        Class<?> diagnosticsType = loader.loadClass("com.casc.unittestagent.llm.LlmConnectionDiagnostics");
+        Object report = diagnosticsType.getMethod("run", configType, modeType, java.util.function.BooleanSupplier.class, java.util.function.Consumer.class)
+                .invoke(diagnosticsType.getConstructor().newInstance(), config, mode, (java.util.function.BooleanSupplier) () -> false, null);
+        String text = (String) report.getClass().getMethod("text").invoke(report);
+        assertTrue(text, text.contains("可解析的 Java 类型"));
+        assertTrue(text, text.contains("LLM-STREAM_NOT_OBSERVED"));
+        assertFalse(text, text.contains("local-diagnostic-private-key"));
+    }
+
     public void testReadTimeoutRemainsAnIoException() throws Exception {
         startServer(200, chatResponse("ok"), () -> {
             try {

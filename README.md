@@ -250,6 +250,14 @@ API Key 读取顺序：
 
 候选测试必须全部运行通过后覆盖率才有效。测试代码或被测源码变化后报告会标记为失效。覆盖率未达标不阻止独立运行门禁通过的测试写入；写入前始终重新验证最终完整测试类。
 
+## 内网模型长生成超时修复（1.0.54）
+
+生成与连接测试共用有界流式传输，支持内网 MiniMax 的长代码与推理回复，并保留非流式兼容选项；修复整类编译修复的思考模式丢失和测试/运行的凭据优先级差异。
+超时提示显示阶段、耗时、空闲上限和单次总上限；连接测试明确说明小请求成功不能证明长生成正常。
+
+Windows 原生普通全量 781 项、专项全量 268 项及独立探索任务 1 项均为 0 失败、0 错误、0 跳过；三个 IDEA 版本 API 兼容检查通过。
+用户实际内网服务未直接访问，若网关存在固定总时限或缓冲，仍需结合新诊断确认。详情与安装包指纹见 [1.0.54 修复及验收记录](docs/llm-streaming-fix-1.0.54.md)。
+
 ## UI 覆盖率与 Maven 依赖修复（1.0.53）
 
 删除覆盖率卡片的“（含 lambda）”字样，补测进行时即时展示已完成候选的有效行/分支覆盖率。
@@ -592,7 +600,7 @@ Maven Help 使用的 `output` / `expression` 用户/项目属性发生冲突时�
 插件包输出路径：
 
 ```text
-build/distributions/UnitMind-1.0.53.zip
+build/distributions/UnitMind-1.0.54.zip
 ```
 
 本地安装：
@@ -601,7 +609,7 @@ build/distributions/UnitMind-1.0.53.zip
 2. 进入 `Settings | Plugins`。
 3. 点击齿轮菜单。
 4. 选择 `Install Plugin from Disk...`。
-5. 选择 `build/distributions/UnitMind-1.0.53.zip`。
+5. 选择 `build/distributions/UnitMind-1.0.54.zip`。
 6. 重启 IDE。
 
 1.0.29 修复了 1.0.27/1.0.28 的 Kotlin 运行时冲突：旧发行包通过 OkHttp/Okio

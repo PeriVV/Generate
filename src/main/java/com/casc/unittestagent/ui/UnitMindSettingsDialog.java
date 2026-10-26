@@ -48,7 +48,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JCheckBox streaming = new JCheckBox("流式接收模型回复（推荐）");
     private final JLabel apiKeyStatus = new JLabel();
     private final java.util.concurrent.atomic.AtomicBoolean connectionCancelled = new java.util.concurrent.atomic.AtomicBoolean();
-    private final JButton testConnection = new JButton("测试连接");
+    private final JButton testConnection = new JButton("测试连接 / 诊断");
     private final JSpinner lineCoverage = new JSpinner(new SpinnerNumberModel(90, 0, 100, 1));
     private final JSpinner branchCoverage = new JSpinner(new SpinnerNumberModel(80, 0, 100, 1));
     private final JSpinner coverageRounds = new JSpinner(new SpinnerNumberModel(5, 0, 30, 1));
@@ -276,32 +276,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
 
     private void testConnection() {
         LlmConfig config = configFromUi();
-        if (!validateConfigForSave(config)) {
-            return;
-        }
-        testConnection.setEnabled(false);
-        testConnection.setText("测试中...");
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            try {
-                String message = new OpenAiCompatibleLlmClient(config,
-                        () -> connectionCancelled.get() || project != null && project.isDisposed()).testConnection();
-                SwingUtilities.invokeLater(() -> { if (!connectionCancelled.get() && (project == null || !project.isDisposed()))
-                    Messages.showInfoMessage(project, message
-                            + "\n本次仅验证小请求、鉴权与响应协议，不代表长代码生成已通过。"
-                            + "\n设置修改后请点击“保存”，正常生成才会使用这些配置。", "UnitMind 大模型连接成功"); });
-            } catch (com.intellij.openapi.progress.ProcessCanceledException ignored) {
-                // Closing the settings dialog revokes ownership of its network request.
-            } catch (Exception ex) {
-                String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                SwingUtilities.invokeLater(() -> { if (!connectionCancelled.get() && (project == null || !project.isDisposed()))
-                    Messages.showErrorDialog(project, message, "UnitMind 大模型连接失败"); });
-            } finally {
-                SwingUtilities.invokeLater(() -> {
-                    if (connectionCancelled.get() || project != null && project.isDisposed()) return;
-                    testConnection.setEnabled(true);
-                    testConnection.setText("测试连接");
-                });
-            }
-        });
+        new LlmConnectionDiagnosticsDialog(project, config,
+                () -> connectionCancelled.get() || project != null && project.isDisposed()).show();
     }
 }

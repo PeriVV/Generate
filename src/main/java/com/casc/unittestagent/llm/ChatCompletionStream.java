@@ -14,6 +14,10 @@ final class ChatCompletionStream {
     private final StringBuilder content = new StringBuilder();
     private boolean reasoning;
     private String finishReason;
+    interface Observer { void event(int contentChars, boolean reasoning, boolean content, String finishReason); }
+    private final Observer observer;
+    ChatCompletionStream() { this((chars, reasoning, content, finish) -> {}); }
+    ChatCompletionStream(Observer observer) { this.observer = observer; }
 
     String read(BufferedSource source, Runnable checkCancelled) throws IOException {
         StringBuilder event = new StringBuilder();
@@ -55,7 +59,7 @@ final class ChatCompletionStream {
         catch (org.json.JSONException error) {
             throw new LlmResponseFormatException("大模型流式响应不是合法 JSON。");
         }
-        if (chunk.has("error")) throw new IOException("LLM stream error: " + chunk.opt("error"));
+        if (chunk.has("error") && !chunk.isNull("error")) throw new IOException("LLM stream error: " + chunk.opt("error"));
         JSONArray choices = chunk.optJSONArray("choices");
         if (choices == null) throw new LlmResponseFormatException("大模型流式响应中没有 choices。");
         for (int i = 0; i < choices.length(); i++) {
@@ -64,19 +68,25 @@ final class ChatCompletionStream {
             JSONObject delta = choice.optJSONObject("delta");
             JSONObject message = choice.optJSONObject("message");
             JSONObject payload = delta == null ? message : delta;
+            boolean newReasoning = false, newContent = false;
             if (payload != null) {
                 String text = text(payload.opt("content"));
+                newContent = !text.isBlank();
                 // Some MiniMax gateways send a final complete message instead of a delta.
                 if (delta == null && !text.isEmpty()) content.setLength(0);
                 content.append(text);
-                reasoning |= !text(payload.opt("reasoning_content")).isBlank()
-                        || payload.optJSONArray("reasoning_details") != null;
+                var details = payload.optJSONArray("reasoning_details");
+                newReasoning = !text(payload.opt("reasoning_content")).isBlank()
+                        || details != null && details.length() > 0;
+                reasoning |= newReasoning;
                 if (content.length() > MAX_CONTENT_CHARS)
                     throw new LlmResponseFormatException("大模型流式输出超过大小限制。");
             }
             String finish = choice.optString("finish_reason", "");
+            observer.event(content.length(), newReasoning, newContent, finish);
             if (!finish.isBlank()) { finishReason = finish; return true; }
         }
+        if (choices.length() == 0) observer.event(content.length(), false, false, "");
         return false;
     }
 
@@ -87,7 +97,7 @@ final class ChatCompletionStream {
                 .put("finish_reason", finishReason).put("message", message))).toString();
     }
 
-    private static String text(Object value) {
+    static String text(Object value) {
         if (value instanceof String string) return string;
         if (value instanceof JSONArray parts) {
             StringBuilder result = new StringBuilder();

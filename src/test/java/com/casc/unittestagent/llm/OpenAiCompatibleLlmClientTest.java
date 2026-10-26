@@ -277,7 +277,7 @@ public class OpenAiCompatibleLlmClientTest extends TestCase {
         assertEquals("", client.connectivityReply(
                 "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"\",\"reasoning_content\":\"thinking...\"}}]}"));
         try {
-            client.connectivityReply("{\"error\":{}}");
+            client.connectivityReply("{\"unexpected\":true}");
             fail("无 choices 的响应应视为格式错误");
         } catch (LlmResponseFormatException ex) {
             assertTrue(ex.getMessage().contains("choices"));

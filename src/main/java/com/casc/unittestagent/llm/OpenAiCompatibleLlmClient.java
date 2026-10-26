@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -44,6 +45,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     private final LlmPromptBuilder promptBuilder = new LlmPromptBuilder();
     private final LlmResponseParser responseParser = new LlmResponseParser();
     private final OkHttpClient httpClient;
+    private final LlmRequestTrace diagnosticTrace;
+    private final okhttp3.ConnectionPool diagnosticPool;
     private boolean loggedModelRewrite;
 
     public OpenAiCompatibleLlmClient(LlmConfig config) {
@@ -51,16 +54,29 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     public OpenAiCompatibleLlmClient(LlmConfig config, java.util.function.BooleanSupplier cancelled) {
+        this(config, cancelled, null);
+    }
+
+    OpenAiCompatibleLlmClient(LlmConfig config, java.util.function.BooleanSupplier cancelled, LlmRequestTrace trace) {
+        this(config, cancelled, trace, false);
+    }
+
+    OpenAiCompatibleLlmClient(LlmConfig config, java.util.function.BooleanSupplier cancelled, LlmRequestTrace trace, boolean freshConnection) {
         this.config = config;
         this.cancelled = cancelled;
-        this.httpClient = SHARED_HTTP_CLIENT.newBuilder()
+        this.diagnosticTrace = trace;
+        this.diagnosticPool = freshConnection ? new okhttp3.ConnectionPool(0, 1, TimeUnit.SECONDS) : null;
+        var builder = SHARED_HTTP_CLIENT.newBuilder()
                 // Preserve connect/write/read timeout types. A total budget equal to one phase
                 // races the read deadline and turns SocketTimeoutException into a call timeout.
                 .callTimeout(3L * config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .connectTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
                 .readTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS)
-                .build();
+                .writeTimeout(config.getTimeoutSeconds(), TimeUnit.SECONDS);
+        if (diagnosticPool != null) builder.connectionPool(diagnosticPool);
+        // Expose first-attempt failures rather than silently hiding instability during diagnosis.
+        if (trace != null) builder.retryOnConnectionFailure(false).followRedirects(false);
+        this.httpClient = builder.build();
     }
 
     @Override
@@ -136,61 +152,96 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private String executeRequest(JSONObject payload) throws IOException {
+        RequestBody postBody = RequestBody.create(payload.toString(), JSON);
+        if (diagnosticTrace != null) {
+            RequestBody original = postBody;
+            postBody = new RequestBody() {
+                @Override public MediaType contentType() { return original.contentType(); }
+                @Override public long contentLength() throws IOException { return original.contentLength(); }
+                @Override public void writeTo(okio.BufferedSink sink) throws IOException { original.writeTo(sink); }
+                @Override public boolean isOneShot() { return true; }
+            };
+        }
         Request httpRequest = new Request.Builder()
                 .url(endpointUrl())
-                .post(RequestBody.create(payload.toString(), JSON))
+                .post(postBody)
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
                 .build();
 
         var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
         operation.checkCancelled();
-        var trace = new RequestTrace();
+        var trace = diagnosticTrace == null ? new LlmRequestTrace(null) : diagnosticTrace;
         var call = httpClient.newBuilder().eventListener(trace).build().newCall(httpRequest);
+        boolean completed = false;
         try (var registration = operation.watch(call::cancel); Response response = call.execute()) {
             operation.checkCancelled();
+            ResponseBody observedBody = response.body() == null ? null : observedBody(response.body(), trace,
+                    response.header("Content-Type", "").toLowerCase(java.util.Locale.ROOT).contains("text/event-stream"));
             if (!response.isSuccessful()) {
-                trace.phase = "读取服务错误响应";
-                String body = response.body() == null ? "" : response.body().string();
-                throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
+                String body = observedBody == null ? "" : observedBody.string();
+                var failure = new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
+                var diagnosis = LlmFailureDiagnosis.classify(failure, trace.snapshot());
+                var redactor = new DiagnosticRedactor(config.getApiKey());
+                throw new IOException("[" + diagnosis.code() + "] " + redactor.detail(failure.getMessage())
+                        + "；" + diagnosis.advice() + " 请求 ID：" + redactor.detail(trace.snapshot().requestId()), failure);
             }
-            if (response.body() == null) return "";
+            if (observedBody == null) { completed = true; return ""; }
             String type = response.header("Content-Type", "").toLowerCase(java.util.Locale.ROOT);
             if (type.contains("text/event-stream")) {
-                trace.phase = "读取流式响应";
-                String body = new ChatCompletionStream().read(response.body().source(), operation::checkCancelled);
+                String body = new ChatCompletionStream(trace::sseEvent).read(observedBody.source(), operation::checkCancelled);
                 operation.checkCancelled();
+                completed = true;
                 return body;
             }
-            trace.phase = "等待完整响应正文";
-            String body = response.body().string();
+            String body = observedBody.string();
             operation.checkCancelled();
+            trace.jsonCompletion(body);
+            completed = true;
             return body;
         } catch (IOException ex) {
             operation.checkCancelled();
             if (ex instanceof java.io.InterruptedIOException
                     && (ex instanceof java.net.SocketTimeoutException || "timeout".equalsIgnoreCase(ex.getMessage()))) {
-                String message = "大模型请求超时：" + trace.phase + "，已用 "
-                        + TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - trace.started) + " 秒；"
+                var snapshot = trace.snapshot();
+                var diagnosis = LlmFailureDiagnosis.classify(ex, snapshot);
+                String message = "[" + diagnosis.code() + "] 大模型请求超时：" + snapshot.stage().label + "，已用 "
+                        + snapshot.elapsedMs() / 1000 + " 秒；"
                         + "读写空闲上限 " + config.getTimeoutSeconds() + " 秒，单次总上限 "
                         + 3L * config.getTimeoutSeconds() + " 秒；"
                         + (config.isStreaming() ? "已请求流式返回。" : "当前使用非流式返回。")
                         + "连接测试仅验证小请求；长代码/推理可能更慢。"
-                        + "可检查内网网关超时/排队与流式转发，或在设置中调整超时时间。";
+                        + diagnosis.advice() + " 请求 ID：" + new DiagnosticRedactor(config.getApiKey()).detail(snapshot.requestId());
                 java.io.InterruptedIOException explained = ex instanceof java.net.SocketTimeoutException
                         ? new java.net.SocketTimeoutException(message) : new java.io.InterruptedIOException(message);
                 explained.initCause(ex);
                 throw explained;
             }
             throw ex;
+        } finally {
+            trace.finish(completed);
+            if (diagnosticPool != null) diagnosticPool.evictAll();
         }
     }
 
-    private static final class RequestTrace extends okhttp3.EventListener {
-        final long started = System.nanoTime();
-        volatile String phase = "建立连接";
-        @Override public void requestBodyStart(okhttp3.Call call) { phase = "发送请求"; }
-        @Override public void requestBodyEnd(okhttp3.Call call, long byteCount) { phase = "等待响应头/首个响应"; }
+    private ResponseBody observedBody(ResponseBody body, LlmRequestTrace trace, boolean streaming) {
+        long limit = (streaming ? 64L : 8L) * 1024 * 1024;
+        var observed = okio.Okio.buffer(new okio.ForwardingSource(body.source()) {
+            private long count;
+            @Override public long read(okio.Buffer sink, long byteCount) throws IOException {
+                long read = super.read(sink, byteCount);
+                if (read > 0) {
+                    count += read; trace.bodyBytes(read);
+                    if (count > limit) throw new LlmResponseFormatException("大模型响应超过大小限制。");
+                }
+                return read;
+            }
+        });
+        return new ResponseBody() {
+            @Override public MediaType contentType() { return body.contentType(); }
+            @Override public long contentLength() { return body.contentLength(); }
+            @Override public okio.BufferedSource source() { return observed; }
+        };
     }
 
     @Override
@@ -235,6 +286,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         } catch (org.json.JSONException ex) {
             throw new LlmResponseFormatException("大模型响应不是合法 JSON：" + responseSnippet(body));
         }
+        rejectProviderError(root);
         JSONArray choices = root.optJSONArray("choices");
         if (choices == null || choices.length() == 0) {
             throw new LlmResponseFormatException("大模型响应中没有 choices。");
@@ -374,6 +426,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             // 网关返回 200 + HTML 时不应抛裸 org.json 异常，统一按响应格式错误分类。
             throw new LlmResponseFormatException("大模型响应不是合法 JSON：" + responseSnippet(body));
         }
+        rejectProviderError(root);
         JSONArray choices = root.optJSONArray("choices");
         if (choices == null || choices.length() == 0) {
             throw new LlmResponseFormatException("大模型响应中没有 choices。");
@@ -431,6 +484,24 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         if (text instanceof String) return (String) text;
         if (text instanceof JSONObject) return ((JSONObject) text).optString("value", "");
         return object.optString("content", "");
+    }
+
+    private void rejectProviderError(JSONObject root) {
+        String code = "", detail = "";
+        boolean failed = root.has("error") && !root.isNull("error");
+        if (failed) {
+            JSONObject error = root.optJSONObject("error");
+            code = error == null ? "provider_error" : error.optString("code", error.optString("type", "provider_error"));
+            detail = error == null ? String.valueOf(root.opt("error")) : error.optString("message", "服务返回 error 对象");
+        }
+        var base = root.optJSONObject("base_resp");
+        if (!failed && base != null && base.optInt("status_code", 0) != 0) {
+            failed = true; code = String.valueOf(base.optInt("status_code")); detail = base.optString("status_msg", "服务返回非零状态");
+        }
+        if (failed) {
+            var redactor = new DiagnosticRedactor(config.getApiKey());
+            throw new LlmProviderResponseException(redactor.detail(code), redactor.detail(detail));
+        }
     }
 
     private void validateConfig() {
