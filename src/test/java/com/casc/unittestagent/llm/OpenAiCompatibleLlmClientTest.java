@@ -4,6 +4,37 @@ import junit.framework.TestCase;
 import org.json.JSONObject;
 
 public class OpenAiCompatibleLlmClientTest extends TestCase {
+    public void testProbeAndSavedGenerationUseTheSameEnvironmentKeyPriority() {
+        assertEquals("environment", LlmConfigManager.selectApiKey(" environment ", "typed", () -> { throw new AssertionError(); }));
+        assertEquals("typed", LlmConfigManager.selectApiKey(" ", " typed ", () -> { throw new AssertionError(); }));
+        assertEquals("stored", LlmConfigManager.selectApiKey(null, "", () -> " stored "));
+        assertEquals("", LlmConfigManager.selectApiKey(null, null, () -> null));
+    }
+    public void testStreamPreferenceMatchesProbeAndGenerationAndCanBeDisabled() {
+        LlmConfig config = new LlmConfig();
+        assertTrue(config.isStreaming());
+        var client = new OpenAiCompatibleLlmClient(config);
+        assertTrue(client.testConnectionBody().getBoolean("stream"));
+        assertTrue(client.requestBody("JSON", "JSON").getBoolean("stream"));
+        config.setStreaming(false);
+        assertFalse(client.testConnectionBody().has("stream"));
+        assertFalse(client.requestBody("JSON", "JSON").has("stream"));
+    }
+
+    public void testRepairConfigCopyRetainsThinkingStreamAndOtherSettings() {
+        LlmConfig config = new LlmConfig();
+        config.setEnabled(true); config.setApiUrl("http://private-fixture/v1"); config.setApiKey("local-fixture");
+        config.setModel("minimax"); config.setTimeoutSeconds(420); config.setMaxTokens(40000);
+        config.setMaxCompileRepairRounds(8); config.setTemperature(0.6);
+        config.setFallbackToRuleBased(false); config.setThinkingMode(true); config.setStreaming(false);
+        LlmConfig copy = config.copy();
+        assertTrue(copy.isEnabled()); assertTrue(copy.isThinkingMode()); assertFalse(copy.isStreaming());
+        assertEquals(config.getApiUrl(), copy.getApiUrl()); assertEquals(config.getApiKey(), copy.getApiKey());
+        assertEquals(config.getModel(), copy.getModel()); assertEquals(420, copy.getTimeoutSeconds());
+        assertEquals(40000, copy.getMaxTokens()); assertEquals(8, copy.getMaxCompileRepairRounds());
+        assertEquals(0.6, copy.getTemperature()); assertFalse(copy.isFallbackToRuleBased());
+        copy.setThinkingMode(false); assertTrue(config.isThinkingMode());
+    }
     public void testExtractsSegmentedChatCompletionContent() {
         String body = """
                 {
@@ -221,6 +252,10 @@ public class OpenAiCompatibleLlmClientTest extends TestCase {
         hosted.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
         hosted.setModel("MiniMax/MiniMax-M2.7");
         assertEquals(1024, new OpenAiCompatibleLlmClient(hosted).testConnectionBody().getInt("max_tokens"));
+
+        LlmConfig intranet = new LlmConfig();
+        intranet.setApiUrl("http://private-fixture/v1"); intranet.setModel("MiniMax-M2.5");
+        assertEquals(1024, new OpenAiCompatibleLlmClient(intranet).testConnectionBody().getInt("max_tokens"));
 
         LlmConfig thinking = new LlmConfig();
         thinking.setApiUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");

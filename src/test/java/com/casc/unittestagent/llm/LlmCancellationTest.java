@@ -25,11 +25,23 @@ public class LlmCancellationTest extends TestCase {
         exercise(false, true);
     }
 
+    public void testCancellationClosesStalledEventStreamPromptly() throws Exception {
+        exercise(false, false, true);
+    }
+
+    public void testTotalBudgetAlsoBoundsNeverEndingSseHeartbeats() throws Exception {
+        exercise(false, true, true);
+    }
+
     private void exercise(boolean probe) throws Exception {
         exercise(probe, false);
     }
 
     private void exercise(boolean probe, boolean continuousResponse) throws Exception {
+        exercise(probe, continuousResponse, false);
+    }
+
+    private void exercise(boolean probe, boolean continuousResponse, boolean events) throws Exception {
         var cancelled = new AtomicBoolean();
         var deadlineObserved = new AtomicBoolean();
         var failure = new AtomicReference<Throwable>();
@@ -39,10 +51,12 @@ public class LlmCancellationTest extends TestCase {
             var host = new Thread(() -> {
                 try {
                     var connection = server.accept(); socket.set(connection);
-                    connection.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 99999\r\n\r\n{".getBytes(StandardCharsets.US_ASCII));
+                    String header = events ? "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 99999\r\n\r\n: started\n\n"
+                            : "HTTP/1.1 200 OK\r\nContent-Length: 99999\r\n\r\n{";
+                    connection.getOutputStream().write(header.getBytes(StandardCharsets.US_ASCII));
                     connection.getOutputStream().flush(); started.countDown();
                     while (continuousResponse && !cancelled.get()) {
-                        connection.getOutputStream().write(' ');
+                        connection.getOutputStream().write((events ? ": heartbeat\n\n" : " ").getBytes(StandardCharsets.US_ASCII));
                         connection.getOutputStream().flush();
                         Thread.sleep(100);
                     }

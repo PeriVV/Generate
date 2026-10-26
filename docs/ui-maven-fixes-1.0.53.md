@@ -1,6 +1,6 @@
 # 1.0.53 UI 覆盖率与 Maven 测试依赖修复
 
-状态：定向回归通过，最终代码的完整本机、IDEA API 和 Windows 原生验收进行中，尚未交付新包。
+状态：最终代码的完整本机回归、Windows 原生验收及三个 IDEA 版本的 API 兼容检查全部通过，安装包已完成指纹与内容核对。
 
 ## 三项反馈的处理
 
@@ -23,8 +23,32 @@ IDEA 222 的 Maven 解析与模块导入是分开步骤；较新版本的旧兼�
 
 定向回归覆盖真实 JaCoCo 过程测量、Swing 数值刷新与忙闲状态、异步 Maven 阶段顺序/错误/取消、旧新 IDEA 等待接口、POM 幂等与版本处理，以及真实 Maven/Gradle 执行 JUnit/Mockito。已有依赖但 Surefire 过旧的 Maven 夹具也真实执行测试并检查 JUnit XML。
 
-本轮未访问用户业务项目，未调用付费模型；测试结果不代表所有 IDEA 版本的人工 GUI 验收。完整验收和最终包指纹将在通过后补入。
+本轮未访问用户业务项目，未调用付费模型；测试结果不代表所有 IDEA 版本的人工 GUI 验收。完整验收和最终包指纹见下方最终验收记录。
 
 ## 中间兼容性诊断
 
 初次 API 检查在 IDEA 2025.3/2026.2 发现 Promise.resolve 静态方法已移除。已替换为既有的 AsyncPromise 构造与完成接口；对应旧快照轮次 40181113089 取消，不用于交付。最终结果以修复后完整重跑为准。
+
+
+## 最终验收
+
+- 本地普通回归 766 项、独立开源探索任务 1 项，均为 0 失败、0 错误、0 跳过；冻结源码指纹一致。
+- Windows x64 普通全量 766 项、专项全量 236 项、独立开源探索任务 1 项，均为 0 失败、0 错误、0 跳过。已逐项核对用例名称，确认与最终源码的用例清单一致。
+- Windows 在中文与空格检出目录中运行，实际使用项目 JDK 8、11、17、21、25；外部旧 Gradle/IDEA 222 夹具的构建输出仍使用 ASCII 临时目录，限制详见上一版 Windows 验收记录。
+- 本地及 Windows 产物均通过 IDEA 2022.2.5、2025.3、2026.2.0.1 的 API 兼容检查；支持声明保持 222–262.*，插件自身为 Java 17 字节码。这不代表每个补丁版本的人工 GUI 验收。
+- Windows 验收源码：`9e90d9ec5a070f8a0b3d9dadab5eb31d71b3dbb3`；[成功验收轮次](https://github.com/PeriVV/Generate/actions/runs/40183815818)。
+- 最终交付文件：`build/distributions/UnitMind-1.0.53.zip`。直接提取自上述成功 Windows 轮次，24,023,501 字节、12 个顶层 JAR；已核对修复类、字节码、内置运行库索引、重复类及依赖冲突。
+- SHA-256：`04170fa562d882113b07f5be4b9d8beafe63c54dff1b7cfe7f14a3338a6d9a76`。
+- 旧版 1.0.52 安装包和验收证据保留，可用于回退。
+
+### 保留的 API 提示
+
+- IC-222.4554.10：Compatible. 1 usage of deprecated API
+- IU-253.28294.334：Compatible. 3 usages of scheduled for removal API and 8 usages of deprecated API. 1 usage of internal API
+- IU-262.8665.337：Compatible. 4 usages of scheduled for removal API and 38 usages of deprecated API. 2 usages of internal API
+
+### 探索质量与平台验收的区别
+
+本地原始规则探索覆盖 14 个仓库、129 个方法，其中 78 个方法的全部候选通过、51 个仍有候选失败。Windows 原始规则探索覆盖 3 个仓库、42 个方法，其中 26 个方法的全部候选通过、16 个仍有候选失败。这些是独立的生成质量记录，不计作平台回归通过，也不表示所有生成草稿都正确；失败候选仍受正常写入门禁拦截。
+
+升级插件后，在目标 Java 文件所属模块重新执行“配置测试依赖 → Maven”，查看实际 POM 差异并等待导入结果。若提示依赖仍不可见，按提示检查项目仓库、离线设置和 Maven 同步错误；仅 IDEA 的离线导入不能代替 Maven/CI 配置。

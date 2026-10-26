@@ -45,6 +45,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
     private final JSpinner temperature = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.1));
     private final JCheckBox fallbackToRuleBased = new JCheckBox("失败时使用规则兜底");
     private final JCheckBox thinkingMode = new JCheckBox("启用思考模式（推理模型）");
+    private final JCheckBox streaming = new JCheckBox("流式接收模型回复（推荐）");
     private final JLabel apiKeyStatus = new JLabel();
     private final java.util.concurrent.atomic.AtomicBoolean connectionCancelled = new java.util.concurrent.atomic.AtomicBoolean();
     private final JButton testConnection = new JButton("测试连接");
@@ -134,7 +135,8 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         addRow(panel, constraints, 1, "API 地址", apiUrl);
         addRow(panel, constraints, 2, "API Key", apiKey);
         addRow(panel, constraints, 3, "模型名称", model);
-        addRow(panel, constraints, 4, "请求超时时间", timeoutSeconds);
+        timeoutSeconds.setToolTipText("读写无新数据的等待上限；单次请求总上限为该值的 3 倍。内网慢速推理可调大，网关也需允许长请求。");
+        addRow(panel, constraints, 4, "读写空闲超时（秒）", timeoutSeconds);
         addRow(panel, constraints, 5, "最大输出长度", maxTokens);
         addRow(panel, constraints, 6, "温度", temperature);
         addRow(panel, constraints, 7, "最多编译修复轮次", compileRepairRounds);
@@ -170,6 +172,11 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         constraints.gridx = 1;
         constraints.gridy = 11;
         panel.add(new JLabel("API Key 优先读取环境变量 " + LlmConfigManager.apiKeyEnvironmentName() + "；输入新 Key 后保存到 IDEA PasswordSafe。"), constraints);
+        constraints.gridx = 0;
+        constraints.gridy = 10;
+        constraints.gridwidth = 1;
+        streaming.setToolTipText("生成与连接测试使用相同协议；逐步接收长代码/推理，避免一直等待完整响应。不支持 stream 参数的网关可取消勾选。");
+        panel.add(streaming, constraints);
         return panel;
     }
 
@@ -220,6 +227,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         temperature.setValue(config.getTemperature());
         fallbackToRuleBased.setSelected(config.isFallbackToRuleBased());
         thinkingMode.setSelected(config.isThinkingMode());
+        streaming.setSelected(config.isStreaming());
         CoverageConfig coverage = CoverageConfigManager.load();
         lineCoverage.setValue((int) Math.round(coverage.getLineThreshold() * 100));
         branchCoverage.setValue((int) Math.round(coverage.getBranchThreshold() * 100));
@@ -235,7 +243,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         config.setEnabled(enabled.isSelected());
         config.setApiUrl(apiUrl.getText());
         String typedKey = new String(apiKey.getPassword());
-        config.setApiKey(typedKey == null || typedKey.isBlank() ? LlmConfigManager.load().getApiKey() : typedKey.trim());
+        config.setApiKey(LlmConfigManager.resolveApiKeyForUi(typedKey));
         config.setModel(model.getText());
         config.setTimeoutSeconds((Integer) timeoutSeconds.getValue());
         config.setMaxTokens((Integer) maxTokens.getValue());
@@ -243,6 +251,7 @@ public class UnitMindSettingsDialog extends DialogWrapper {
         config.setTemperature(((Number) temperature.getValue()).doubleValue());
         config.setFallbackToRuleBased(fallbackToRuleBased.isSelected());
         config.setThinkingMode(thinkingMode.isSelected());
+        config.setStreaming(streaming.isSelected());
         return config;
     }
 
@@ -277,7 +286,9 @@ public class UnitMindSettingsDialog extends DialogWrapper {
                 String message = new OpenAiCompatibleLlmClient(config,
                         () -> connectionCancelled.get() || project != null && project.isDisposed()).testConnection();
                 SwingUtilities.invokeLater(() -> { if (!connectionCancelled.get() && (project == null || !project.isDisposed()))
-                    Messages.showInfoMessage(project, message, "UnitMind 大模型连接成功"); });
+                    Messages.showInfoMessage(project, message
+                            + "\n本次仅验证小请求、鉴权与响应协议，不代表长代码生成已通过。"
+                            + "\n设置修改后请点击“保存”，正常生成才会使用这些配置。", "UnitMind 大模型连接成功"); });
             } catch (com.intellij.openapi.progress.ProcessCanceledException ignored) {
                 // Closing the settings dialog revokes ownership of its network request.
             } catch (Exception ex) {

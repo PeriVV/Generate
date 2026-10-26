@@ -25,6 +25,7 @@ public class LlmConfig {
     private boolean fallbackToRuleBased = true;
     /** 思考模式：不再强制关闭模型思考、不发送 JSON 模式参数，并抬高输出预算下限。 */
     private boolean thinkingMode;
+    private boolean streaming = true;
 
     public boolean isEnabled() {
         return enabled;
@@ -106,6 +107,19 @@ public class LlmConfig {
 
     public void setThinkingMode(boolean thinkingMode) {
         this.thinkingMode = thinkingMode;
+    }
+
+    public boolean isStreaming() { return streaming; }
+    public void setStreaming(boolean streaming) { this.streaming = streaming; }
+
+    public LlmConfig copy() {
+        LlmConfig copy = new LlmConfig();
+        copy.enabled = enabled; copy.apiUrl = apiUrl; copy.apiKey = apiKey; copy.model = model;
+        copy.timeoutSeconds = timeoutSeconds; copy.maxTokens = maxTokens;
+        copy.maxCompileRepairRounds = maxCompileRepairRounds; copy.temperature = temperature;
+        copy.fallbackToRuleBased = fallbackToRuleBased; copy.thinkingMode = thinkingMode;
+        copy.streaming = streaming;
+        return copy;
     }
 
     public String maskedApiKey() {

@@ -250,6 +250,15 @@ API Key 读取顺序：
 
 候选测试必须全部运行通过后覆盖率才有效。测试代码或被测源码变化后报告会标记为失效。覆盖率未达标不阻止独立运行门禁通过的测试写入；写入前始终重新验证最终完整测试类。
 
+## UI 覆盖率与 Maven 依赖修复（1.0.53）
+
+删除覆盖率卡片的“（含 lambda）”字样，补测进行时即时展示已完成候选的有效行/分支覆盖率。
+Maven 配置会等待所选 POM 导入完成后再检查依赖可见性，补齐可执行 JUnit 5 的 Surefire，并通过 Vintage 保留混合项目中的 JUnit 4 测试。
+
+Windows 原生普通全量 766 项、专项全量 236 项和独立探索任务 1 项均为 0 失败、0 错误、0 跳过；验证项目 JDK 8、11、17、21、25。
+同一轮 Windows 安装包通过 IDEA 2022.2.5、2025.3、2026.2.0.1 的 API 兼容检查，保留弃用与内部 API 提示；插件支持声明仍为 222–262.*。
+具体 Maven 配置方式、边界、验收证据、探索质量及安装包指纹见 [1.0.53 修复与验收记录](docs/ui-maven-fixes-1.0.53.md)。
+
 ## Windows 原生验收（1.0.52）
 
 Windows x64 原生普通全量 744 项、专项全量 189 项和独立探索任务 1 项均为 0 失败、0 错误、0 跳过；验证了项目 JDK 8、11、17、21、25。
@@ -583,7 +592,7 @@ Maven Help 使用的 `output` / `expression` 用户/项目属性发生冲突时�
 插件包输出路径：
 
 ```text
-build/distributions/UnitMind-1.0.52.zip
+build/distributions/UnitMind-1.0.53.zip
 ```
 
 本地安装：
@@ -592,7 +601,7 @@ build/distributions/UnitMind-1.0.52.zip
 2. 进入 `Settings | Plugins`。
 3. 点击齿轮菜单。
 4. 选择 `Install Plugin from Disk...`。
-5. 选择 `build/distributions/UnitMind-1.0.52.zip`。
+5. 选择 `build/distributions/UnitMind-1.0.53.zip`。
 6. 重启 IDE。
 
 1.0.29 修复了 1.0.27/1.0.28 的 Kotlin 运行时冲突：旧发行包通过 OkHttp/Okio

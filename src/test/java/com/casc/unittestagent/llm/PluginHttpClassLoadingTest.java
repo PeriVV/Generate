@@ -124,6 +124,34 @@ public class PluginHttpClassLoadingTest extends TestCase {
         assertEquals(code, response.getClass().getMethod("getTestCode").invoke(response));
     }
 
+    public void testInstalledPluginUsesSseForBothProbeAndGeneration() throws Exception {
+        String code = "class LocalStreamTest {}";
+        String payload = new JSONObject().put("testCode", code).put("mockStrategies", List.of())
+                .put("warnings", List.of()).toString();
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            try (exchange) {
+                var request = new JSONObject(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                assertTrue(request.getBoolean("stream"));
+                String finish = requests.incrementAndGet() == 1 ? "length" : "stop";
+                String data = "data: " + new JSONObject().put("choices", List.of(new JSONObject()
+                        .put("delta", new JSONObject().put("content", payload)).put("finish_reason", finish))) + "\n\n";
+                byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                exchange.sendResponseHeaders(200, bytes.length); exchange.getResponseBody().write(bytes);
+            }
+        });
+        server.start();
+        Object client = newClient(endpoint(), 5);
+        assertEquals("连接成功：" + payload, connect(client));
+        Class<?> requestClass = loader.loadClass(LlmGenerationRequest.class.getName());
+        Object response = client.getClass().getMethod("generateUnitTest", requestClass)
+                .invoke(client, requestClass.getConstructor().newInstance());
+        assertEquals(code, response.getClass().getMethod("getTestCode").invoke(response));
+        assertEquals(2, requests.get());
+    }
+
     public void testHttpErrorRetainsGatewayStatusAndBody() throws Exception {
         startServer(503, "local gateway unavailable");
         IOException failure = connectionFailure(newClient(endpoint(), 5));

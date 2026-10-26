@@ -1851,16 +1851,8 @@ public class UnitTestGenerationService {
     }
 
     private LlmConfig limitedCompileRepairConfig(LlmConfig source, int maxRounds) {
-        LlmConfig config = new LlmConfig();
+        LlmConfig config = source == null ? new LlmConfig() : source.copy();
         if (source == null) return config;
-        config.setEnabled(source.isEnabled());
-        config.setApiUrl(source.getApiUrl());
-        config.setApiKey(source.getApiKey());
-        config.setModel(source.getModel());
-        config.setTimeoutSeconds(source.getTimeoutSeconds());
-        config.setMaxTokens(source.getMaxTokens());
-        config.setTemperature(source.getTemperature());
-        config.setFallbackToRuleBased(source.isFallbackToRuleBased());
         config.setMaxCompileRepairRounds(Math.min(Math.max(0, maxRounds),
                 source.getMaxCompileRepairRounds()));
         return config;

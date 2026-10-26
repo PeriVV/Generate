@@ -20,6 +20,7 @@ public final class LlmConfigManager {
     private static final String TEMPERATURE = PREFIX + "temperature";
     private static final String FALLBACK = PREFIX + "fallbackToRuleBased";
     private static final String THINKING_MODE = PREFIX + "thinkingMode";
+    private static final String STREAMING = PREFIX + "streaming";
     private static final String PRIVACY_CONFIRMED = PREFIX + "privacyConfirmed";
     private static final String API_KEY_ENV = "UNITMIND_API_KEY";
     private static final String API_KEY_SERVICE = "UnitMind LLM API Key";
@@ -39,6 +40,7 @@ public final class LlmConfigManager {
         config.setTemperature(parseDouble(properties.getValue(TEMPERATURE), 0.2));
         config.setFallbackToRuleBased(properties.getBoolean(FALLBACK, true));
         config.setThinkingMode(properties.getBoolean(THINKING_MODE, false));
+        config.setStreaming(properties.getBoolean(STREAMING, true));
         config.setApiKey(resolveApiKey());
         return config;
     }
@@ -55,6 +57,7 @@ public final class LlmConfigManager {
         properties.setValue(TEMPERATURE, Double.toString(config.getTemperature()));
         properties.setValue(FALLBACK, Boolean.toString(config.isFallbackToRuleBased()));
         properties.setValue(THINKING_MODE, Boolean.toString(config.isThinkingMode()));
+        properties.setValue(STREAMING, Boolean.toString(config.isStreaming()));
         if (apiKeyToStore != null && !apiKeyToStore.isBlank()) {
             PasswordSafe.getInstance().set(credentialsAttributes(), new Credentials("UnitMind", apiKeyToStore.trim()));
         }
@@ -73,12 +76,20 @@ public final class LlmConfigManager {
     }
 
     private static String resolveApiKey() {
-        String fromEnv = System.getenv(API_KEY_ENV);
-        if (fromEnv != null && !fromEnv.isBlank()) {
-            return fromEnv.trim();
-        }
-        Credentials credentials = PasswordSafe.getInstance().get(credentialsAttributes());
-        return credentials == null ? "" : nullToEmpty(credentials.getPasswordAsString());
+        return resolveApiKeyForUi("");
+    }
+
+    public static String resolveApiKeyForUi(String typedKey) {
+        return selectApiKey(System.getenv(API_KEY_ENV), typedKey, () -> {
+            Credentials credentials = PasswordSafe.getInstance().get(credentialsAttributes());
+            return credentials == null ? "" : nullToEmpty(credentials.getPasswordAsString());
+        });
+    }
+
+    static String selectApiKey(String environmentKey, String typedKey, java.util.function.Supplier<String> storedKey) {
+        if (environmentKey != null && !environmentKey.isBlank()) return environmentKey.trim();
+        if (typedKey != null && !typedKey.isBlank()) return typedKey.trim();
+        return nullToEmpty(storedKey.get()).trim();
     }
 
     private static CredentialAttributes credentialsAttributes() {

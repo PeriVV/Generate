@@ -132,27 +132,65 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private String executeChat(String systemPrompt, String userPrompt, int maxTokens) throws IOException {
+        return extractMessageContent(executeRequest(requestBody(systemPrompt, userPrompt, maxTokens)), maxTokens);
+    }
+
+    private String executeRequest(JSONObject payload) throws IOException {
         Request httpRequest = new Request.Builder()
                 .url(endpointUrl())
-                .post(RequestBody.create(requestBody(systemPrompt, userPrompt, maxTokens).toString(), JSON))
+                .post(RequestBody.create(payload.toString(), JSON))
                 .addHeader("Authorization", "Bearer " + config.getApiKey())
                 .addHeader("Content-Type", "application/json")
                 .build();
 
         var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
         operation.checkCancelled();
-        var call = httpClient.newCall(httpRequest);
+        var trace = new RequestTrace();
+        var call = httpClient.newBuilder().eventListener(trace).build().newCall(httpRequest);
         try (var registration = operation.watch(call::cancel); Response response = call.execute()) {
-            String body = response.body() == null ? "" : response.body().string();
             operation.checkCancelled();
             if (!response.isSuccessful()) {
+                trace.phase = "读取服务错误响应";
+                String body = response.body() == null ? "" : response.body().string();
                 throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(body));
             }
-            return extractMessageContent(body, maxTokens);
+            if (response.body() == null) return "";
+            String type = response.header("Content-Type", "").toLowerCase(java.util.Locale.ROOT);
+            if (type.contains("text/event-stream")) {
+                trace.phase = "读取流式响应";
+                String body = new ChatCompletionStream().read(response.body().source(), operation::checkCancelled);
+                operation.checkCancelled();
+                return body;
+            }
+            trace.phase = "等待完整响应正文";
+            String body = response.body().string();
+            operation.checkCancelled();
+            return body;
         } catch (IOException ex) {
             operation.checkCancelled();
+            if (ex instanceof java.io.InterruptedIOException
+                    && (ex instanceof java.net.SocketTimeoutException || "timeout".equalsIgnoreCase(ex.getMessage()))) {
+                String message = "大模型请求超时：" + trace.phase + "，已用 "
+                        + TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - trace.started) + " 秒；"
+                        + "读写空闲上限 " + config.getTimeoutSeconds() + " 秒，单次总上限 "
+                        + 3L * config.getTimeoutSeconds() + " 秒；"
+                        + (config.isStreaming() ? "已请求流式返回。" : "当前使用非流式返回。")
+                        + "连接测试仅验证小请求；长代码/推理可能更慢。"
+                        + "可检查内网网关超时/排队与流式转发，或在设置中调整超时时间。";
+                java.io.InterruptedIOException explained = ex instanceof java.net.SocketTimeoutException
+                        ? new java.net.SocketTimeoutException(message) : new java.io.InterruptedIOException(message);
+                explained.initCause(ex);
+                throw explained;
+            }
             throw ex;
         }
+    }
+
+    private static final class RequestTrace extends okhttp3.EventListener {
+        final long started = System.nanoTime();
+        volatile String phase = "建立连接";
+        @Override public void requestBodyStart(okhttp3.Call call) { phase = "发送请求"; }
+        @Override public void requestBodyEnd(okhttp3.Call call, long byteCount) { phase = "等待响应头/首个响应"; }
     }
 
     @Override
@@ -162,30 +200,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     public String testConnection() throws Exception {
         validateConfig();
-        JSONObject body = testConnectionBody();
-        Request httpRequest = new Request.Builder()
-                .url(endpointUrl())
-                .post(RequestBody.create(body.toString(), JSON))
-                .addHeader("Authorization", "Bearer " + config.getApiKey())
-                .addHeader("Content-Type", "application/json")
-                .build();
-        var operation = com.casc.unittestagent.util.OperationContext.capture(cancelled);
-        operation.checkCancelled();
-        var call = httpClient.newCall(httpRequest);
-        try (var registration = operation.watch(call::cancel); Response response = call.execute()) {
-            String responseBody = response.body() == null ? "" : response.body().string();
-            operation.checkCancelled();
-            if (!response.isSuccessful()) {
-                throw new IOException("LLM request failed: " + response.code() + " " + response.message() + responseSnippet(responseBody));
-            }
-            // 连通性判定只关心 HTTP 200 + 合法的 chat 响应结构：
-            // finish_reason=length 仅说明探测预算小，连接本身是通的，不应按生成截断报错。
-            String content = connectivityReply(responseBody);
-            return content == null || content.isBlank() ? "连接成功。" : "连接成功：" + content.trim();
-        } catch (IOException ex) {
-            operation.checkCancelled();
-            throw ex;
-        }
+        String content = connectivityReply(executeRequest(testConnectionBody()));
+        return content == null || content.isBlank() ? "连接成功。" : "连接成功：" + content.trim();
     }
 
     /**
@@ -200,7 +216,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                 .put("content", "You are a connectivity checker. Always reply in JSON."));
         messages.put(new JSONObject().put("role", "user")
                 .put("content", "Reply with {\"status\":\"ok\"} only."));
-        boolean thinkingCapable = config.isThinkingMode() || isHostedThirdPartyModel();
+        boolean thinkingCapable = config.isThinkingMode() || isHostedThirdPartyModel()
+                || modelName().toLowerCase(java.util.Locale.ROOT).contains("minimax");
         JSONObject body = new JSONObject()
                 .put("model", modelName())
                 .put("messages", messages)
@@ -252,6 +269,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     private void applyProviderOptions(JSONObject body) {
+        if (config.isStreaming()) body.put("stream", true);
         // 百炼上的第三方模型（如 MiniMax/MiniMax-M2.7）参数透传给原厂：
         // enable_thinking 与 response_format 是 Qwen 家族参数，第三方思考模型可能直接拒绝。
         // 最小请求体最稳；思考内容由 extractMessageContent 的 reasoning_content 分支兜底。
